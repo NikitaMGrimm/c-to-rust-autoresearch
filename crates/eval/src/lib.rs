@@ -4,9 +4,12 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 /// Directory whose rust-toolchain.toml pins rustc and Clippy.
@@ -193,21 +196,63 @@ pub fn classify(c: &Run, rust: &Run, unsafe_uses: u32) -> (&'static str, String)
     ("pass", String::new())
 }
 
+const BUILD_ARGS: [&str; 5] = [
+    "build",
+    "-q",
+    "-p",
+    "transpiler",
+    "--message-format=json-render-diagnostics",
+];
+
 /// Builds the transpiler binary and returns its path.
 pub fn build_transpiler() -> Result<PathBuf, String> {
-    let output = Command::new("cargo")
-        .args([
-            "build",
-            "-q",
-            "-p",
-            "transpiler",
-            "--message-format=json-render-diagnostics",
-        ])
-        .current_dir(REPO)
+    cargo_executable(Command::new("cargo").args(BUILD_ARGS).current_dir(REPO))
+}
+
+/// Builds the transpiler of an untrusted `workspace` in the sandbox, so its
+/// build scripts see neither the private benchmarks nor credentials.
+/// Dependencies are fetched first, outside, since the sandbox has no network.
+pub fn build_transpiler_sandboxed(workspace: &Path) -> Result<PathBuf, String> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|err| format!("cannot open {}: {err}", workspace.display()))?;
+    let fetched = Command::new("cargo")
+        .args(["fetch", "-q", "--locked"])
+        .current_dir(&workspace)
+        .status()
+        .map_err(|err| format!("cannot run cargo: {err}"))?;
+    if !fetched.success() {
+        return Err("fetching the transpiler's dependencies failed".to_owned());
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let cargo_home = std::env::var_os("CARGO_HOME").map_or(home.join(".cargo"), PathBuf::from);
+    let rustup_home = std::env::var_os("RUSTUP_HOME").map_or(home.join(".rustup"), PathBuf::from);
+    // Not all of CARGO_HOME: it holds the crates.io token.
+    let readable: Vec<PathBuf> = ["bin", "registry", "git"]
+        .iter()
+        .map(|dir| cargo_home.join(dir))
+        .chain([rustup_home])
+        .filter(|path| path.exists())
+        .collect();
+    let readable: Vec<&Path> = readable.iter().map(PathBuf::as_path).collect();
+    let mut inner = Command::new("cargo");
+    inner
+        .args(BUILD_ARGS)
+        .args(["--offline", "--locked"])
+        .env("CARGO_TARGET_DIR", workspace.join("target"))
+        .current_dir(&workspace);
+    cargo_executable(&mut sandboxed(&inner, &readable, &workspace))
+}
+
+fn cargo_executable(command: &mut Command) -> Result<PathBuf, String> {
+    let output = command
         .output()
         .map_err(|err| format!("cannot run cargo: {err}"))?;
     if !output.status.success() {
-        return Err("building the transpiler failed".to_owned());
+        return Err(format!(
+            "building the transpiler failed\n{}",
+            tail(&output.stderr)
+        ));
     }
     String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -240,6 +285,65 @@ pub fn versions() -> serde_json::Value {
         "clang": first_line("clang-18", &["--version"]),
         "rustc": first_line("rustc", &["--version"]),
     })
+}
+
+/// The `.c` programs in `dir`, sorted.
+pub fn c_programs(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).and_then(|entries| {
+        entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()
+    });
+    let mut programs: Vec<PathBuf> = entries
+        .map_err(|err| format!("cannot read {}: {err}", dir.display()))?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
+        .collect();
+    programs.sort();
+    Ok(programs)
+}
+
+/// Evaluates `programs` on `jobs` threads; records are sorted by name.
+pub fn evaluate_all(
+    programs: &[PathBuf],
+    translator: &Translator,
+    jobs: usize,
+) -> Result<Vec<Record>, String> {
+    // Private and new: a planted directory or symlink at this path must not be used.
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    let scratch = std::env::temp_dir().join(format!(
+        "c2r-eval-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&scratch)
+        .map_err(|err| format!("cannot create {}: {err}", scratch.display()))?;
+    for program in programs {
+        if let Err(err) = std::fs::create_dir(scratch.join(program.file_stem().unwrap_or_default()))
+        {
+            let _ = std::fs::remove_dir_all(&scratch);
+            return Err(format!("cannot create scratch directory: {err}"));
+        }
+    }
+    let next = AtomicUsize::new(0);
+    let records = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.min(programs.len()) {
+            scope.spawn(|| {
+                while let Some(program) = programs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let work = scratch.join(program.file_stem().unwrap_or_default());
+                    let record = evaluate(program, translator, &work);
+                    records.lock().unwrap().push(record);
+                }
+            });
+        }
+    });
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut records = records.into_inner().unwrap();
+    records.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(records)
 }
 
 /// Evaluates one C program, using `work` as its scratch directory.
@@ -411,6 +515,12 @@ fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) -> Command {
     }
     command.args(["--unshare-all", "--die-with-parent", "--new-session", "--"]);
     command.arg(inner.get_program()).args(inner.get_args());
+    for (key, value) in inner.get_envs() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
     command
 }
 
