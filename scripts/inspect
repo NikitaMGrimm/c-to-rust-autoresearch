@@ -15,8 +15,9 @@ shift
 # runs in the caller's directory so relative paths keep their meaning.
 caller=$PWD
 cd "$(dirname "$0")/.."
-tmp=$(realpath "$(mktemp -d)")
-trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+tmp=$(realpath -- "$tmp") || exit 1
 status=0
 # Distinguishes sanitizer reports from the program's own exit codes.
 sanitizer_exit=99
