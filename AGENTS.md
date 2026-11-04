@@ -12,8 +12,6 @@ implementation language.
 - Never read, copy or reference validation or held-out programs. They live
   in a separate private repository on purpose, and seeing them invalidates
   the results.
-- Never weaken a test or the evaluator so that a change passes. If a check
-  fails, the change is wrong, not the check.
 - Make the smallest change that does the job. A new dependency needs a
   reason.
 - Write code that reads like the code around it. Comments explain why, not
