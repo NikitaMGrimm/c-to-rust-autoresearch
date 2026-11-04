@@ -11,7 +11,9 @@ if [ $# -lt 1 ] || [ ! -f "$1" ]; then
 fi
 file=$(realpath "$1")
 shift
-# rust-toolchain.toml applies only inside the repository.
+# rust-toolchain.toml applies only inside the repository; the program itself
+# runs in the caller's directory so relative paths keep their meaning.
+caller=$PWD
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -25,7 +27,7 @@ export UBSAN_OPTIONS="exitcode=$sanitizer_exit:print_stacktrace=1:external_symbo
 section() { printf '\n== %s\n' "$1"; }
 check() { "$@" || { echo "(exit $?)"; status=1; }; }
 run() {
-  "$@"
+  (cd "$caller" && "$@")
   local code=$?
   echo "(exit $code)"
   if [ "$code" -eq "$sanitizer_exit" ]; then status=1; fi

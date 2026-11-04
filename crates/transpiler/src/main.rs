@@ -1,3 +1,4 @@
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -13,6 +14,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(output) = output
+        && same_file(Path::new(input), Path::new(output))
+    {
+        eprintln!("refusing to overwrite the input file {input}");
+        return ExitCode::FAILURE;
+    }
     let ast = match transpiler::clang_ast(Path::new(input)) {
         Ok(ast) => ast,
         Err(err) => {
@@ -31,4 +38,12 @@ fn main() -> ExitCode {
         None => print!("{rust}"),
     }
     ExitCode::SUCCESS
+}
+
+/// Compares device and inode, so symlinks and hard links to the input match.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
 }
