@@ -60,3 +60,17 @@ Standard error is not compared.
 
 [bench/](bench/README.md) holds the development set, converted from DARPA's
 TRACTOR test corpus. The validation and held-out sets are private.
+
+## Model usage
+
+```sh
+cargo run -p eval --bin usage -- ~/.claude/projects/-home-$USER-src-c-to-rust-autoresearch
+cargo run -p eval --bin usage -- --since 2026-11-04T20:00:00Z --until 2026-11-05T00:00:00Z DIR
+```
+
+`usage` sums the tokens that Claude Code records in its session transcripts,
+per model and per session, and counts requests by reasoning effort. T3 Code
+runs Claude through Claude Code, so its Claude chats are included; Codex runs
+are not. Claude Code names the transcript directory after the working
+directory, so a worktree has its own directory. `--since` and `--until` limit
+the sums to one loop iteration or another time window.
