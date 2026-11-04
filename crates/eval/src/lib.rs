@@ -3,6 +3,7 @@
 //! exits with the same code as the C original.
 
 use std::collections::BTreeMap;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -259,7 +260,12 @@ fn run(command: &mut Command) -> Run {
         Ok(output) => Run {
             stdout: output.stdout,
             stderr: output.stderr,
-            exit: output.status.code(),
+            // A process killed by a signal has no exit code; use the shell's
+            // 128 + signal, as `timeout` itself may be killed after --kill-after.
+            exit: output
+                .status
+                .code()
+                .or_else(|| output.status.signal().map(|signal| 128 + signal)),
         },
         Err(err) => Run {
             stdout: Vec::new(),
@@ -374,6 +380,12 @@ mod tests {
 
         assert_eq!(compiled.exit, Some(0), "{errors}");
         assert_eq!(warnings.get("unsafe_code"), Some(&1));
+    }
+
+    #[test]
+    fn program_ignoring_sigterm_times_out() {
+        let ran = run(limited("1").args(["sh", "-c", "trap '' TERM; exec sleep 30"]));
+        assert!(ran.timed_out(), "{:?}", ran.exit);
     }
 
     #[test]
