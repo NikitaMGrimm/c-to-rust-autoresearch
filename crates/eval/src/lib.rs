@@ -130,8 +130,8 @@ pub fn classify(c: &Run, rust: &Run, unsafe_uses: u32) -> (&'static str, String)
     if rust.timed_out() {
         return ("timeout", String::new());
     }
+    // A C program may exit with 101 too; only the panic message tells them apart.
     if rust.exit == Some(PANIC_EXIT)
-        && c.exit != Some(PANIC_EXIT)
         && String::from_utf8_lossy(&rust.stderr).contains("panicked at")
     {
         return ("panic", tail(&rust.stderr));
@@ -219,7 +219,10 @@ pub fn run_program(program: &Path, input: &Input) -> Run {
 
 /// Why a C run is not a valid reference, if it is not.
 pub fn c_problem(c: &Run) -> Option<String> {
-    if c.timed_out() {
+    if c.exit.is_none() {
+        // For example an argument containing a NUL byte; the Rust side would fail alike.
+        Some(format!("cannot run:\n{}", tail(&c.stderr)))
+    } else if c.timed_out() {
         Some("C program timed out".to_owned())
     } else if c.sanitizer_error() {
         Some(format!("sanitizer error:\n{}", tail(&c.stderr)))
@@ -297,15 +300,17 @@ fn stages(
         };
         return ("compile_fail", detail);
     }
-    let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
+    // Behaviour on every input comes first; `unsafe` is reported only after that.
     for (input, c) in inputs.iter().zip(&c_runs) {
         let rust = run_program(&rust_program, input);
-        let (stage, detail) = classify(c, &rust, unsafe_uses);
+        let (stage, detail) = classify(c, &rust, 0);
         if stage != "pass" {
             return (stage, on_input(input, detail));
         }
     }
-    ("pass", String::new())
+    let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
+    let last = c_runs.last().expect("inputs are never empty");
+    classify(last, last, unsafe_uses)
 }
 
 fn compile(rust_file: &Path, program: &Path) -> Run {

@@ -39,10 +39,8 @@ fn setup(test: &str, c: &str, inputs: Option<&str>, rust: &str) -> (PathBuf, Pat
     let transpiler = dir.join("transpiler");
     std::fs::write(
         &transpiler,
-        format!(
-            "#!/bin/sh\ncp '{}' \"$3\"\n",
-            dir.join("prepared.rs").display()
-        ),
+        // Relative to the script, so the path needs no quoting.
+        "#!/bin/sh\ncp \"$(dirname \"$0\")/prepared.rs\" \"$3\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&transpiler, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -96,4 +94,40 @@ fn malformed_inputs_file_is_reported() {
     );
     assert_eq!(record.stage, "c_invalid");
     assert!(record.detail.contains("non-empty"), "{}", record.detail);
+}
+
+#[test]
+fn input_that_cannot_be_passed_is_not_a_pass() {
+    let nul = r#"{"inputs": [{"name": "nul", "args": ["a\u0000b"]}]}"#;
+    let record = evaluate("inputs-nul", ECHO_C, Some(nul), ECHO_RS);
+    assert_eq!(record.stage, "c_invalid", "{}", record.detail);
+}
+
+#[test]
+fn unsafe_is_reported_after_a_mismatch_on_a_later_input() {
+    let unsafe_ignoring_stdin = ECHO_RS
+        .replace("std::io::stdin().read_line(&mut line).unwrap();", "")
+        .replace(
+            "fn main() {",
+            "fn main() {\n    let x = 1;\n    let _ = unsafe { *&raw const x };",
+        );
+    let record = evaluate(
+        "inputs-unsafe",
+        ECHO_C,
+        Some(INPUTS),
+        &unsafe_ignoring_stdin,
+    );
+    assert_eq!(record.stage, "mismatch", "{}", record.detail);
+}
+
+#[test]
+fn rust_panic_fails_even_when_c_exits_with_101() {
+    let c = "int main(void) { return 101; }\n";
+    let record = evaluate(
+        "inputs-101",
+        c,
+        None,
+        "fn main() {\n    panic!(\"boom\");\n}\n",
+    );
+    assert_eq!(record.stage, "panic", "{}", record.detail);
 }

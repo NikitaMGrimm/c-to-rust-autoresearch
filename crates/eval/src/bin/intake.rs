@@ -12,6 +12,18 @@ const CORPUS_REVISION: &str = "37960ee08a7c644ee66e29855eca33903f702e67";
 const USAGE: &str = "usage: intake CORPUS_DIR PRIVATE_DIR\n\
      CORPUS_DIR is fetched when missing; keep it outside this repository.\n\
      PRIVATE_DIR is a checkout of the private holdout repository with a `seed` file.";
+/// Inputs whose C behaviour is undefined although the sanitizers miss it:
+/// `atoi` of a value beyond `int` (C17 7.22.1.1), inside libc.
+const KNOWN_UNDEFINED: [(&str, &str); 2] = [
+    (
+        "Public-Tests/B01_synthetic/009_stack_buffer_overflow",
+        "test08_overflow_int1",
+    ),
+    (
+        "Public-Tests/B02_synthetic/strcmp",
+        "test_0092_permission_overflow",
+    ),
+];
 const SPLITS: [(&str, f64); 3] = [("dev", 0.5), ("validation", 0.25), ("held-out", 0.25)];
 const HEAP: [&str; 7] = [
     "malloc",
@@ -101,6 +113,10 @@ fn intake(corpus: &Path, private: &Path) -> Result<(), String> {
     }
     let _ = std::fs::remove_dir_all(&scratch);
 
+    // Clearing the sets after a failure everywhere, e.g. without clang-18, would empty them.
+    if programs.is_empty() {
+        return Err("no test case converted; check excluded reasons".to_owned());
+    }
     let names: BTreeSet<&str> = programs.iter().map(|p| p.file_name.as_str()).collect();
     if names.len() != programs.len() {
         return Err("two programs got the same file name".to_owned());
@@ -118,6 +134,18 @@ fn intake(corpus: &Path, private: &Path) -> Result<(), String> {
         ("validation", &private.join("validation")),
         ("held-out", &private.join("held-out")),
     ];
+    let mut resolved = BTreeSet::new();
+    for (_, dir) in outputs {
+        std::fs::create_dir_all(dir)
+            .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+        let dir = dir
+            .canonicalize()
+            .map_err(|err| format!("cannot resolve {}: {err}", dir.display()))?;
+        // A private set written into bench/dev would publish it.
+        if !resolved.insert(dir.clone()) {
+            return Err(format!("two sets resolve to {}", dir.display()));
+        }
+    }
     for (_, dir) in outputs {
         clear(dir)?;
     }
@@ -186,6 +214,9 @@ fn fetch(dir: &Path) -> Result<(), String> {
         git(&["init", "-q"])?;
         git(&["fetch", "-q", "--depth", "1", CORPUS_URL, CORPUS_REVISION])?;
         git(&["checkout", "-q", "FETCH_HEAD"])?;
+    }
+    if !git(&["status", "--porcelain"])?.is_empty() {
+        return Err(format!("{} has local changes", dir.display()));
     }
     let head = git(&["rev-parse", "HEAD"])?;
     if head != CORPUS_REVISION {
@@ -266,11 +297,12 @@ fn program(
         }
         let json: serde_json::Value = serde_json::from_str(&read(&vector)?)
             .map_err(|err| format!("vector_format: {}: {err}", vector.display()))?;
-        match input(
-            &json,
-            file_name(&vector).trim_end_matches(".json"),
-            &c_program,
-        ) {
+        let name = file_name(&vector).trim_end_matches(".json").to_owned();
+        if KNOWN_UNDEFINED.contains(&(case.source().as_str(), name.as_str())) {
+            *dropped.entry("known_undefined_behaviour").or_default() += 1;
+            continue;
+        }
+        match input(&json, &name, &c_program) {
             Ok(input) => inputs.push(input),
             Err(reason) => *dropped.entry(reason).or_default() += 1,
         }
@@ -341,14 +373,15 @@ fn input(
             .ok_or("vector_format")?,
         _ => return Err("vector_format"),
     };
+    let stdin = match &vector["stdin"] {
+        serde_json::Value::Null => Vec::new(),
+        serde_json::Value::String(stdin) => stdin.as_bytes().to_vec(),
+        _ => return Err("vector_format"),
+    };
     let input = eval::Input {
         name: name.to_owned(),
         args,
-        stdin: vector["stdin"]
-            .as_str()
-            .unwrap_or_default()
-            .as_bytes()
-            .to_vec(),
+        stdin,
     };
     let first = eval::run_program(c_program, &input);
     if first.timed_out() {
@@ -448,7 +481,8 @@ fn features(
         "ParmVarDecl" if in_main => {}
         "VarDecl" if in_main && matches!(ty, "char *" | "const char *") => {}
         "VarDecl" | "ParmVarDecl" | "FieldDecl" | "TypedefDecl" => {
-            if ty.contains("(*") {
+            // `int (*)(int)` but not a pointer to an array, `char (*)[8]`.
+            if ty.contains("(*") && ty.contains(")(") {
                 signals.insert("function_pointer");
             } else if ty.contains("void *") {
                 signals.insert("void_pointer");
@@ -675,6 +709,11 @@ mod tests {
         let union =
             "union u { int i; float f; };\nint main(void) { union u v; v.i = 1; return v.i; }\n";
         assert_eq!(group_of("union", union).0, 5);
+        let rows = "int sum(int rows[][2]) { return rows[0][1]; }\nint main(void) { int r[1][2] = {{1, 2}}; return sum(r); }\n";
+        // Clang types `rows` as `int (*)[2]`, a pointer to an array.
+        assert_eq!(group_of("rows", rows), (2, vec!["array"]));
+        let callback = "int apply(int (*f)(int), int x) { return f(x); }\nint twice(int x) { return 2 * x; }\nint main(void) { return apply(twice, 1); }\n";
+        assert_eq!(group_of("callback", callback).0, 5);
         let array = "int t[3] = {1, 2, 3};\nint main(void) { return t[1]; }\n";
         assert_eq!(group_of("array", array), (2, vec!["array"]));
     }

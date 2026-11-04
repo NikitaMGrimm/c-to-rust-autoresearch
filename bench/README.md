@@ -19,8 +19,8 @@ B01 and B02, from both the public tests and the formerly hidden tests:
   command-line arguments and standard input of one TRACTOR test vector.
 
 The evaluator runs the C and the Rust program on every input. An input is kept
-only if the sanitized C build gives TRACTOR's expected exit code and standard
-output, twice in a row.
+only if the sanitized C build gives TRACTOR's expected exit code, and its
+expected standard output where the vector gives one, twice in a row.
 
 | Not used | Count | Why |
 |---|---:|---|
@@ -29,6 +29,7 @@ output, twice in a row.
 | Extra compiler flags | 3 | `-fno-strict-aliasing` |
 | No usable input left | 3 | |
 | Inputs marked as undefined behaviour | 25 | Dropped; the rest of the program stays |
+| Inputs with undefined behaviour the sanitizers miss | 2 | `atoi` beyond `int`; listed in the intake tool |
 | Inputs with a pattern as expected output | 28 | Dropped; the expected output cannot be checked exactly |
 
 ## Difficulty groups
@@ -61,13 +62,13 @@ stored and never change; later runs only assign new families.
 |---|---:|---:|---:|
 | G1 | 7 | 3 | 3 |
 | G2 | 7 | 4 | 3 |
-| G3 | 7 | 4 | 4 |
+| G3 | 8 | 4 | 4 |
 | G4 | 1 | 1 | 0 |
-| G5 | 2 | 1 | 1 |
+| G5 | 1 | 1 | 1 |
 | Total | 24 | 13 | 11 |
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`8d02c3d62f9db5879f8406801a0fb82b89380a512096a616f2617f28b3fc5aea`.
+`82df214cc92bb7f9bc2c3c6f8f8b5c32e8bb0a44b07eec79fc8fa4e0e956b1d4`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.

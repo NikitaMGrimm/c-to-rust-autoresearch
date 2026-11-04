@@ -407,11 +407,6 @@
     },
     {
       "args": [],
-      "name": "test_0092_permission_overflow",
-      "stdin": "adduser alice pass 999999999999999\nexit\n"
-    },
-    {
-      "args": [],
       "name": "test_0096_compare_empty",
       "stdin": "compare \"\" \"\"\nexit\n"
     },
@@ -569,7 +564,6 @@
   "signals": [
     "address_of",
     "array",
-    "function_pointer",
     "pointer",
     "string",
     "string_function",

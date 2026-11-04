@@ -29,11 +29,6 @@
       "args": [],
       "name": "test06_overflow_buf1",
       "stdin": "200\n5"
-    },
-    {
-      "args": [],
-      "name": "test08_overflow_int1",
-      "stdin": "9000000000\n5"
     }
   ],
   "signals": [
