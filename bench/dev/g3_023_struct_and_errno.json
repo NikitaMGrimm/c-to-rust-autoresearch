@@ -1,0 +1,42 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01",
+      "stdin": ""
+    },
+    {
+      "args": [],
+      "name": "test03",
+      "stdin": "0"
+    },
+    {
+      "args": [],
+      "name": "test04",
+      "stdin": "-100"
+    },
+    {
+      "args": [],
+      "name": "test05",
+      "stdin": "+100"
+    },
+    {
+      "args": [],
+      "name": "test06",
+      "stdin": "20000000000000000000"
+    },
+    {
+      "args": [],
+      "name": "test07",
+      "stdin": "  12 3"
+    }
+  ],
+  "signals": [
+    "address_of",
+    "array",
+    "pointer",
+    "string",
+    "struct_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/023_struct_and_errno"
+}

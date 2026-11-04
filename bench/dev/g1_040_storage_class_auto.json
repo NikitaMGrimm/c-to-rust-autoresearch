@@ -1,0 +1,16 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01",
+      "stdin": "123"
+    },
+    {
+      "args": [],
+      "name": "test02",
+      "stdin": "-123"
+    }
+  ],
+  "signals": [],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/040_storage_class_auto"
+}

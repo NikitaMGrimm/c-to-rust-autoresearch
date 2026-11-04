@@ -12,6 +12,9 @@ implementation language.
 - Never read, copy or reference validation or held-out programs. They live
   in a separate private repository on purpose, and seeing them invalidates
   the results.
+  The TRACTOR corpus that `intake` fetches contains them as well; open only
+  programs in `bench/dev`, and keep the intake tool's output to names and
+  counts.
 - Make the smallest change that does the job. A new dependency needs a
   reason.
 - Write code that reads like the code around it. Comments explain why, not

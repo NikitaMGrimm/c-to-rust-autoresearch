@@ -1,0 +1,15 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01",
+      "stdin": "3\n5\n1\n-42"
+    }
+  ],
+  "signals": [
+    "address_of",
+    "pointer",
+    "struct_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/033_bitfield"
+}

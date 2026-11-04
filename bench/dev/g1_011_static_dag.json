@@ -1,0 +1,30 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "1",
+        "3"
+      ],
+      "name": "test1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "-2",
+        "4"
+      ],
+      "name": "test2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "0",
+        "3"
+      ],
+      "name": "test3",
+      "stdin": ""
+    }
+  ],
+  "signals": [],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Hidden-Tests/B01_synthetic/011_static_dag"
+}

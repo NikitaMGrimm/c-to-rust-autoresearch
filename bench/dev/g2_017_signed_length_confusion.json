@@ -1,0 +1,40 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test02",
+      "stdin": "0"
+    },
+    {
+      "args": [],
+      "name": "test03",
+      "stdin": "80"
+    },
+    {
+      "args": [],
+      "name": "test04",
+      "stdin": "98"
+    },
+    {
+      "args": [],
+      "name": "test05",
+      "stdin": "99"
+    },
+    {
+      "args": [],
+      "name": "test06",
+      "stdin": "100"
+    },
+    {
+      "args": [],
+      "name": "test07",
+      "stdin": "1234"
+    }
+  ],
+  "signals": [
+    "array",
+    "string",
+    "string_function"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/017_signed_length_confusion"
+}

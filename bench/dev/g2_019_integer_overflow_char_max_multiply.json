@@ -1,0 +1,13 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "good",
+      "stdin": "1"
+    }
+  ],
+  "signals": [
+    "string"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/019_integer_overflow_char_max_multiply"
+}

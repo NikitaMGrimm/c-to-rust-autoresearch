@@ -1,0 +1,158 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01",
+      "stdin": "0\n0"
+    },
+    {
+      "args": [],
+      "name": "test02",
+      "stdin": "0\n1"
+    },
+    {
+      "args": [],
+      "name": "test03",
+      "stdin": "0\n2"
+    },
+    {
+      "args": [],
+      "name": "test04",
+      "stdin": "0\n3"
+    },
+    {
+      "args": [],
+      "name": "test05",
+      "stdin": "0\n4"
+    },
+    {
+      "args": [],
+      "name": "test06",
+      "stdin": "0\n5"
+    },
+    {
+      "args": [],
+      "name": "test07",
+      "stdin": "1\n0"
+    },
+    {
+      "args": [],
+      "name": "test08",
+      "stdin": "1\n1"
+    },
+    {
+      "args": [],
+      "name": "test09",
+      "stdin": "1\n2"
+    },
+    {
+      "args": [],
+      "name": "test10",
+      "stdin": "1\n3"
+    },
+    {
+      "args": [],
+      "name": "test11",
+      "stdin": "1\n4"
+    },
+    {
+      "args": [],
+      "name": "test12",
+      "stdin": "1\n5"
+    },
+    {
+      "args": [],
+      "name": "test13",
+      "stdin": "2\n0"
+    },
+    {
+      "args": [],
+      "name": "test14",
+      "stdin": "2\n1"
+    },
+    {
+      "args": [],
+      "name": "test15",
+      "stdin": "2\n2"
+    },
+    {
+      "args": [],
+      "name": "test16",
+      "stdin": "2\n3"
+    },
+    {
+      "args": [],
+      "name": "test17",
+      "stdin": "2\n4"
+    },
+    {
+      "args": [],
+      "name": "test18",
+      "stdin": "2\n5"
+    },
+    {
+      "args": [],
+      "name": "test19",
+      "stdin": "3\n0"
+    },
+    {
+      "args": [],
+      "name": "test20",
+      "stdin": "3\n1"
+    },
+    {
+      "args": [],
+      "name": "test21",
+      "stdin": "3\n2"
+    },
+    {
+      "args": [],
+      "name": "test22",
+      "stdin": "3\n3"
+    },
+    {
+      "args": [],
+      "name": "test23",
+      "stdin": "3\n4"
+    },
+    {
+      "args": [],
+      "name": "test24",
+      "stdin": "3\n5"
+    },
+    {
+      "args": [],
+      "name": "test25",
+      "stdin": "4\n0"
+    },
+    {
+      "args": [],
+      "name": "test26",
+      "stdin": "4\n1"
+    },
+    {
+      "args": [],
+      "name": "test27",
+      "stdin": "4\n2"
+    },
+    {
+      "args": [],
+      "name": "test28",
+      "stdin": "4\n3"
+    },
+    {
+      "args": [],
+      "name": "test29",
+      "stdin": "4\n4"
+    },
+    {
+      "args": [],
+      "name": "test30",
+      "stdin": "4\n5"
+    }
+  ],
+  "signals": [
+    "goto"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/021_complex_goto"
+}

@@ -1,0 +1,21 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "empty",
+      "stdin": ""
+    },
+    {
+      "args": [],
+      "name": "long",
+      "stdin": "axyz"
+    },
+    {
+      "args": [],
+      "name": "short",
+      "stdin": "a"
+    }
+  ],
+  "signals": [],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/010_integer_overflow"
+}

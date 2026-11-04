@@ -1,0 +1,29 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01",
+      "stdin": ""
+    },
+    {
+      "args": [],
+      "name": "test02",
+      "stdin": "1 2 3"
+    },
+    {
+      "args": [],
+      "name": "test03",
+      "stdin": "1\n2\n3"
+    },
+    {
+      "args": [],
+      "name": "test04",
+      "stdin": "42\n123\n-3"
+    }
+  ],
+  "signals": [
+    "array",
+    "pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/031_disjoint_arrays"
+}

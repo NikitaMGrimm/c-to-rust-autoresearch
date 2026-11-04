@@ -1,0 +1,20 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01",
+      "stdin": "asdfAXXAasdxf"
+    },
+    {
+      "args": [],
+      "name": "test02",
+      "stdin": "asdfAXXAasdxf\nanother line with an x"
+    }
+  ],
+  "signals": [
+    "array",
+    "string",
+    "string_function"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/028_strchr"
+}

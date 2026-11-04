@@ -1,0 +1,76 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "2466258336"
+      ],
+      "name": "test1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1297763320"
+      ],
+      "name": "test10",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "3003680906"
+      ],
+      "name": "test2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1993862192"
+      ],
+      "name": "test3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2097197891"
+      ],
+      "name": "test4",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1044156074"
+      ],
+      "name": "test5",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1328562806"
+      ],
+      "name": "test6",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1082320843"
+      ],
+      "name": "test7",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "411537268"
+      ],
+      "name": "test8",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2983616656"
+      ],
+      "name": "test9",
+      "stdin": ""
+    }
+  ],
+  "signals": [],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Hidden-Tests/B01_synthetic/016_switch_arith"
+}

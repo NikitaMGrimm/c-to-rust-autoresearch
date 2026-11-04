@@ -1,0 +1,27 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "1"
+      ],
+      "name": "test1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "4"
+      ],
+      "name": "test2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "-1"
+      ],
+      "name": "test3",
+      "stdin": ""
+    }
+  ],
+  "signals": [],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/005_static_loop"
+}

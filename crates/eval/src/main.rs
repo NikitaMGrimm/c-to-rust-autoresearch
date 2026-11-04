@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const USAGE: &str = "usage: eval [BENCH_DIR] [--only TEXT] [--json FILE] [--jobs N] [--quiet]\n\
-     BENCH_DIR defaults to local/bench/dev; program names start with their group, e.g. g1_gcd.c";
+     BENCH_DIR defaults to bench/dev; program names start with their group, e.g. g1_gcd.c";
 
 struct Args {
     bench: PathBuf,
@@ -18,7 +18,7 @@ struct Args {
 
 fn parse_args() -> Option<Args> {
     let mut args = Args {
-        bench: PathBuf::from("local/bench/dev"),
+        bench: PathBuf::from("bench/dev"),
         only: None,
         json: None,
         // Shared machines: two parallel programs by default.
