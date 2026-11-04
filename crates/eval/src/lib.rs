@@ -175,7 +175,18 @@ fn stages(
     }
 
     let rust_program = work.join("rust_program");
-    let compiled = run(Command::new("clippy-driver")
+    let compiled = compile(&rust_file, &rust_program);
+    let errors = diagnostics(&compiled.stderr, warnings);
+    if compiled.exit != Some(0) {
+        return ("compile_fail", errors);
+    }
+    let rust = run(Command::new("timeout").arg(RUN_TIMEOUT).arg(&rust_program));
+    let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
+    classify(&c, &rust, unsafe_uses)
+}
+
+fn compile(rust_file: &Path, program: &Path) -> Run {
+    run(Command::new("clippy-driver")
         .args([
             "--edition",
             "2024",
@@ -184,17 +195,11 @@ fn stages(
             "-C",
             "debug-assertions=on",
         ])
-        .args(["-W", "unsafe-code", "--error-format=json", "-o"])
-        .arg(&rust_program)
-        .arg(&rust_file)
-        .current_dir(REPO));
-    let errors = diagnostics(&compiled.stderr, warnings);
-    if compiled.exit != Some(0) {
-        return ("compile_fail", errors);
-    }
-    let rust = run(Command::new("timeout").arg(RUN_TIMEOUT).arg(&rust_program));
-    let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
-    classify(&c, &rust, unsafe_uses)
+        // force-warn: an `allow(unsafe_code)` in the translation cannot hide it.
+        .args(["--force-warn", "unsafe-code", "--error-format=json", "-o"])
+        .arg(program)
+        .arg(rust_file)
+        .current_dir(REPO))
 }
 
 /// Counts warnings by lint name and returns the rendered errors.
@@ -248,14 +253,20 @@ fn mismatch(c: &Run, rust: &Run) -> String {
         detail.push_str("output identical");
         return detail;
     }
-    let first_difference = expected.lines().zip(got.lines()).position(|(a, b)| a != b);
-    let line =
-        first_difference.unwrap_or_else(|| expected.lines().count().min(got.lines().count()));
+    // Lines keep their terminators so a missing final newline shows up.
+    let lines = |text: &str| {
+        text.split_inclusive('\n')
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let (expected, got) = (lines(&expected), lines(&got));
+    let first_difference = expected.iter().zip(&got).position(|(a, b)| a != b);
+    let line = first_difference.unwrap_or_else(|| expected.len().min(got.len()));
     detail.push_str(&format!(
         "first differing line {}:\n  C:    {:?}\n  Rust: {:?}",
         line + 1,
-        expected.lines().nth(line).unwrap_or("<end of output>"),
-        got.lines().nth(line).unwrap_or("<end of output>"),
+        expected.get(line).map_or("<end of output>", String::as_str),
+        got.get(line).map_or("<end of output>", String::as_str),
     ));
     detail
 }
@@ -313,6 +324,32 @@ mod tests {
             classify(&ran("", 0), &ran("", TIMEOUT_EXIT), 0).0,
             "timeout"
         );
+    }
+
+    #[test]
+    fn missing_final_newline_is_shown() {
+        let (_, detail) = classify(&ran("hi\n", 0), &ran("hi", 0), 0);
+        assert!(detail.contains(r#""hi\n""#), "{detail}");
+    }
+
+    #[test]
+    fn unsafe_code_is_counted_despite_allow() {
+        let dir = std::env::temp_dir().join(format!("eval-unsafe-allow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("translation.rs");
+        std::fs::write(
+            &source,
+            "#![allow(unsafe_code)]\nfn main() {\n    let x = 1;\n    let p = &raw const x;\n    println!(\"{}\", unsafe { *p });\n}\n",
+        )
+        .unwrap();
+
+        let compiled = compile(&source, &dir.join("program"));
+        let mut warnings = BTreeMap::new();
+        let errors = diagnostics(&compiled.stderr, &mut warnings);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(compiled.exit, Some(0), "{errors}");
+        assert_eq!(warnings.get("unsafe_code"), Some(&1));
     }
 
     #[test]

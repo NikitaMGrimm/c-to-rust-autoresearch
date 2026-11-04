@@ -38,10 +38,10 @@ fn evaluates_a_benchmark_directory() {
     let results: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
     assert_eq!(results["total"], 2);
-    assert_eq!(results["passed"], 0);
-    // The skeleton transpiler emits an empty file, which has no main function.
+    // The hello stage depends on the transpiler's current rules; only the C side is fixed.
     assert_eq!(results["results"][0]["name"], "g1_hello");
-    assert_eq!(results["results"][0]["stage"], "compile_fail");
+    assert_ne!(results["results"][0]["stage"], "c_invalid");
+    assert_eq!(results["results"][1]["name"], "g1_overflow");
     assert_eq!(results["results"][1]["stage"], "c_invalid");
     std::fs::remove_dir_all(&dir).unwrap();
 }
