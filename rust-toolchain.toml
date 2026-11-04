@@ -1,0 +1,6 @@
+# Clippy and rustc warnings are measured results, so every run uses the same
+# toolchain.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -20,7 +20,9 @@ implementation language.
   Avoid unrelated formatting changes. Use one branch per task.
 - Before committing Rust changes, run `cargo fmt`,
   `cargo clippy --all-targets -- -D warnings` and `cargo test`. If you could
-  not run a check, say so.
+  not run a check, say so. Use `scripts/inspect` for a C or Rust file's
+  contents, warnings and run result.
+- Keep unpublished benchmarks and outputs in the ignored `local/` directory.
 - When AI helped with a pull request, end its description with a short note
   naming the actual models, harnesses and roles.
 - Do not change visibility, collaborators or licensing without the owner's
