@@ -1,0 +1,12 @@
+[package]
+name = "eval"
+version = "0.1.0"
+description = "Differential evaluator for the C-to-Rust transpiler"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"
