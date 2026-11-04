@@ -284,6 +284,95 @@ pub fn build_c(c_file: &Path, program: &Path, c_flags: &[String]) -> Run {
     )
 }
 
+/// Builds of a C program that must agree before its runs serve as reference.
+/// Optimised builds without sanitizers often expose undefined behaviour that
+/// the sanitizers miss, by printing something else.
+pub struct References {
+    sanitized: PathBuf,
+    optimised: Vec<PathBuf>,
+}
+
+impl References {
+    /// Builds `c_file` sanitized, and with `clang-18 -O2` and `gcc -O2`, in
+    /// subdirectories of `work`.
+    pub fn build(c_file: &Path, c_flags: &[String], work: &Path) -> Result<Self, String> {
+        let mut programs = Vec::new();
+        for (name, compiler) in [
+            ("sanitized", None),
+            ("clang_O2", Some("clang-18")),
+            ("gcc_O2", Some("gcc")),
+        ] {
+            let dir = work.join(name);
+            std::fs::create_dir_all(&dir)
+                .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+            let program = dir.join("program");
+            let built = match compiler {
+                None => build_c(c_file, &program, c_flags),
+                Some(compiler) => run(
+                    limited(COMPILE_TIMEOUT, false)
+                        .arg(compiler)
+                        .args(["-O2", "-w"])
+                        .args(c_flags)
+                        .arg("-o")
+                        .arg(&program)
+                        .arg(c_file)
+                        .arg("-lm"),
+                    &[],
+                ),
+            };
+            if built.exit != Some(0) {
+                return Err(format!("c_build: {name}"));
+            }
+            programs.push(program);
+        }
+        let sanitized = programs.remove(0);
+        Ok(Self {
+            sanitized,
+            optimised: programs,
+        })
+    }
+
+    /// The sanitized run of `input`, if it is valid, the same twice, and the
+    /// same as the optimised builds' runs; otherwise why not.
+    pub fn check(&self, input: &Input) -> Result<Run, &'static str> {
+        let first = run_program(&self.sanitized, input);
+        if first.timed_out() {
+            return Err("c_timeout");
+        }
+        if first.sanitizer_error() {
+            return Err("c_sanitizer_error");
+        }
+        if c_problem(&first).is_some() {
+            return Err("c_unusable");
+        }
+        if run_program(&self.sanitized, input) != first {
+            return Err("c_nondeterministic");
+        }
+        for program in &self.optimised {
+            let other = run_program(program, input);
+            if (&other.stdout, other.exit) != (&first.stdout, first.exit) {
+                return Err("c_builds_disagree");
+            }
+        }
+        Ok(first)
+    }
+}
+
+/// SplitMix64 finaliser: spreads a seed into an evenly distributed value.
+pub fn mix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+/// FNV-1a hash, to derive seeds from names.
+pub fn fnv(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
 /// Runs the C program `program` on `input` within the run time limit.
 pub fn run_program(program: &Path, input: &Input) -> Run {
     run_in_place(program, input, false)
