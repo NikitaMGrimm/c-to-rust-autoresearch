@@ -1,0 +1,20 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test1",
+      "stdin": "5"
+    },
+    {
+      "args": [],
+      "name": "test2",
+      "stdin": "8"
+    }
+  ],
+  "signals": [
+    "address_of",
+    "pointer",
+    "struct_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/024_struct_and_static"
+}

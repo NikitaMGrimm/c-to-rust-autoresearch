@@ -1,0 +1,103 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "2",
+        "3"
+      ],
+      "name": "test1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2",
+        "3",
+        "extra"
+      ],
+      "name": "test10",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "-2",
+        "0.5"
+      ],
+      "name": "test11",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "0",
+        "-1"
+      ],
+      "name": "test12",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "5",
+        "0"
+      ],
+      "name": "test2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "9",
+        "0.5"
+      ],
+      "name": "test3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2.5",
+        "4"
+      ],
+      "name": "test4",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "10",
+        "-2"
+      ],
+      "name": "test5",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "abc",
+        "2"
+      ],
+      "name": "test6",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1e500",
+        "2"
+      ],
+      "name": "test7",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2",
+        "xyz"
+      ],
+      "name": "test8",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2",
+        "1e500"
+      ],
+      "name": "test9",
+      "stdin": ""
+    }
+  ],
+  "signals": [],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/007_errno_pow"
+}

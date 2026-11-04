@@ -1,0 +1,44 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test01_ok1",
+      "stdin": "2\n5"
+    },
+    {
+      "args": [],
+      "name": "test02_fgets_fail1",
+      "stdin": "2"
+    },
+    {
+      "args": [],
+      "name": "test03_fgets_fail2",
+      "stdin": ""
+    },
+    {
+      "args": [],
+      "name": "test04_neg1",
+      "stdin": "-2\n5"
+    },
+    {
+      "args": [],
+      "name": "test05_neg2",
+      "stdin": "-2\n-5"
+    },
+    {
+      "args": [],
+      "name": "test06_overflow_buf1",
+      "stdin": "200\n5"
+    },
+    {
+      "args": [],
+      "name": "test08_overflow_int1",
+      "stdin": "9000000000\n5"
+    }
+  ],
+  "signals": [
+    "array",
+    "string"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_synthetic/009_stack_buffer_overflow"
+}

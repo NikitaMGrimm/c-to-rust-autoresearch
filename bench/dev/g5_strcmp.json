@@ -1,0 +1,579 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "test_0001_help",
+      "stdin": "help\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0002_status",
+      "stdin": "status\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0004_unknown_command",
+      "stdin": "foobar\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0006_adduser_basic",
+      "stdin": "adduser alice password123\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0007_adduser_with_level",
+      "stdin": "adduser admin secretpass 10\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0008_adduser_missing_args",
+      "stdin": "adduser\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0009_adduser_one_arg",
+      "stdin": "adduser alice\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0010_adduser_duplicate",
+      "stdin": "adduser bob pass1\nadduser bob pass2\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0011_login_basic",
+      "stdin": "adduser alice pass123\nlogin alice pass123\nwhoami\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0012_login_wrong_password",
+      "stdin": "adduser alice pass123\nlogin alice wrongpass\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0013_login_nonexistent",
+      "stdin": "login nobody nopass\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0014_login_missing_args",
+      "stdin": "login\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0015_logout_basic",
+      "stdin": "adduser alice pass\nlogin alice pass\nlogout\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0016_logout_not_logged_in",
+      "stdin": "logout\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0017_double_login",
+      "stdin": "adduser alice pass\nlogin alice pass\nadduser bob pass2\nlogin bob pass2\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0018_whoami_not_logged_in",
+      "stdin": "whoami\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0019_listusers_empty",
+      "stdin": "listusers\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0020_listusers_multiple",
+      "stdin": "adduser alice pass1 5\nadduser bob pass2 3\nlistusers\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0021_createfile_not_logged_in",
+      "stdin": "createfile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0022_createfile_basic",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0023_createfile_with_content",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt HelloWorld\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0024_createfile_duplicate",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt\ncreatefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0025_createfile_missing_args",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0026_readfile_basic",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt content\nreadfile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0027_readfile_nonexistent",
+      "stdin": "readfile nofile.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0028_readfile_missing_args",
+      "stdin": "readfile\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0029_writefile_basic",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt old\nwritefile test.txt new\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0030_writefile_not_owner",
+      "stdin": "adduser alice pass1 1\nadduser bob pass2 1\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin bob pass2\nwritefile test.txt hack\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0031_writefile_high_permission",
+      "stdin": "adduser alice pass1 1\nadduser admin pass2 10\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin admin pass2\nwritefile test.txt modified\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0032_writefile_missing_args",
+      "stdin": "adduser alice pass\nlogin alice pass\nwritefile\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0033_writefile_not_logged_in",
+      "stdin": "writefile test.txt content\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0034_deletefile_basic",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt\ndeletefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0035_deletefile_not_owner",
+      "stdin": "adduser alice pass1 1\nadduser bob pass2 1\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin bob pass2\ndeletefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0036_deletefile_admin",
+      "stdin": "adduser alice pass1 1\nadduser admin pass2 10\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin admin pass2\ndeletefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0037_listfiles_empty",
+      "stdin": "listfiles\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0038_listfiles_multiple",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile file1.txt\ncreatefile file2.txt\ncreatefile file3.txt\nlistfiles\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0039_file_aliases",
+      "stdin": "adduser alice pass\nlogin alice pass\ntouch test1.txt\ncat test1.txt\nrm test1.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0040_set_variable",
+      "stdin": "set myvar myvalue\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0041_set_update",
+      "stdin": "set myvar value1\nset myvar value2\nget myvar\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0042_set_missing_args",
+      "stdin": "set\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0043_set_one_arg",
+      "stdin": "set myvar\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0044_get_variable",
+      "stdin": "set x 100\nget x\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0045_get_nonexistent",
+      "stdin": "get novar\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0046_get_missing_args",
+      "stdin": "get\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0047_unset_variable",
+      "stdin": "set x 100\nunset x\nget x\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0048_unset_nonexistent",
+      "stdin": "unset novar\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0049_listvars_empty",
+      "stdin": "listvars\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0050_listvars_multiple",
+      "stdin": "set var1 val1\nset var2 val2\nset var3 val3\nlistvars\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0051_vars_alias",
+      "stdin": "set x 1\nvars\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0052_compare_equal",
+      "stdin": "compare hello hello\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0055_compare_missing_args",
+      "stdin": "compare\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0056_compare_one_arg",
+      "stdin": "compare hello\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0057_compareN_basic",
+      "stdin": "compareN hello help 3\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0058_compareN_zero",
+      "stdin": "compareN abc xyz 0\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0060_compareN_missing_args",
+      "stdin": "compareN\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0061_startswith_true",
+      "stdin": "startswith hello hel\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0062_startswith_false",
+      "stdin": "startswith hello bye\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0063_startswith_empty",
+      "stdin": "startswith hello \"\"\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0064_startswith_missing_args",
+      "stdin": "startswith\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0065_match_exact",
+      "stdin": "match hello hello world\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0066_match_contains",
+      "stdin": "match ell hello yellow\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0067_match_none",
+      "stdin": "match xyz abc def\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0068_match_missing_args",
+      "stdin": "match\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0069_string_aliases",
+      "stdin": "cmp abc abc\ncmpn hello help 3\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0070_debug_on",
+      "stdin": "debug on\nhelp\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0071_debug_off",
+      "stdin": "debug on\ndebug off\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0072_debug_status",
+      "stdin": "debug\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0073_debug_invalid",
+      "stdin": "debug invalid\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0074_verbose_on",
+      "stdin": "verbose on\nhelp\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0075_verbose_off",
+      "stdin": "verbose on\nverbose off\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0076_verbose_status",
+      "stdin": "verbose\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0077_both_modes",
+      "stdin": "debug on\nverbose on\nstatus\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0081_createfile_name_overflow",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0082_createfile_content_overflow",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0083_writefile_content_overflow",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt\nwritefile test.txt CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0085_set_value_overflow",
+      "stdin": "set myvar XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0086_set_update_overflow",
+      "stdin": "set myvar short\nset myvar XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0087_command_overflow",
+      "stdin": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0089_input_overflow",
+      "stdin": "set XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0090_permission_large",
+      "stdin": "adduser alice pass 2147483647\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0091_permission_negative",
+      "stdin": "adduser alice pass -1\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0092_permission_overflow",
+      "stdin": "adduser alice pass 999999999999999\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0096_compare_empty",
+      "stdin": "compare \"\" \"\"\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0097_set_empty_value",
+      "stdin": "set var \"\"\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0098_special_chars_username",
+      "stdin": "adduser user@123 pass\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0099_spaces_in_args",
+      "stdin": "adduser \"user name\" \"pass word\"\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0100_null_in_string",
+      "stdin": "set var value\u0000extra\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0101_multiple_spaces",
+      "stdin": "adduser     alice     pass\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0102_whitespace_padding",
+      "stdin": "  adduser alice pass  \nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0103_max_users",
+      "stdin": "adduser user0 pass0\nadduser user1 pass1\nadduser user2 pass2\nadduser user3 pass3\nadduser user4 pass4\nadduser user5 pass5\nadduser user6 pass6\nadduser user7 pass7\nadduser user8 pass8\nadduser user9 pass9\nadduser user10 pass10\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0104_max_files",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile file0.txt\ncreatefile file1.txt\ncreatefile file2.txt\ncreatefile file3.txt\ncreatefile file4.txt\ncreatefile file5.txt\ncreatefile file6.txt\ncreatefile file7.txt\ncreatefile file8.txt\ncreatefile file9.txt\ncreatefile file10.txt\ncreatefile file11.txt\ncreatefile file12.txt\ncreatefile file13.txt\ncreatefile file14.txt\ncreatefile file15.txt\ncreatefile file16.txt\ncreatefile file17.txt\ncreatefile file18.txt\ncreatefile file19.txt\ncreatefile file20.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0105_max_variables",
+      "stdin": "set var0 value0\nset var1 value1\nset var2 value2\nset var3 value3\nset var4 value4\nset var5 value5\nset var6 value6\nset var7 value7\nset var8 value8\nset var9 value9\nset var10 value10\nset var11 value11\nset var12 value12\nset var13 value13\nset var14 value14\nset var15 value15\nset var16 value16\nset var17 value17\nset var18 value18\nset var19 value19\nset var20 value20\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0106_max_args",
+      "stdin": "match pattern arg0 arg1 arg2 arg3 arg4 arg5 arg6 arg7 arg8 arg9 arg10 arg11 arg12 arg13 arg14\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0107_username_boundary",
+      "stdin": "adduser AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA pass\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0108_varname_boundary",
+      "stdin": "set VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV value\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0109_content_boundary",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0110_low_perm_write",
+      "stdin": "adduser alice pass1 1\nadduser bob pass2 1\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin bob pass2\nwritefile test.txt hack\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0111_perm5_write",
+      "stdin": "adduser alice pass1 1\nadduser mod pass2 5\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin mod pass2\nwritefile test.txt modified\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0112_perm9_delete",
+      "stdin": "adduser alice pass1 1\nadduser admin pass2 9\nlogin alice pass1\ncreatefile test.txt\nlogout\nlogin admin pass2\ndeletefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0113_no_login_createfile",
+      "stdin": "createfile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0114_no_login_writefile",
+      "stdin": "writefile test.txt content\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0115_no_login_deletefile",
+      "stdin": "deletefile test.txt\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0116_partial_add",
+      "stdin": "add\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0117_partial_log",
+      "stdin": "log\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0118_partial_list",
+      "stdin": "list\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0119_partial_create",
+      "stdin": "create\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0120_partial_read",
+      "stdin": "read\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0121_partial_write",
+      "stdin": "write\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0122_partial_delete",
+      "stdin": "delete\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0123_uppercase_command",
+      "stdin": "HELP\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0124_mixed_case",
+      "stdin": "HeLp\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0125_help_question",
+      "stdin": "?\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "test_0126_quit_command",
+      "stdin": "quit\nexit\n"
+    }
+  ],
+  "signals": [
+    "address_of",
+    "array",
+    "function_pointer",
+    "pointer",
+    "string",
+    "string_function",
+    "struct_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_synthetic/strcmp"
+}

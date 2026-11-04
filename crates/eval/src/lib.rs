@@ -1,11 +1,12 @@
 //! Differential evaluator. A benchmark passes when its translation compiles as
 //! safe Rust and, with overflow checks on, prints the same standard output and
-//! exits with the same code as the C original.
+//! exits with the same code as the C original for every input.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 /// Directory whose rust-toolchain.toml pins rustc and Clippy.
@@ -31,9 +32,72 @@ pub struct Run {
 }
 
 impl Run {
-    fn timed_out(&self) -> bool {
+    pub fn timed_out(&self) -> bool {
         self.exit.is_some_and(|code| TIMEOUT_EXITS.contains(&code))
     }
+
+    /// Whether AddressSanitizer or UndefinedBehaviorSanitizer reported an error.
+    pub fn sanitizer_error(&self) -> bool {
+        // A program may exit with SANITIZER_EXIT itself; a report also prints one of these.
+        let stderr = String::from_utf8_lossy(&self.stderr);
+        self.exit == Some(SANITIZER_EXIT)
+            && (stderr.contains("ERROR: AddressSanitizer") || stderr.contains("runtime error:"))
+    }
+}
+
+/// Command-line arguments and standard input for one run of a program.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Input {
+    pub name: String,
+    pub args: Vec<String>,
+    pub stdin: Vec<u8>,
+}
+
+/// Reads the inputs of `c_file` from the JSON file next to it, for example
+/// `g1_gcd.json` for `g1_gcd.c`. Without that file the program runs once
+/// without arguments or input.
+pub fn inputs(c_file: &Path) -> Result<Vec<Input>, String> {
+    let path = c_file.with_extension("json");
+    let text = match std::fs::read(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(vec![Input::default()]);
+        }
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    let invalid = |why: &str| format!("{}: {why}", path.display());
+    let json: serde_json::Value =
+        serde_json::from_slice(&text).map_err(|err| invalid(&err.to_string()))?;
+    let list = json["inputs"]
+        .as_array()
+        .filter(|list| !list.is_empty())
+        .ok_or_else(|| invalid("expected a non-empty \"inputs\" list"))?;
+    list.iter()
+        .map(|input| {
+            let name = input["name"]
+                .as_str()
+                .ok_or_else(|| invalid("every input needs a \"name\""))?;
+            let args = match &input["args"] {
+                serde_json::Value::Null => Vec::new(),
+                serde_json::Value::Array(args) => args
+                    .iter()
+                    .map(|arg| arg.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| invalid("\"args\" must be strings"))?,
+                _ => return Err(invalid("\"args\" must be a list")),
+            };
+            let stdin = match &input["stdin"] {
+                serde_json::Value::Null => Vec::new(),
+                serde_json::Value::String(stdin) => stdin.as_bytes().to_vec(),
+                _ => return Err(invalid("\"stdin\" must be a string")),
+            };
+            Ok(Input {
+                name: name.to_owned(),
+                args,
+                stdin,
+            })
+        })
+        .collect()
 }
 
 /// Result for one benchmark program.
@@ -127,51 +191,88 @@ pub fn evaluate(c_file: &Path, transpiler: &Path, work: &Path) -> Record {
     }
 }
 
+/// Builds `c_file` with AddressSanitizer and UndefinedBehaviorSanitizer.
+pub fn build_c(c_file: &Path, program: &Path) -> Run {
+    run(
+        limited(COMPILE_TIMEOUT)
+            .arg("clang-18")
+            .args([
+                "-g",
+                "-fsanitize=address,undefined",
+                "-fno-sanitize-recover=all",
+                "-o",
+            ])
+            .arg(program)
+            .arg(c_file)
+            .arg("-lm"),
+        &[],
+    )
+}
+
+/// Runs `program` on `input` within the run time limit.
+pub fn run_program(program: &Path, input: &Input) -> Run {
+    run(
+        limited(RUN_TIMEOUT).arg(program).args(&input.args),
+        &input.stdin,
+    )
+}
+
+/// Why a C run is not a valid reference, if it is not.
+pub fn c_problem(c: &Run) -> Option<String> {
+    if c.timed_out() {
+        Some("C program timed out".to_owned())
+    } else if c.sanitizer_error() {
+        Some(format!("sanitizer error:\n{}", tail(&c.stderr)))
+    } else {
+        None
+    }
+}
+
+/// Names the input in a failure detail when the program has named inputs.
+fn on_input(input: &Input, detail: String) -> String {
+    if input.name.is_empty() {
+        detail
+    } else {
+        format!("input {}: {detail}", input.name)
+    }
+}
+
 fn stages(
     c_file: &Path,
     transpiler: &Path,
     work: &Path,
     warnings: &mut BTreeMap<String, u32>,
 ) -> (&'static str, String) {
+    let inputs = match inputs(c_file) {
+        Ok(inputs) => inputs,
+        Err(err) => return ("c_invalid", err),
+    };
     let c_program = work.join("c_program");
-    let built = run(limited(COMPILE_TIMEOUT)
-        .arg("clang-18")
-        .args([
-            "-g",
-            "-fsanitize=address,undefined",
-            "-fno-sanitize-recover=all",
-            "-o",
-        ])
-        .arg(&c_program)
-        .arg(c_file)
-        .arg("-lm"));
+    let built = build_c(c_file, &c_program);
     if built.exit != Some(0) {
         return (
             "c_invalid",
             format!("C build failed:\n{}", tail(&built.stderr)),
         );
     }
-    let c = run(limited(RUN_TIMEOUT).arg(&c_program));
-    if c.timed_out() {
-        return ("c_invalid", "C program timed out".to_owned());
-    }
-    // A program may exit with SANITIZER_EXIT itself; a report also prints one of these.
-    let c_stderr = String::from_utf8_lossy(&c.stderr);
-    if c.exit == Some(SANITIZER_EXIT)
-        && (c_stderr.contains("ERROR: AddressSanitizer") || c_stderr.contains("runtime error:"))
-    {
-        return (
-            "c_invalid",
-            format!("sanitizer error:\n{}", tail(&c.stderr)),
-        );
+    let mut c_runs = Vec::new();
+    for input in &inputs {
+        let c = run_program(&c_program, input);
+        if let Some(problem) = c_problem(&c) {
+            return ("c_invalid", on_input(input, problem));
+        }
+        c_runs.push(c);
     }
 
     let rust_file = work.join("translation.rs");
-    let transpiled = run(limited(TRANSPILE_TIMEOUT)
-        .arg(transpiler)
-        .arg(c_file)
-        .arg("-o")
-        .arg(&rust_file));
+    let transpiled = run(
+        limited(TRANSPILE_TIMEOUT)
+            .arg(transpiler)
+            .arg(c_file)
+            .arg("-o")
+            .arg(&rust_file),
+        &[],
+    );
     if transpiled.exit != Some(0) || !rust_file.exists() {
         let reason = if transpiled.timed_out() {
             "timed out\n"
@@ -196,27 +297,36 @@ fn stages(
         };
         return ("compile_fail", detail);
     }
-    let rust = run(limited(RUN_TIMEOUT).arg(&rust_program));
     let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
-    classify(&c, &rust, unsafe_uses)
+    for (input, c) in inputs.iter().zip(&c_runs) {
+        let rust = run_program(&rust_program, input);
+        let (stage, detail) = classify(c, &rust, unsafe_uses);
+        if stage != "pass" {
+            return (stage, on_input(input, detail));
+        }
+    }
+    ("pass", String::new())
 }
 
 fn compile(rust_file: &Path, program: &Path) -> Run {
-    run(limited(COMPILE_TIMEOUT)
-        .arg("clippy-driver")
-        .args([
-            "--edition",
-            "2024",
-            "-C",
-            "overflow-checks=on",
-            "-C",
-            "debug-assertions=on",
-        ])
-        // force-warn: an `allow(unsafe_code)` in the translation cannot hide it.
-        .args(["--force-warn", "unsafe-code", "--error-format=json", "-o"])
-        .arg(program)
-        .arg(rust_file)
-        .current_dir(REPO))
+    run(
+        limited(COMPILE_TIMEOUT)
+            .arg("clippy-driver")
+            .args([
+                "--edition",
+                "2024",
+                "-C",
+                "overflow-checks=on",
+                "-C",
+                "debug-assertions=on",
+            ])
+            // force-warn: an `allow(unsafe_code)` in the translation cannot hide it.
+            .args(["--force-warn", "unsafe-code", "--error-format=json", "-o"])
+            .arg(program)
+            .arg(rust_file)
+            .current_dir(REPO),
+        &[],
+    )
 }
 
 /// Counts warnings by lint name and returns the rendered errors.
@@ -250,13 +360,26 @@ fn limited(seconds: &str) -> Command {
     command
 }
 
-fn run(command: &mut Command) -> Run {
+fn run(command: &mut Command, stdin: &[u8]) -> Run {
     let sanitizers = format!("exitcode={SANITIZER_EXIT}:detect_leaks=0");
-    match command
+    let child = command
         .env("ASAN_OPTIONS", &sanitizers)
         .env("UBSAN_OPTIONS", format!("exitcode={SANITIZER_EXIT}"))
-        .output()
-    {
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let output = child.and_then(|mut child| {
+        let mut pipe = child.stdin.take().expect("stdin is piped");
+        // Written from another thread: a program that prints before reading
+        // all of its input would otherwise block on a full output pipe.
+        std::thread::scope(|scope| {
+            // A program may exit without reading its input; that is not an error.
+            scope.spawn(move || pipe.write_all(stdin));
+            child.wait_with_output()
+        })
+    });
+    match output {
         Ok(output) => Run {
             stdout: output.stdout,
             stderr: output.stderr,
@@ -384,7 +507,10 @@ mod tests {
 
     #[test]
     fn program_ignoring_sigterm_times_out() {
-        let ran = run(limited("1").args(["sh", "-c", "trap '' TERM; exec sleep 30"]));
+        let ran = run(
+            limited("1").args(["sh", "-c", "trap '' TERM; exec sleep 30"]),
+            &[],
+        );
         assert!(ran.timed_out(), "{:?}", ran.exit);
     }
 
