@@ -70,11 +70,12 @@ own directories. Every program may write files of at most 64 MiB and print at
 most 8 MiB; the transpiler and the Rust program may use 4 GiB of address
 space, and the sanitized C program 4 GiB of memory.
 
-The transpiler and the Rust program run in a bubblewrap sandbox: no network,
-a read-only file system except their output directory, and an empty home
-directory apart from the transpiler and its input. The research agent writes
-both, and the evaluator runs them on the private programs, so nothing they see
-may leave the sandbox.
+The transpiler, the Rust compiler and the Rust program run in a bubblewrap
+sandbox: no network, a read-only file system except the translation's
+directory, and an empty home directory apart from the transpiler, its input
+and the Rust toolchain. The research agent writes the transpiler and so the
+translation, and the evaluator runs both on the private programs, so nothing
+they see may leave the sandbox.
 
 ## Benchmarks
 

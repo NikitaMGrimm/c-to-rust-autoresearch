@@ -203,6 +203,12 @@ fn only_known_c_flags_are_accepted() {
     assert!(other.detail.contains("c_flags"), "{}", other.detail);
 }
 
+/// Only a scratch directory under $HOME, the usual case, is hidden from agent code.
+fn scratch_is_hidden() -> bool {
+    std::env::var_os("HOME")
+        .is_some_and(|home| Path::new(env!("CARGO_TARGET_TMPDIR")).starts_with(home))
+}
+
 #[test]
 fn agent_code_cannot_read_home_keep_files_or_connect() {
     let rust = r#"fn main() {
@@ -216,9 +222,7 @@ fn agent_code_cannot_read_home_keep_files_or_connect() {
     println!("{read} {connected}");
 }
 "#;
-    // Only a scratch directory under $HOME, the usual case, is hidden.
-    let hidden = std::env::var_os("HOME")
-        .is_some_and(|home| Path::new(env!("CARGO_TARGET_TMPDIR")).starts_with(home));
+    let hidden = scratch_is_hidden();
     let c = format!(
         "#include <stdio.h>\nint main(void) {{ puts(\"{} false\"); return 0; }}\n",
         !hidden
@@ -240,4 +244,16 @@ fn agent_code_cannot_read_home_keep_files_or_connect() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(record.stage, "pass", "{}", record.detail);
     assert_eq!(escaped, [false, false]);
+}
+
+#[test]
+fn translations_cannot_include_hidden_files_when_compiled() {
+    let c = "#include <stdio.h>\nint main(void) { puts(\"0\"); return 0; }\n";
+    // The translation lies in work/rust; the C source two levels up.
+    let rust =
+        "fn main() {\n    println!(\"{}\", include_str!(\"../../g1_program.c\").len());\n}\n";
+    let record = evaluate("sandbox-include", c, None, rust);
+    if scratch_is_hidden() {
+        assert_eq!(record.stage, "compile_fail", "{}", record.detail);
+    }
 }

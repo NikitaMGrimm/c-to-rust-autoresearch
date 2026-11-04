@@ -17,6 +17,7 @@ const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const RUN_TIMEOUT: &str = "10";
 const TRANSPILE_TIMEOUT: &str = "30";
 const COMPILE_TIMEOUT: &str = "60";
+const BUILD_TIMEOUT: &str = "600";
 /// Exit codes of coreutils `timeout` when the limit is reached, and when the
 /// command ignored SIGTERM and had to be killed.
 const TIMEOUT_EXITS: [i32; 2] = [124, 137];
@@ -224,24 +225,30 @@ pub fn build_transpiler_sandboxed(workspace: &Path) -> Result<PathBuf, String> {
     if !fetched.success() {
         return Err("fetching the transpiler's dependencies failed".to_owned());
     }
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    let cargo_home = std::env::var_os("CARGO_HOME").map_or(home.join(".cargo"), PathBuf::from);
-    let rustup_home = std::env::var_os("RUSTUP_HOME").map_or(home.join(".rustup"), PathBuf::from);
-    // Not all of CARGO_HOME: it holds the crates.io token.
-    let readable: Vec<PathBuf> = ["bin", "registry", "git"]
-        .iter()
-        .map(|dir| cargo_home.join(dir))
-        .chain([rustup_home])
-        .filter(|path| path.exists())
-        .collect();
-    let readable: Vec<&Path> = readable.iter().map(PathBuf::as_path).collect();
-    let mut inner = Command::new("cargo");
+    let toolchain = toolchain();
+    let readable: Vec<&Path> = toolchain.iter().map(PathBuf::as_path).collect();
+    let mut inner = Command::new("timeout");
     inner
+        .args(["--kill-after=2", BUILD_TIMEOUT, "cargo"])
         .args(BUILD_ARGS)
         .args(["--offline", "--locked"])
         .env("CARGO_TARGET_DIR", workspace.join("target"))
         .current_dir(&workspace);
     cargo_executable(&mut sandboxed(&inner, &readable, &workspace))
+}
+
+/// What cargo and rustc need inside the sandbox. Not all of CARGO_HOME: it
+/// holds the crates.io token.
+fn toolchain() -> Vec<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let cargo_home = std::env::var_os("CARGO_HOME").map_or(home.join(".cargo"), PathBuf::from);
+    let rustup_home = std::env::var_os("RUSTUP_HOME").map_or(home.join(".rustup"), PathBuf::from);
+    ["bin", "registry", "git"]
+        .iter()
+        .map(|dir| cargo_home.join(dir))
+        .chain([rustup_home])
+        .filter(|path| path.exists())
+        .collect()
 }
 
 fn cargo_executable(command: &mut Command) -> Result<PathBuf, String> {
@@ -560,8 +567,6 @@ fn stages(
         Ok(spec) => spec,
         Err(err) => return ("c_invalid", err),
     };
-    // The same file name in both directories gives both the same argv[0].
-    let (c_program, rust_program) = (work.join("c/program"), work.join("rust/program"));
     for dir in [work.join("c"), work.join("rust")] {
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return (
@@ -570,6 +575,19 @@ fn stages(
             );
         }
     }
+    // Everything agent-written stays in `rust_dir`, the sandbox's only
+    // writable directory, which needs an absolute path.
+    let rust_dir = match work.join("rust").canonicalize() {
+        Ok(dir) => dir,
+        Err(err) => {
+            return (
+                "c_invalid",
+                format!("cannot open {}: {err}", work.display()),
+            );
+        }
+    };
+    // The same file name in both directories gives both the same argv[0].
+    let (c_program, rust_program) = (work.join("c/program"), rust_dir.join("program"));
     let built = build_c(c_file, &c_program, &c_flags);
     if built.exit != Some(0) {
         return (
@@ -586,7 +604,7 @@ fn stages(
         c_runs.push(c);
     }
 
-    let rust_file = work.join("translation.rs");
+    let rust_file = rust_dir.join("translation.rs");
     if let Err(detail) = translate(c_file, translator, &rust_file) {
         return ("transpile_fail", detail);
     }
@@ -723,25 +741,34 @@ pub fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> {
     Some(counter.0)
 }
 
+/// Compiles in the sandbox, since `include_str!` and the like read files.
 fn compile(rust_file: &Path, program: &Path) -> Run {
-    run(
-        limited(COMPILE_TIMEOUT, false)
-            .arg("clippy-driver")
-            .args([
-                "--edition",
-                "2024",
-                "-C",
-                "overflow-checks=on",
-                "-C",
-                "debug-assertions=on",
-            ])
-            // force-warn: an `allow(unsafe_code)` in the translation cannot hide it.
-            .args(["--force-warn", "unsafe-code", "--error-format=json", "-o"])
-            .arg(program)
-            .arg(rust_file)
-            .current_dir(REPO),
-        &[],
-    )
+    let repo = Path::new(REPO)
+        .canonicalize()
+        .unwrap_or_else(|_| REPO.into());
+    let mut readable = toolchain();
+    readable.push(repo.join("rust-toolchain.toml"));
+    let readable: Vec<&Path> = readable.iter().map(PathBuf::as_path).collect();
+    let mut command = limited(COMPILE_TIMEOUT, false);
+    command
+        .arg("clippy-driver")
+        .args([
+            "--edition",
+            "2024",
+            "-C",
+            "overflow-checks=on",
+            "-C",
+            "debug-assertions=on",
+        ])
+        // force-warn: an `allow(unsafe_code)` in the translation cannot hide it.
+        .args(["--force-warn", "unsafe-code", "--error-format=json", "-o"])
+        .arg(program)
+        .arg(rust_file)
+        // Clippy looks for its configuration there; it is hidden, and there is none.
+        .env_remove("CARGO_MANIFEST_DIR")
+        .current_dir(&repo);
+    let dir = program.parent().unwrap_or(Path::new("/"));
+    run(&mut sandboxed(&command, &readable, dir), &[])
 }
 
 /// Counts warnings by lint name and returns the rendered errors.
