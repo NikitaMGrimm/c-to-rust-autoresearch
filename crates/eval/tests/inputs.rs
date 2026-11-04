@@ -20,9 +20,10 @@ const ECHO_RS: &str = r#"fn main() {
 }
 "#;
 
+// The failing input comes first, so a failure must stop at it and name it.
 const INPUTS: &str = r#"{"inputs": [
-    {"name": "plain", "args": [], "stdin": ""},
-    {"name": "both", "args": ["7"], "stdin": "hello\n"}
+    {"name": "both", "args": ["7"], "stdin": "hello\n"},
+    {"name": "plain", "args": [], "stdin": ""}
 ]}"#;
 
 /// A scratch directory with `program.c`, its inputs and a stand-in transpiler
