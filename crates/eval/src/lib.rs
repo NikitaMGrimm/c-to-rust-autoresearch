@@ -11,8 +11,10 @@ use std::time::Instant;
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const RUN_TIMEOUT: &str = "10";
 const TRANSPILE_TIMEOUT: &str = "30";
-/// Exit code of coreutils `timeout` when the limit is reached.
-const TIMEOUT_EXIT: i32 = 124;
+const COMPILE_TIMEOUT: &str = "60";
+/// Exit codes of coreutils `timeout` when the limit is reached, and when the
+/// command ignored SIGTERM and had to be killed.
+const TIMEOUT_EXITS: [i32; 2] = [124, 137];
 /// Exit code of a Rust program that panicked.
 const PANIC_EXIT: i32 = 101;
 /// Set for sanitizer reports so they differ from the program's own exit codes.
@@ -29,7 +31,7 @@ pub struct Run {
 
 impl Run {
     fn timed_out(&self) -> bool {
-        self.exit == Some(TIMEOUT_EXIT)
+        self.exit.is_some_and(|code| TIMEOUT_EXITS.contains(&code))
     }
 }
 
@@ -63,7 +65,10 @@ pub fn classify(c: &Run, rust: &Run, unsafe_uses: u32) -> (&'static str, String)
     if rust.timed_out() {
         return ("timeout", String::new());
     }
-    if rust.exit == Some(PANIC_EXIT) && c.exit != Some(PANIC_EXIT) {
+    if rust.exit == Some(PANIC_EXIT)
+        && c.exit != Some(PANIC_EXIT)
+        && String::from_utf8_lossy(&rust.stderr).contains("panicked at")
+    {
         return ("panic", tail(&rust.stderr));
     }
     if rust.stdout != c.stdout || rust.exit != c.exit {
@@ -128,7 +133,8 @@ fn stages(
     warnings: &mut BTreeMap<String, u32>,
 ) -> (&'static str, String) {
     let c_program = work.join("c_program");
-    let built = run(Command::new("clang-18")
+    let built = run(limited(COMPILE_TIMEOUT)
+        .arg("clang-18")
         .args([
             "-g",
             "-fsanitize=address,undefined",
@@ -144,11 +150,15 @@ fn stages(
             format!("C build failed:\n{}", tail(&built.stderr)),
         );
     }
-    let c = run(Command::new("timeout").arg(RUN_TIMEOUT).arg(&c_program));
+    let c = run(limited(RUN_TIMEOUT).arg(&c_program));
     if c.timed_out() {
         return ("c_invalid", "C program timed out".to_owned());
     }
-    if c.exit == Some(SANITIZER_EXIT) {
+    // A program may exit with SANITIZER_EXIT itself; a report also prints one of these.
+    let c_stderr = String::from_utf8_lossy(&c.stderr);
+    if c.exit == Some(SANITIZER_EXIT)
+        && (c_stderr.contains("ERROR: AddressSanitizer") || c_stderr.contains("runtime error:"))
+    {
         return (
             "c_invalid",
             format!("sanitizer error:\n{}", tail(&c.stderr)),
@@ -156,8 +166,7 @@ fn stages(
     }
 
     let rust_file = work.join("translation.rs");
-    let transpiled = run(Command::new("timeout")
-        .arg(TRANSPILE_TIMEOUT)
+    let transpiled = run(limited(TRANSPILE_TIMEOUT)
         .arg(transpiler)
         .arg(c_file)
         .arg("-o")
@@ -178,15 +187,22 @@ fn stages(
     let compiled = compile(&rust_file, &rust_program);
     let errors = diagnostics(&compiled.stderr, warnings);
     if compiled.exit != Some(0) {
-        return ("compile_fail", errors);
+        // Without JSON errors (spawn failure, timeout), show the raw output.
+        let detail = if errors.is_empty() {
+            tail(&compiled.stderr)
+        } else {
+            errors
+        };
+        return ("compile_fail", detail);
     }
-    let rust = run(Command::new("timeout").arg(RUN_TIMEOUT).arg(&rust_program));
+    let rust = run(limited(RUN_TIMEOUT).arg(&rust_program));
     let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
     classify(&c, &rust, unsafe_uses)
 }
 
 fn compile(rust_file: &Path, program: &Path) -> Run {
-    run(Command::new("clippy-driver")
+    run(limited(COMPILE_TIMEOUT)
+        .arg("clippy-driver")
         .args([
             "--edition",
             "2024",
@@ -223,6 +239,14 @@ fn diagnostics(stderr: &[u8], warnings: &mut BTreeMap<String, u32>) -> String {
     }
     errors.truncate(errors.floor_char_boundary(DETAIL_LIMIT));
     errors
+}
+
+/// A command that runs its arguments for at most `seconds`, killing them two
+/// seconds later if they ignore SIGTERM.
+fn limited(seconds: &str) -> Command {
+    let mut command = Command::new("timeout");
+    command.args(["--kill-after=2", seconds]);
+    command
 }
 
 fn run(command: &mut Command) -> Run {
@@ -319,11 +343,11 @@ mod tests {
 
     #[test]
     fn panic_and_timeout_are_reported() {
-        assert_eq!(classify(&ran("", 0), &ran("", PANIC_EXIT), 0).0, "panic");
-        assert_eq!(
-            classify(&ran("", 0), &ran("", TIMEOUT_EXIT), 0).0,
-            "timeout"
-        );
+        let mut panicked = ran("", PANIC_EXIT);
+        panicked.stderr = b"thread 'main' panicked at src/main.rs:1:1".to_vec();
+        assert_eq!(classify(&ran("", 0), &panicked, 0).0, "panic");
+        assert_eq!(classify(&ran("", 0), &ran("", PANIC_EXIT), 0).0, "mismatch");
+        assert_eq!(classify(&ran("", 0), &ran("", 124), 0).0, "timeout");
     }
 
     #[test]

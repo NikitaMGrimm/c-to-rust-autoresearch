@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Mutex;
@@ -25,14 +26,19 @@ fn parse_args() -> Option<Args> {
         quiet: false,
     };
     let mut rest = std::env::args().skip(1);
+    let mut bench_given = false;
     while let Some(arg) = rest.next() {
+        let mut value = || rest.next().filter(|value| !value.starts_with('-'));
         match arg.as_str() {
-            "--only" => args.only = Some(rest.next()?),
-            "--json" => args.json = Some(rest.next()?.into()),
-            "--jobs" => args.jobs = rest.next()?.parse().ok().filter(|&n| n > 0)?,
+            "--only" => args.only = Some(value()?),
+            "--json" => args.json = Some(value()?.into()),
+            "--jobs" => args.jobs = value()?.parse().ok().filter(|&n| n > 0)?,
             "--quiet" => args.quiet = true,
-            _ if arg.starts_with('-') => return None,
-            _ => args.bench = arg.into(),
+            _ if arg.starts_with('-') || bench_given => return None,
+            _ => {
+                args.bench = arg.into();
+                bench_given = true;
+            }
         }
     }
     Some(args)
@@ -43,9 +49,14 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let mut programs: Vec<PathBuf> = match std::fs::read_dir(&args.bench) {
-        Ok(entries) => entries
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+    let entries = std::fs::read_dir(&args.bench).and_then(|entries| {
+        entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()
+    });
+    let mut programs: Vec<PathBuf> = match entries {
+        Ok(paths) => paths
+            .into_iter()
             .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
             .filter(|path| {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -72,7 +83,20 @@ fn main() -> ExitCode {
         }
     };
 
+    // Private and new: a planted directory or symlink at this path must not be used.
     let scratch = std::env::temp_dir().join(format!("c2r-eval-{}", std::process::id()));
+    if let Err(err) = std::fs::DirBuilder::new().mode(0o700).create(&scratch) {
+        eprintln!("cannot create {}: {err}", scratch.display());
+        return ExitCode::FAILURE;
+    }
+    for program in &programs {
+        if let Err(err) = std::fs::create_dir(scratch.join(program.file_stem().unwrap_or_default()))
+        {
+            eprintln!("cannot create scratch directory: {err}");
+            let _ = std::fs::remove_dir_all(&scratch);
+            return ExitCode::FAILURE;
+        }
+    }
     let next = AtomicUsize::new(0);
     let records = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
@@ -80,7 +104,6 @@ fn main() -> ExitCode {
             scope.spawn(|| {
                 while let Some(program) = programs.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let work = scratch.join(program.file_stem().unwrap_or_default());
-                    std::fs::create_dir_all(&work).expect("cannot create scratch directory");
                     let record = eval::evaluate(program, &transpiler, &work);
                     records.lock().unwrap().push(record);
                 }
