@@ -382,13 +382,36 @@ pub fn run_program(program: &Path, input: &Input) -> Run {
 /// with the same file name see the same `argv[0]` and write files apart.
 fn run_in_place(program: &Path, input: &Input, memory_limit: bool) -> Run {
     let name = Path::new(".").join(program.file_name().unwrap_or_default());
-    run(
-        limited(RUN_TIMEOUT, memory_limit)
-            .arg(name)
-            .args(&input.args)
-            .current_dir(program.parent().unwrap_or(Path::new("."))),
-        &input.stdin,
-    )
+    let dir = program.parent().unwrap_or(Path::new("."));
+    let mut command = limited(RUN_TIMEOUT, memory_limit);
+    command.arg(name).args(&input.args).current_dir(dir);
+    // Only translations get the memory limit, and only they are agent-written.
+    if memory_limit {
+        command = sandboxed(&command, &[], dir);
+    }
+    run(&mut command, &input.stdin)
+}
+
+/// Wraps agent-written code: no network, a read-only file system except
+/// `writable`, and a hidden home directory, where the private benchmarks and
+/// credentials live, except `readable`. Paths must be absolute.
+fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) -> Command {
+    let mut command = Command::new("bwrap");
+    command.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+    command.args(["--tmpfs", "/tmp"]);
+    if let Some(home) = std::env::var_os("HOME") {
+        command.arg("--tmpfs").arg(home);
+    }
+    for path in readable {
+        command.arg("--ro-bind").arg(path).arg(path);
+    }
+    command.arg("--bind").arg(writable).arg(writable);
+    if let Some(dir) = inner.get_current_dir() {
+        command.arg("--chdir").arg(dir);
+    }
+    command.args(["--unshare-all", "--die-with-parent", "--new-session", "--"]);
+    command.arg(inner.get_program()).args(inner.get_args());
+    command
 }
 
 /// Why a C run is not a valid reference, if it is not.
@@ -488,12 +511,17 @@ fn stages(
 fn translate(c_file: &Path, translator: &Translator, rust_file: &Path) -> Result<(), String> {
     match translator {
         Translator::Transpiler(transpiler) => {
+            let absolute = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+            let (transpiler, c_file) = (absolute(transpiler), absolute(c_file));
+            let out_dir = absolute(rust_file.parent().unwrap_or(Path::new(".")));
+            let mut command = limited(TRANSPILE_TIMEOUT, true);
+            command
+                .arg(&transpiler)
+                .arg(&c_file)
+                .arg("-o")
+                .arg(out_dir.join(rust_file.file_name().unwrap_or_default()));
             let transpiled = run(
-                limited(TRANSPILE_TIMEOUT, true)
-                    .arg(transpiler)
-                    .arg(c_file)
-                    .arg("-o")
-                    .arg(rust_file),
+                &mut sandboxed(&command, &[&transpiler, &c_file], &out_dir),
                 &[],
             );
             if transpiled.exit == Some(0) && rust_file.exists() {

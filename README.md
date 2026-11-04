@@ -9,8 +9,13 @@ The transpiler starts empty; translation rules are added by the research loop.
 Linux only. Needs [rustup](https://rustup.rs) and, on Ubuntu 24.04:
 
 ```sh
-sudo apt install clang-18 clang-tidy-18 libclang-rt-18-dev llvm-18 jq
+sudo apt install clang-18 clang-tidy-18 libclang-rt-18-dev llvm-18 jq bubblewrap
 ```
+
+The evaluator runs agent-written code with bubblewrap, which needs
+unprivileged user namespaces. Ubuntu 24.04 restricts them by default, but WSL
+does not; lift the restriction with
+`sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
 
 `rust-toolchain.toml` pins the Rust version, and the transpiler always calls
 `clang-18`, so results stay comparable between runs.
@@ -64,6 +69,12 @@ Standard error is not compared. Both programs run as `./program` from their
 own directories. Every program may write files of at most 64 MiB and print at
 most 8 MiB; the transpiler and the Rust program may use 4 GiB of address
 space, and the sanitized C program 4 GiB of memory.
+
+The transpiler and the Rust program run in a bubblewrap sandbox: no network,
+a read-only file system except their output directory, and an empty home
+directory apart from the transpiler and its input. The research agent writes
+both, and the evaluator runs them on the private programs, so nothing they see
+may leave the sandbox.
 
 ## Benchmarks
 
