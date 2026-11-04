@@ -31,15 +31,22 @@ tool reports an error.
 ```sh
 cargo run -p eval                          # all programs in bench/dev
 cargo run -p eval -- --only g1 --json results.json
+cargo run -p eval -- --translations DIR   # existing translations DIR/NAME.rs
 ```
 
 The evaluator builds the transpiler, then for every `.c` program in the
 benchmark directory compares the C original with its translation. A `.json`
 file with the same name lists the inputs, each with command-line arguments and
-standard input; without it the program runs once without input. Program
-names start with their difficulty group, for example `g1_gcd.c`. It prints one
-stage per program, details for failures, pass counts per group and the total.
-`--json` also writes per-program results, including warning counts by lint.
+standard input; without it the program runs once without input. It may also
+list `c_flags` for the C build, from a fixed set. Program names start with
+their difficulty group, for example `g1_gcd.c`. It prints one stage per
+program, details for failures, pass counts per group and the total.
+
+`--json` also writes tool versions, the commit, and per-program results. Each
+result has warning counts by lint and, for a translation that compiled,
+idiomaticity counts from its syntax tree: `clones`, `raw_pointers`,
+`rc_refcell`, `lint_allows` (`allow` and `expect` attributes, which hide
+warnings) and non-blank `lines`.
 
 A translation passes when:
 
@@ -48,13 +55,15 @@ A translation passes when:
 - the transpiler writes a Rust file within 30 s (`transpile_fail`);
 - the Rust file compiles with overflow checks and debug assertions
   (`compile_fail`);
-- the Rust program finishes within 10 s without a panic the C program did not
-  have (`timeout`, `panic`);
+- the Rust program finishes within 10 s without a panic (`timeout`, `panic`);
 - its standard output and exit code equal the C program's on every input
   (`mismatch`);
 - it contains no `unsafe` code (`unsafe`).
 
-Standard error is not compared.
+Standard error is not compared. Both programs run as `./program` from their
+own directories. Every program may write files of at most 64 MiB and print at
+most 8 MiB; the transpiler and the Rust program may use 4 GiB of address
+space, and the sanitized C program 4 GiB of memory.
 
 ## Benchmarks
 

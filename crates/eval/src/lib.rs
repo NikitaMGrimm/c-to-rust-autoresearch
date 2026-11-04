@@ -3,7 +3,7 @@
 //! exits with the same code as the C original for every input.
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,6 +22,15 @@ const PANIC_EXIT: i32 = 101;
 /// Set for sanitizer reports so they differ from the program's own exit codes.
 const SANITIZER_EXIT: i32 = 99;
 const DETAIL_LIMIT: usize = 2000;
+/// Bytes kept of a program's standard output and error; more is a failure.
+const OUTPUT_LIMIT: u64 = 8 << 20;
+/// Address space of the transpiler and translated programs. The C reference
+/// has none: AddressSanitizer reserves terabytes of address space.
+const MEMORY_LIMIT: &str = "--as=4294967296";
+/// Largest file any program may write.
+const FILE_LIMIT: &str = "--fsize=67108864";
+/// Compiler options a benchmark may request for its C reference.
+pub const C_FLAGS: [&str; 1] = ["-fno-strict-aliasing"];
 
 /// What a program printed and how it ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +38,8 @@ pub struct Run {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit: Option<i32>,
+    /// Whether the program wrote more than the output limit.
+    pub overflowed: bool,
 }
 
 impl Run {
@@ -53,21 +64,42 @@ pub struct Input {
     pub stdin: Vec<u8>,
 }
 
-/// Reads the inputs of `c_file` from the JSON file next to it, for example
+/// How a benchmark program is built and run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spec {
+    pub inputs: Vec<Input>,
+    /// Extra options for the C reference, from [`C_FLAGS`].
+    pub c_flags: Vec<String>,
+}
+
+/// Reads the spec of `c_file` from the JSON file next to it, for example
 /// `g1_gcd.json` for `g1_gcd.c`. Without that file the program runs once
 /// without arguments or input.
-pub fn inputs(c_file: &Path) -> Result<Vec<Input>, String> {
+pub fn spec(c_file: &Path) -> Result<Spec, String> {
     let path = c_file.with_extension("json");
     let text = match std::fs::read(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(vec![Input::default()]);
+            return Ok(Spec {
+                inputs: vec![Input::default()],
+                c_flags: Vec::new(),
+            });
         }
         Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
     };
     let invalid = |why: &str| format!("{}: {why}", path.display());
     let json: serde_json::Value =
         serde_json::from_slice(&text).map_err(|err| invalid(&err.to_string()))?;
+    let c_flags = match &json["c_flags"] {
+        serde_json::Value::Null => Vec::new(),
+        serde_json::Value::Array(flags) => flags
+            .iter()
+            .map(|flag| flag.as_str().filter(|flag| C_FLAGS.contains(flag)))
+            .map(|flag| flag.map(str::to_owned))
+            .collect::<Option<_>>()
+            .ok_or_else(|| invalid(&format!("\"c_flags\" may only contain {C_FLAGS:?}")))?,
+        _ => return Err(invalid("\"c_flags\" must be a list")),
+    };
     let list = json["inputs"]
         .as_array()
         .filter(|list| !list.is_empty())
@@ -97,7 +129,17 @@ pub fn inputs(c_file: &Path) -> Result<Vec<Input>, String> {
                 stdin,
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()
+        .map(|inputs| Spec { inputs, c_flags })
+}
+
+/// Where translations come from.
+#[derive(Debug, Clone)]
+pub enum Translator {
+    /// The transpiler executable, run on each C program.
+    Transpiler(PathBuf),
+    /// A directory with an existing translation `NAME.rs` for each `NAME.c`.
+    Existing(PathBuf),
 }
 
 /// Result for one benchmark program.
@@ -109,6 +151,8 @@ pub struct Record {
     pub detail: String,
     /// Compiler and Clippy warnings by lint name.
     pub warnings: BTreeMap<String, u32>,
+    /// Idiomaticity counts of a translation that compiled.
+    pub metrics: Option<BTreeMap<&'static str, u32>>,
     pub seconds: f64,
 }
 
@@ -120,6 +164,7 @@ impl Record {
             "stage": self.stage,
             "detail": self.detail,
             "warnings": self.warnings,
+            "metrics": self.metrics,
             "seconds": self.seconds,
         })
     }
@@ -135,6 +180,9 @@ pub fn classify(c: &Run, rust: &Run, unsafe_uses: u32) -> (&'static str, String)
         && String::from_utf8_lossy(&rust.stderr).contains("panicked at")
     {
         return ("panic", tail(&rust.stderr));
+    }
+    if rust.overflowed {
+        return ("mismatch", format!("output exceeds {OUTPUT_LIMIT} bytes"));
     }
     if rust.stdout != c.stdout || rust.exit != c.exit {
         return ("mismatch", mismatch(c, rust));
@@ -170,8 +218,32 @@ pub fn build_transpiler() -> Result<PathBuf, String> {
         .ok_or_else(|| "cargo reported no transpiler executable".to_owned())
 }
 
+/// Tool versions and the repository commit, so results can be compared.
+pub fn versions() -> serde_json::Value {
+    let first_line = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args)
+            .current_dir(REPO)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                let text = String::from_utf8_lossy(&output.stdout);
+                text.lines().next().unwrap_or_default().trim().to_owned()
+            })
+    };
+    let dirty = first_line("git", &["status", "--porcelain", "--untracked-files=no"])
+        .map(|line| !line.is_empty());
+    serde_json::json!({
+        "commit": first_line("git", &["rev-parse", "HEAD"]),
+        "uncommitted_changes": dirty,
+        "clang": first_line("clang-18", &["--version"]),
+        "rustc": first_line("rustc", &["--version"]),
+    })
+}
+
 /// Evaluates one C program, using `work` as its scratch directory.
-pub fn evaluate(c_file: &Path, transpiler: &Path, work: &Path) -> Record {
+pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
     let start = Instant::now();
     let name = c_file
         .file_stem()
@@ -180,28 +252,31 @@ pub fn evaluate(c_file: &Path, transpiler: &Path, work: &Path) -> Record {
         .into_owned();
     let group = name.split('_').next().unwrap_or_default().to_owned();
     let mut warnings = BTreeMap::new();
-    let (stage, detail) = stages(c_file, transpiler, work, &mut warnings);
+    let mut metrics = None;
+    let (stage, detail) = stages(c_file, translator, work, &mut warnings, &mut metrics);
     Record {
         name,
         group,
         stage,
         detail,
         warnings,
+        metrics,
         seconds: (start.elapsed().as_secs_f64() * 10.0).round() / 10.0,
     }
 }
 
 /// Builds `c_file` with AddressSanitizer and UndefinedBehaviorSanitizer.
-pub fn build_c(c_file: &Path, program: &Path) -> Run {
+pub fn build_c(c_file: &Path, program: &Path, c_flags: &[String]) -> Run {
     run(
-        limited(COMPILE_TIMEOUT)
+        limited(COMPILE_TIMEOUT, false)
             .arg("clang-18")
             .args([
                 "-g",
                 "-fsanitize=address,undefined",
                 "-fno-sanitize-recover=all",
-                "-o",
             ])
+            .args(c_flags)
+            .arg("-o")
             .arg(program)
             .arg(c_file)
             .arg("-lm"),
@@ -209,10 +284,20 @@ pub fn build_c(c_file: &Path, program: &Path) -> Run {
     )
 }
 
-/// Runs `program` on `input` within the run time limit.
+/// Runs the C program `program` on `input` within the run time limit.
 pub fn run_program(program: &Path, input: &Input) -> Run {
+    run_in_place(program, input, false)
+}
+
+/// Runs `program` from its own directory as `./NAME`, so C and Rust programs
+/// with the same file name see the same `argv[0]` and write files apart.
+fn run_in_place(program: &Path, input: &Input, memory_limit: bool) -> Run {
+    let name = Path::new(".").join(program.file_name().unwrap_or_default());
     run(
-        limited(RUN_TIMEOUT).arg(program).args(&input.args),
+        limited(RUN_TIMEOUT, memory_limit)
+            .arg(name)
+            .args(&input.args)
+            .current_dir(program.parent().unwrap_or(Path::new("."))),
         &input.stdin,
     )
 }
@@ -222,6 +307,8 @@ pub fn c_problem(c: &Run) -> Option<String> {
     if c.exit.is_none() {
         // For example an argument containing a NUL byte; the Rust side would fail alike.
         Some(format!("cannot run:\n{}", tail(&c.stderr)))
+    } else if c.overflowed {
+        Some(format!("C output exceeds {OUTPUT_LIMIT} bytes"))
     } else if c.timed_out() {
         Some("C program timed out".to_owned())
     } else if c.sanitizer_error() {
@@ -242,16 +329,26 @@ fn on_input(input: &Input, detail: String) -> String {
 
 fn stages(
     c_file: &Path,
-    transpiler: &Path,
+    translator: &Translator,
     work: &Path,
     warnings: &mut BTreeMap<String, u32>,
+    metrics: &mut Option<BTreeMap<&'static str, u32>>,
 ) -> (&'static str, String) {
-    let inputs = match inputs(c_file) {
-        Ok(inputs) => inputs,
+    let Spec { inputs, c_flags } = match spec(c_file) {
+        Ok(spec) => spec,
         Err(err) => return ("c_invalid", err),
     };
-    let c_program = work.join("c_program");
-    let built = build_c(c_file, &c_program);
+    // The same file name in both directories gives both the same argv[0].
+    let (c_program, rust_program) = (work.join("c/program"), work.join("rust/program"));
+    for dir in [work.join("c"), work.join("rust")] {
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            return (
+                "c_invalid",
+                format!("cannot create {}: {err}", dir.display()),
+            );
+        }
+    }
+    let built = build_c(c_file, &c_program, &c_flags);
     if built.exit != Some(0) {
         return (
             "c_invalid",
@@ -268,27 +365,9 @@ fn stages(
     }
 
     let rust_file = work.join("translation.rs");
-    let transpiled = run(
-        limited(TRANSPILE_TIMEOUT)
-            .arg(transpiler)
-            .arg(c_file)
-            .arg("-o")
-            .arg(&rust_file),
-        &[],
-    );
-    if transpiled.exit != Some(0) || !rust_file.exists() {
-        let reason = if transpiled.timed_out() {
-            "timed out\n"
-        } else {
-            ""
-        };
-        return (
-            "transpile_fail",
-            format!("{reason}{}", tail(&transpiled.stderr)),
-        );
+    if let Err(detail) = translate(c_file, translator, &rust_file) {
+        return ("transpile_fail", detail);
     }
-
-    let rust_program = work.join("rust_program");
     let compiled = compile(&rust_file, &rust_program);
     let errors = diagnostics(&compiled.stderr, warnings);
     if compiled.exit != Some(0) {
@@ -300,9 +379,12 @@ fn stages(
         };
         return ("compile_fail", detail);
     }
+    *metrics = std::fs::read_to_string(&rust_file)
+        .ok()
+        .and_then(|source| idiom_counts(&source));
     // Behaviour on every input comes first; `unsafe` is reported only after that.
     for (input, c) in inputs.iter().zip(&c_runs) {
-        let rust = run_program(&rust_program, input);
+        let rust = run_in_place(&rust_program, input, true);
         let (stage, detail) = classify(c, &rust, 0);
         if stage != "pass" {
             return (stage, on_input(input, detail));
@@ -313,9 +395,110 @@ fn stages(
     classify(last, last, unsafe_uses)
 }
 
+/// Writes the translation of `c_file` to `rust_file`, or says why it could not.
+fn translate(c_file: &Path, translator: &Translator, rust_file: &Path) -> Result<(), String> {
+    match translator {
+        Translator::Transpiler(transpiler) => {
+            let transpiled = run(
+                limited(TRANSPILE_TIMEOUT, true)
+                    .arg(transpiler)
+                    .arg(c_file)
+                    .arg("-o")
+                    .arg(rust_file),
+                &[],
+            );
+            if transpiled.exit == Some(0) && rust_file.exists() {
+                return Ok(());
+            }
+            let reason = if transpiled.timed_out() {
+                "timed out\n"
+            } else {
+                ""
+            };
+            Err(format!("{reason}{}", tail(&transpiled.stderr)))
+        }
+        Translator::Existing(dir) => {
+            let existing = dir
+                .join(c_file.file_name().unwrap_or_default())
+                .with_extension("rs");
+            std::fs::copy(&existing, rust_file)
+                .map(drop)
+                .map_err(|err| format!("no translation {}: {err}", existing.display()))
+        }
+    }
+}
+
+/// Counts constructs that show how idiomatic a translation is. Counting the
+/// syntax tree ignores comments and strings that mention them.
+pub fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> {
+    use syn::visit::Visit;
+
+    struct Counter(BTreeMap<&'static str, u32>);
+    impl Counter {
+        fn add(&mut self, name: &'static str) {
+            *self.0.entry(name).or_default() += 1;
+        }
+    }
+    impl<'ast> Visit<'ast> for Counter {
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            if call.method == "clone" && call.args.is_empty() {
+                self.add("clones");
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+        fn visit_type_ptr(&mut self, ptr: &'ast syn::TypePtr) {
+            self.add("raw_pointers");
+            syn::visit::visit_type_ptr(self, ptr);
+        }
+        fn visit_expr_raw_addr(&mut self, expr: &'ast syn::ExprRawAddr) {
+            self.add("raw_pointers");
+            syn::visit::visit_expr_raw_addr(self, expr);
+        }
+        fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+            if wraps(&ty.path, "Rc", "RefCell") {
+                self.add("rc_refcell");
+            }
+            syn::visit::visit_type_path(self, ty);
+        }
+        fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+            // Lint counts are only meaningful next to the lints switched off.
+            if attr.path().is_ident("allow") || attr.path().is_ident("expect") {
+                self.add("lint_allows");
+            }
+            syn::visit::visit_attribute(self, attr);
+        }
+    }
+
+    fn wraps(path: &syn::Path, outer: &str, inner: &str) -> bool {
+        let Some(last) = path.segments.last().filter(|last| last.ident == outer) else {
+            return false;
+        };
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            return false;
+        };
+        args.args.iter().any(|arg| {
+            matches!(arg, syn::GenericArgument::Type(syn::Type::Path(ty))
+                if ty.path.segments.last().is_some_and(|segment| segment.ident == inner))
+        })
+    }
+
+    let file = syn::parse_file(source).ok()?;
+    let names = ["clones", "raw_pointers", "rc_refcell", "lint_allows"];
+    let mut counter = Counter(names.into_iter().map(|name| (name, 0)).collect());
+    counter.visit_file(&file);
+    let lines = source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    counter
+        .0
+        .insert("lines", u32::try_from(lines).unwrap_or(u32::MAX));
+    Some(counter.0)
+}
+
 fn compile(rust_file: &Path, program: &Path) -> Run {
     run(
-        limited(COMPILE_TIMEOUT)
+        limited(COMPILE_TIMEOUT, false)
             .arg("clippy-driver")
             .args([
                 "--edition",
@@ -358,15 +541,31 @@ fn diagnostics(stderr: &[u8], warnings: &mut BTreeMap<String, u32>) -> String {
 }
 
 /// A command that runs its arguments for at most `seconds`, killing them two
-/// seconds later if they ignore SIGTERM.
-fn limited(seconds: &str) -> Command {
-    let mut command = Command::new("timeout");
-    command.args(["--kill-after=2", seconds]);
+/// seconds later if they ignore SIGTERM, with a file size limit and, if asked,
+/// a memory limit.
+fn limited(seconds: &str, memory_limit: bool) -> Command {
+    let mut command = Command::new("prlimit");
+    command.arg(FILE_LIMIT);
+    if memory_limit {
+        command.arg(MEMORY_LIMIT);
+    }
+    command.args(["--", "timeout", "--kill-after=2", seconds]);
     command
 }
 
+/// Reads up to the output limit, then discards the rest so the program never
+/// blocks on a full pipe. Returns whether anything was discarded.
+fn capped(pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut pipe = pipe;
+    let mut kept = Vec::new();
+    (&mut pipe).take(OUTPUT_LIMIT).read_to_end(&mut kept)?;
+    let discarded = std::io::copy(&mut pipe, &mut std::io::sink())?;
+    Ok((kept, discarded > 0))
+}
+
 fn run(command: &mut Command, stdin: &[u8]) -> Run {
-    let sanitizers = format!("exitcode={SANITIZER_EXIT}:detect_leaks=0");
+    // The memory limit cannot apply under AddressSanitizer; it watches RSS instead.
+    let sanitizers = format!("exitcode={SANITIZER_EXIT}:detect_leaks=0:hard_rss_limit_mb=4096");
     let child = command
         .env("ASAN_OPTIONS", &sanitizers)
         .env("UBSAN_OPTIONS", format!("exitcode={SANITIZER_EXIT}"))
@@ -376,29 +575,37 @@ fn run(command: &mut Command, stdin: &[u8]) -> Run {
         .spawn();
     let output = child.and_then(|mut child| {
         let mut pipe = child.stdin.take().expect("stdin is piped");
-        // Written from another thread: a program that prints before reading
-        // all of its input would otherwise block on a full output pipe.
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().expect("stderr is piped");
+        // Each pipe has its own thread: a program that prints before reading
+        // all of its input would otherwise block on a full pipe.
         std::thread::scope(|scope| {
             // A program may exit without reading its input; that is not an error.
             scope.spawn(move || pipe.write_all(stdin));
-            child.wait_with_output()
+            let stdout = scope.spawn(move || capped(stdout));
+            let stderr = scope.spawn(move || capped(stderr));
+            let status = child.wait()?;
+            let (stdout, out_overflowed) = stdout.join().expect("reader panicked")?;
+            let (stderr, err_overflowed) = stderr.join().expect("reader panicked")?;
+            Ok((status, stdout, stderr, out_overflowed || err_overflowed))
         })
     });
     match output {
-        Ok(output) => Run {
-            stdout: output.stdout,
-            stderr: output.stderr,
+        Ok((status, stdout, stderr, overflowed)) => Run {
+            stdout,
+            stderr,
             // A process killed by a signal has no exit code; use the shell's
             // 128 + signal, as `timeout` itself may be killed after --kill-after.
-            exit: output
-                .status
+            exit: status
                 .code()
-                .or_else(|| output.status.signal().map(|signal| 128 + signal)),
+                .or_else(|| status.signal().map(|signal| 128 + signal)),
+            overflowed,
         },
         Err(err) => Run {
             stdout: Vec::new(),
             stderr: format!("cannot run {:?}: {err}", command.get_program()).into_bytes(),
             exit: None,
+            overflowed: false,
         },
     }
 }
@@ -444,6 +651,7 @@ mod tests {
             stdout: stdout.as_bytes().to_vec(),
             stderr: Vec::new(),
             exit: Some(exit),
+            overflowed: false,
         }
     }
 
@@ -513,10 +721,33 @@ mod tests {
     #[test]
     fn program_ignoring_sigterm_times_out() {
         let ran = run(
-            limited("1").args(["sh", "-c", "trap '' TERM; exec sleep 30"]),
+            limited("1", false).args(["sh", "-c", "trap '' TERM; exec sleep 30"]),
             &[],
         );
         assert!(ran.timed_out(), "{:?}", ran.exit);
+    }
+
+    #[test]
+    fn idiom_counts_come_from_code_not_comments() {
+        let source = r#"#![allow(dead_code)]
+use std::cell::RefCell;
+use std::rc::Rc;
+// x.clone() in a comment does not count
+fn main() {
+    let shared: Rc<RefCell<i32>> = Rc::new(RefCell::new(1));
+    let other = shared.clone();
+    let x = 1;
+    let p: *const i32 = &raw const x;
+    println!("{:?} {:?} clone()", other, p);
+}
+"#;
+        let counts = idiom_counts(source).unwrap();
+        assert_eq!(counts["clones"], 1);
+        assert_eq!(counts["raw_pointers"], 2);
+        assert_eq!(counts["rc_refcell"], 1);
+        assert_eq!(counts["lint_allows"], 1);
+        assert_eq!(counts["lines"], 11);
+        assert_eq!(idiom_counts("fn main( {"), None);
     }
 
     #[test]

@@ -11,3 +11,4 @@ publish.workspace = true
 
 [dependencies]
 serde_json = "1"
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"] }
