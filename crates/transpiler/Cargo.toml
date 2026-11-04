@@ -1,0 +1,12 @@
+[package]
+name = "transpiler"
+version = "0.1.0"
+description = "Mechanical C-to-Rust transpiler grown by a research loop"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"

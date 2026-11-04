@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Shows what a C or Rust file contains and what the compilers and linters
+# report for it, then runs it. Arguments after the file go to the program.
+# Exits 1 if a tool reports an error, including a sanitizer error at run time;
+# the program's own exit code is only printed.
+set -uo pipefail
+
+if [ $# -lt 1 ] || [ ! -f "$1" ]; then
+  echo "usage: scripts/inspect FILE.c|FILE.rs [ARGS...]" >&2
+  exit 2
+fi
+file=$(realpath "$1")
+shift
+# rust-toolchain.toml applies only inside the repository; the program itself
+# runs in the caller's directory so relative paths keep their meaning.
+caller=$PWD
+cd "$(dirname "$0")/.."
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+tmp=$(realpath -- "$tmp") || exit 1
+status=0
+# Distinguishes sanitizer reports from the program's own exit codes.
+sanitizer_exit=99
+symbolizer=/usr/lib/llvm-18/bin/llvm-symbolizer
+export ASAN_OPTIONS="exitcode=$sanitizer_exit:external_symbolizer_path=$symbolizer"
+export UBSAN_OPTIONS="exitcode=$sanitizer_exit:print_stacktrace=1:external_symbolizer_path=$symbolizer"
+
+section() { printf '\n== %s\n' "$1"; }
+check() { "$@" || { echo "(exit $?)"; status=1; }; }
+run() {
+  (cd "$caller" && "$@")
+  local code=$?
+  echo "(exit $code)"
+  if [ "$code" -eq "$sanitizer_exit" ]; then status=1; fi
+}
+
+case "$file" in
+  *.c)
+    section "declarations in this file"
+    if clang-18 -Xclang -ast-dump=json -fsyntax-only "$file" > "$tmp/ast.json" 2>/dev/null; then
+      # Nodes from included headers carry includedFrom; builtins have no offset.
+      # Counting walks .inner only: referencedDecl objects also carry a kind.
+      jq -r '
+        def nodes: ., (.inner[]? | nodes);
+        [.inner[] | select(.isImplicit != true
+          and (.loc.includedFrom // .loc.expansionLoc.includedFrom) == null
+          and (.loc.offset // .loc.expansionLoc.offset) != null)] as $own
+        | ($own[] | "\(.kind) \(.name // "") \(.type.qualType // "")"),
+          "\n== syntax node counts",
+          ([$own[] | nodes | .kind] | group_by(.)
+            | sort_by(-length) | .[] | "\(length) \(.[0])")
+      ' "$tmp/ast.json"
+    else
+      echo "(no syntax tree; see the errors below)"
+    fi
+    section "clang errors and warnings"
+    check clang-18 -Wall -Wextra -Wpedantic -fsyntax-only "$file"
+    section "clang-tidy"
+    check clang-tidy-18 --quiet "$file" --
+    section "build with AddressSanitizer and UndefinedBehaviorSanitizer"
+    check clang-18 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+      -o "$tmp/program" "$file"
+    ;;
+  *.rs)
+    section "rustc and clippy errors and warnings"
+    check clippy-driver --edition 2024 -C overflow-checks=on -W unsafe-code \
+      -o "$tmp/program" "$file"
+    section "rustfmt"
+    check rustfmt --edition 2024 --check "$file"
+    ;;
+  *)
+    echo "expected a .c or .rs file" >&2
+    exit 2
+    ;;
+esac
+
+if [ -x "$tmp/program" ]; then
+  section "run"
+  run "$tmp/program" "$@"
+fi
+exit "$status"
