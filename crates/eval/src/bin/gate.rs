@@ -103,20 +103,7 @@ fn gate(args: &Args) -> Result<bool, String> {
             results(&candidate, &sets, args.jobs)?,
         ),
     };
-    let passes = |results: &Results, set: &str| {
-        results.get(set).map_or(0, |stages| {
-            stages.values().filter(|&&s| s == "pass").count()
-        })
-    };
-    let reason = problem.or_else(|| {
-        if passes(&after, "dev") <= passes(&before, "dev") {
-            Some("the development score did not rise".to_owned())
-        } else if passes(&after, "validation") < passes(&before, "validation") {
-            Some("the validation score dropped".to_owned())
-        } else {
-            None
-        }
-    });
+    let reason = problem.or_else(|| rejection(&before, &after));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -169,6 +156,24 @@ fn gate(args: &Args) -> Result<bool, String> {
         Some(reason) => println!("reject: {reason}"),
     }
     Ok(reason.is_none())
+}
+
+fn passes(results: &Results, set: &str) -> usize {
+    results.get(set).map_or(0, |stages| {
+        stages.values().filter(|&&s| s == "pass").count()
+    })
+}
+
+/// The keep rule, provisional: the development score rises and the validation
+/// score does not drop. The variants are only logged.
+fn rejection(before: &Results, after: &Results) -> Option<String> {
+    if passes(after, "dev") <= passes(before, "dev") {
+        Some("the development score did not rise".to_owned())
+    } else if passes(after, "validation") < passes(before, "validation") {
+        Some("the validation score dropped".to_owned())
+    } else {
+        None
+    }
 }
 
 /// Why the change from `base` to `candidate` may not be evaluated, if so.
@@ -277,6 +282,25 @@ fn append_log(dir: &Path, entry: &serde_json::Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn results(dev: &[&'static str], validation: &[&'static str]) -> Results {
+        let stages = |stages: &[&'static str]| {
+            let named = stages.iter().enumerate();
+            named.map(|(i, &stage)| (format!("p{i}"), stage)).collect()
+        };
+        Results::from([("dev", stages(dev)), ("validation", stages(validation))])
+    }
+
+    #[test]
+    fn keeps_a_dev_gain_unless_validation_drops() {
+        let before = results(&["pass", "mismatch"], &["pass", "panic"]);
+        let gain = results(&["pass", "pass"], &["pass", "panic"]);
+        let trade = results(&["mismatch", "pass"], &["pass", "pass"]);
+        let overfit = results(&["pass", "pass"], &["panic", "panic"]);
+        assert_eq!(rejection(&before, &gain), None);
+        assert!(rejection(&before, &trade).unwrap().contains("development"));
+        assert!(rejection(&before, &overfit).unwrap().contains("validation"));
+    }
 
     #[test]
     fn only_transpiler_changes_with_a_catalogue_entry_are_evaluated() {

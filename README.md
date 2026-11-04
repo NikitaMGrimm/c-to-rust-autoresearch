@@ -94,3 +94,24 @@ runs Claude through Claude Code, so its Claude chats are included; Codex runs
 are not. Claude Code names the transcript directory after the working
 directory, so a worktree has its own directory. `--since` and `--until` limit
 the sums to one loop iteration or another time window.
+
+## Research loop
+
+The loop agent follows [loop/program.md](loop/program.md): one translation rule
+per commit, each listed in the
+[rule catalogue](crates/transpiler/CATALOGUE.md). The gate decides whether a
+commit stays:
+
+```sh
+cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]
+```
+
+It rejects a candidate that does not descend from `BASE`, changes anything
+outside `crates/transpiler/` and `Cargo.lock`, or changes rules without the
+catalogue. Otherwise it builds both transpilers in the sandbox and evaluates
+them on the development set, the private validation set and the private
+variants of the development set. It keeps the candidate when the development
+score rises and the validation score does not drop, appends all results to
+`PRIVATE_DIR/loop/log.jsonl`, and prints only the development results and the
+decision. Run it from a checkout the loop agent cannot write to, since it
+trusts its own code and the benchmarks.
