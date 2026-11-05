@@ -4,7 +4,7 @@
 //! development set, appends everything to a private log and prints only what the
 //! loop agent may see.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -95,6 +95,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         ("dev_variants", args.private.join("variants/dev")),
     ];
 
+    let near_copies = near_copies(&args.private)?;
     let problem = change_problem(&base, &candidate)?;
     let (before, after) = match problem {
         Some(_) => (Results::new(), Results::new()),
@@ -116,12 +117,18 @@ fn gate(args: &Args) -> Result<bool, String> {
                     (old != stage).then_some((name.as_str(), [old, stage]))
                 })
                 .collect();
-            let json = serde_json::json!({
+            let mut json = serde_json::json!({
                 "base": passes(&before, set),
                 "candidate": passes(&after, set),
                 "total": candidate_stages.len(),
                 "changed": changed,
             });
+            if let Some(copies) = near_copies.get(set) {
+                let (base, _) = passes_without(base_stages, copies);
+                let (candidate, total) = passes_without(candidate_stages, copies);
+                json["without_near_copies"] =
+                    serde_json::json!({"base": base, "candidate": candidate, "total": total});
+            }
             (set.to_string(), json)
         })
         .collect();
@@ -156,6 +163,35 @@ fn gate(args: &Args) -> Result<bool, String> {
         Some(reason) => println!("reject: {reason}"),
     }
     Ok(reason.is_none())
+}
+
+/// Private programs that nearly repeat a development program, by set, from the
+/// near-copies tool. Without its file there are none.
+fn near_copies(private: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let path = private.join("near-copies.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(BTreeMap::new());
+    };
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    let sets = json["sets"].as_object().into_iter().flatten();
+    Ok(sets
+        .map(|(set, programs)| {
+            let names = programs.as_object().into_iter().flatten();
+            (set.clone(), names.map(|(name, _)| name.clone()).collect())
+        })
+        .collect())
+}
+
+/// Passes and programs, leaving out `skipped`.
+fn passes_without(stages: &BTreeMap<String, &str>, skipped: &BTreeSet<String>) -> (usize, usize) {
+    let kept: Vec<&str> = stages
+        .iter()
+        .filter(|(name, _)| !skipped.contains(*name))
+        .map(|(_, &stage)| stage)
+        .collect();
+    let passed = kept.iter().filter(|&&stage| stage == "pass").count();
+    (passed, kept.len())
 }
 
 fn passes(results: &Results, set: &str) -> usize {
@@ -300,6 +336,14 @@ mod tests {
         assert_eq!(rejection(&before, &gain), None);
         assert!(rejection(&before, &trade).unwrap().contains("development"));
         assert!(rejection(&before, &overfit).unwrap().contains("validation"));
+    }
+
+    #[test]
+    fn near_copies_are_left_out_of_both_counts() {
+        let stages = results(&[], &["pass", "pass", "panic"])["validation"].clone();
+        let skipped = BTreeSet::from(["p0".to_owned()]);
+        assert_eq!(passes_without(&stages, &skipped), (1, 2));
+        assert_eq!(passes_without(&stages, &BTreeSet::new()), (2, 3));
     }
 
     #[test]
