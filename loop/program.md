@@ -28,8 +28,10 @@ Code's, are blocked, and the only skills are those in `loop/skills`.
 ## One iteration
 
 1. Read `ROUNDS.md`, if there is one: the earlier iterations, with the gate's
-   results for each. Run `cargo run -p eval -- --quiet` and pick one failing
-   development program, or several that fail for the same reason.
+   results for each. If there is a `REVIEWS.md`, handle it first, as
+   [Reviews](#reviews) says. Otherwise run `cargo run -p eval -- --quiet` and
+   pick one failing development program, or several that fail for the same
+   reason.
 2. Study it with `scripts/inspect bench/dev/NAME.c` and the evaluator's
    details (`cargo run -p eval -- --only NAME`).
 3. Add or generalise one rule in `crates/transpiler/src/`. Translate C
@@ -43,14 +45,36 @@ Code's, are blocked, and the only skills are those in `loop/skills`.
 6. Commit as `feat(transpiler): ...` and stop with a short report: the rule,
    the programs it fixed and any it broke.
 
+## Reviews
+
+Kept commits go to a pull request on GitHub, where CI and CodeRabbit check
+them and the owner may comment. A round writes what is open there into
+`REVIEWS.md`: review comments, each with its number, and failed checks.
+
+- Fix one comment or failed check per iteration, in a commit of its own whose
+  subject starts with `fix(transpiler):`. Update the catalogue entry of each
+  rule it changes.
+- Answer comments in `REPLIES.json` at the checkout's root, which no commit
+  includes:
+
+  ```json
+  [{"comment": 123, "reply": "The rule now ...", "fixed": true}]
+  ```
+
+  `fixed: true` says that this iteration's commit fixes the comment; the
+  reply is posted with the commit's hash once the gate keeps it. Answer with
+  `fixed: false` when a comment needs no change or asks for one outside the
+  transpiler, and say why. Replies are posted publicly as written, so write
+  plain sentences without mentions.
+
 ## The gate
 
 After each iteration the gate, run outside your session, builds the
 transpiler from your commit and evaluates it on the development set, a private
 validation set and private variants of the development programs with renamed
 identifiers, changed constants and new inputs. It keeps the commit when the
-development score rises and the validation score does not drop, and otherwise
-drops it. The next iteration starts in a fresh checkout of main, whose
-`ROUNDS.md` adds the commit, the development results and the decision. Do not
-run the gate or the benchmark tools yourself. Overfitting the development
-programs fails on the rest.
+development score rises, or for a fix does not drop, and the validation score
+does not drop, and otherwise drops it. The next iteration starts in a fresh
+checkout of main, whose `ROUNDS.md` adds the commit, the development results
+and the decision. Do not run the gate or the benchmark tools yourself.
+Overfitting the development programs fails on the rest.

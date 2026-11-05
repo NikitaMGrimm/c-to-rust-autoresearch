@@ -23,6 +23,9 @@ const TRANSPILER: &str = "crates/transpiler/";
 const LOCKFILE: &str = "Cargo.lock";
 const RULES: &str = "crates/transpiler/src/";
 const CATALOGUE: &str = "crates/transpiler/CATALOGUE.md";
+/// How a fix starts its subject, such as one for a review comment: it must
+/// keep the scores rather than raise them.
+const FIX: &str = "fix(transpiler)";
 
 /// Stage of each program, by set and program name.
 type Results = BTreeMap<&'static str, BTreeMap<String, Stage>>;
@@ -113,7 +116,8 @@ fn gate(args: &Args) -> Result<bool, String> {
     };
     let failing_fuzz =
         |failures: &FuzzFailures, set: &str| failures.get(set).map_or(0, BTreeSet::len);
-    let reason = problem.or_else(|| rejection(&before, &after));
+    let fix = is_fix(Path::new(eval::REPO), &base, &candidate)?;
+    let reason = problem.or_else(|| rejection(&before, &after, fix));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -152,6 +156,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         "base": base,
         "candidate": candidate,
         "evaluator": eval::versions(),
+        "fix": fix,
         "decision": if reason.is_none() { "keep" } else { "reject" },
         "reason": reason,
         "sets": summary,
@@ -218,10 +223,14 @@ fn passes(results: &Results, set: &str) -> usize {
     })
 }
 
-/// The keep rule, provisional: the development score rises and the validation
-/// score does not drop. The variants are only logged.
-fn rejection(before: &Results, after: &Results) -> Option<String> {
-    if passes(after, "dev") <= passes(before, "dev") {
+/// The keep rule, provisional: the development score rises, or for a fix does
+/// not drop, and the validation score does not drop. The variants are only
+/// logged.
+fn rejection(before: &Results, after: &Results, fix: bool) -> Option<String> {
+    let (dev_before, dev_after) = (passes(before, "dev"), passes(after, "dev"));
+    if fix && dev_after < dev_before {
+        Some("the fix lowered the development score".to_owned())
+    } else if !fix && dev_after <= dev_before {
         Some("the development score did not rise".to_owned())
     } else if passes(after, "validation") < passes(before, "validation") {
         Some("the validation score dropped".to_owned())
@@ -248,6 +257,16 @@ fn untrusted(dir: &Path) -> Result<Option<String>, String> {
         return Ok(None);
     };
     Ok(Some(problem.to_owned()))
+}
+
+/// Whether every commit from `base` to `candidate` in the repository at `dir`
+/// is a fix.
+fn is_fix(dir: &Path, base: &str, candidate: &str) -> Result<bool, String> {
+    let subjects = git_in(
+        dir,
+        &["log", "--format=%s", &format!("{base}..{candidate}")],
+    )?;
+    Ok(!subjects.is_empty() && subjects.lines().all(|subject| subject.starts_with(FIX)))
 }
 
 /// Why the change from `base` to `candidate` may not be evaluated, if so.
@@ -374,9 +393,57 @@ mod tests {
         let gain = results(&[Pass, Pass], &[Pass, Panic]);
         let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
-        assert_eq!(rejection(&before, &gain), None);
-        assert!(rejection(&before, &trade).unwrap().contains("development"));
-        assert!(rejection(&before, &overfit).unwrap().contains("validation"));
+        assert_eq!(rejection(&before, &gain, false), None);
+        assert!(
+            rejection(&before, &trade, false)
+                .unwrap()
+                .contains("development")
+        );
+        assert!(
+            rejection(&before, &overfit, false)
+                .unwrap()
+                .contains("validation")
+        );
+    }
+
+    #[test]
+    fn keeps_a_fix_that_lowers_no_score() {
+        use Stage::{Mismatch, Panic, Pass};
+        let before = results(&[Pass, Mismatch], &[Pass, Panic]);
+        let same = results(&[Mismatch, Pass], &[Pass, Panic]);
+        let worse = results(&[Mismatch, Mismatch], &[Pass, Panic]);
+        let overfit = results(&[Pass, Pass], &[Panic, Panic]);
+        assert_eq!(rejection(&before, &same, true), None);
+        assert!(rejection(&before, &same, false).is_some());
+        assert!(
+            rejection(&before, &worse, true)
+                .unwrap()
+                .contains("lowered")
+        );
+        assert!(
+            rejection(&before, &overfit, true)
+                .unwrap()
+                .contains("validation")
+        );
+    }
+
+    #[test]
+    fn a_change_is_a_fix_when_all_its_commits_are() {
+        let dir = eval::Scratch::new("test").unwrap();
+        let git = |args: &[&str]| git_in(&dir, args).unwrap();
+        let commit = |subject: &str| {
+            let author = ["-c", "user.name=t", "-c", "user.email=t@t"];
+            let unsigned = ["-c", "commit.gpgsign=false", "commit", "-q", "--no-verify"];
+            git(&[&author[..], &unsigned, &["--allow-empty", "-m", subject]].concat());
+            git(&["rev-parse", "HEAD"])
+        };
+        git(&["init", "-q", "-b", "main"]);
+        let base = commit("feat(transpiler): a rule");
+        let fix = commit("fix(transpiler): a review comment");
+        let rule = commit("feat(transpiler): another rule");
+        assert_eq!(is_fix(&dir, &base, &fix), Ok(true));
+        assert_eq!(is_fix(&dir, &base, &rule), Ok(false));
+        assert_eq!(is_fix(&dir, &base, &base), Ok(false));
     }
 
     #[test]

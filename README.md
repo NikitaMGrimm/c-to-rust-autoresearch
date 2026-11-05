@@ -72,8 +72,9 @@ cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]
 ```
 
 It keeps a candidate that changes only the transpiler when the development
-score rises and the validation score does not drop, and prints only the
-development results and the decision. Run it from this checkout, which the
+score rises, or for a candidate of `fix(transpiler)` commits does not drop,
+and the validation score does not drop, and prints only the development
+results and the decision. Run it from this checkout, which the
 loop agent cannot write, at a clean main.
 
 The loop agent works in its own clone, which keeps it away from the private
@@ -83,12 +84,23 @@ it, and makes a fresh clone for the next session:
 
 ```sh
 loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
-~/src/c-to-rust-autoresearch/loop/round PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+~/src/c-to-rust-autoresearch/loop/round [--github] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 ```
 
 Run `loop/round` by this checkout's absolute path, never the clone's copy. In
 T3 Code, the clone is a project whose threads run in the clone itself, not in
 worktrees, on Claude only, with `loop/round` as a project script.
+
+With `--github`, CI and CodeRabbit check the loop's commits as they would a
+contributor's. The round publishes main to a pull request from the `loop`
+branch, at most every two hours, and merges it by fast-forward once its
+checks pass and CodeRabbit has reviewed it with every thread resolved. Open
+review comments and failed checks come back to the agent in the next clone,
+and the round posts the agent's replies; the agent itself never reaches
+GitHub. A thread where CodeRabbit disputes a reply waits for the owner. So
+do commits that reach GitHub's main some other way: pull them into this
+checkout's main between rounds, then make the clone afresh with
+`loop/setup`.
 [docs/architecture.md](docs/architecture.md#keeping-the-loop-agent-out) says
 what the scripts do; the audit runs on its own too:
 

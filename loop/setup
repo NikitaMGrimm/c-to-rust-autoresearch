@@ -74,8 +74,9 @@ mkdir "$loop/.claude"
 if [[ -d $loop/loop/skills ]]; then
   ln -s ../loop/skills "$loop/.claude/skills"
 fi
-# Neither the skills link nor the gate's notes may end up in a commit.
-printf '%s\n' /.claude/ /ROUNDS.md >>"$loop/.git/info/exclude"
+# Neither the skills link nor the round's notes and the agent's replies may
+# end up in a commit.
+printf '%s\n' /.claude/ /ROUNDS.md /REVIEWS.md /REPLIES.json >>"$loop/.git/info/exclude"
 jq -n \
   --argjson denied "$(json_array "${denied[@]}")" \
   --argjson markers "$(json_array "${markers[@]}")" \
