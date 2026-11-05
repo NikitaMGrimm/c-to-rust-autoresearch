@@ -153,6 +153,6 @@ fn report(records: &[eval::Record], quiet: bool) {
     }
     let passed = records.iter().filter(|r| r.stage == "pass").count();
     println!("SCORE {passed}/{}", records.len());
-    let failing_fuzz = records.iter().filter(|r| r.fails_fuzz()).count();
-    println!("FUZZ {}/{passed}", passed - failing_fuzz);
+    let (held, fuzzed) = eval::fuzz_counts(records);
+    println!("FUZZ {held}/{fuzzed}");
 }

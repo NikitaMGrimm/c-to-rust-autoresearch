@@ -115,6 +115,9 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
     std::fs::create_dir_all(work)
         .map_err(|err| format!("cannot create {}: {err}", work.display()))?;
     let spec = eval::spec(c_file)?;
+    let source =
+        std::fs::read(c_file).map_err(|err| format!("cannot read {}: {err}", c_file.display()))?;
+    let bounded = eval::parses_numbers_unchecked(&String::from_utf8_lossy(&source));
     let references = eval::References::build(c_file, &spec.c_flags, work)
         .map_err(|err| format!("{}: {err}", c_file.display()))?;
     let behaviour = |run: eval::Run| (run.stdout, run.exit);
@@ -136,7 +139,9 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
             mutate(&mut candidate, &mut rng);
         }
         let known = |input: &Input| input.args == candidate.args && input.stdin == candidate.stdin;
-        if spec.inputs.iter().chain(&kept).any(known) {
+        if spec.inputs.iter().chain(&kept).any(known)
+            || (bounded && !eval::numbers_fit_int(&candidate))
+        {
             continue;
         }
         match references.check(&candidate) {
@@ -203,7 +208,7 @@ fn change_number(input: &mut Input, rng: &mut Rng) {
         .iter()
         .enumerate()
         .flat_map(|(field, text)| {
-            numbers(text)
+            eval::number_spans(text)
                 .into_iter()
                 .map(move |(start, end)| (field, start, end))
         })
@@ -217,7 +222,14 @@ fn change_number(input: &mut Input, rng: &mut Rng) {
         0 | 1 => pick(&EDGES, rng).to_owned(),
         2 => old.parse::<i128>().map_or_else(
             |_| "0".to_owned(),
-            |n| (n + if rng.below(2) == 0 { 1 } else { -1 }).to_string(),
+            |n| {
+                let step = if rng.below(2) == 0 { 1 } else { -1 };
+                match n.checked_add(step) {
+                    Some(next) => next,
+                    None => n - step,
+                }
+                .to_string()
+            },
         ),
         _ => {
             let (sign, digits) = old.split_at(usize::from(old.starts_with('-')));
@@ -232,30 +244,6 @@ fn change_number(input: &mut Input, rng: &mut Rng) {
     };
     texts[field].replace_range(start..end, &new);
     set_texts(input, texts);
-}
-
-/// Byte ranges of decimal numbers in `text`, with a minus sign that does not
-/// follow a word or another number.
-fn numbers(text: &str) -> Vec<(usize, usize)> {
-    let bytes = text.as_bytes();
-    let mut found = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_digit() {
-            i += 1;
-            continue;
-        }
-        let mut start = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        let glued = |at: usize| bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_';
-        if start > 0 && bytes[start - 1] == b'-' && (start == 1 || !glued(start - 2)) {
-            start -= 1;
-        }
-        found.push((start, i));
-    }
-    found
 }
 
 /// Drops, repeats or empties an argument, or adds one if there are none.
@@ -320,7 +308,10 @@ mod tests {
     #[test]
     fn numbers_keep_a_leading_minus_but_not_a_hyphen() {
         let text = "-5 x-3 a12 7-2 (-40)";
-        let found: Vec<&str> = numbers(text).iter().map(|&(s, e)| &text[s..e]).collect();
+        let found: Vec<&str> = eval::number_spans(text)
+            .iter()
+            .map(|&(s, e)| &text[s..e])
+            .collect();
         assert_eq!(found, ["-5", "3", "12", "7", "2", "-40"]);
     }
 
@@ -336,6 +327,18 @@ mod tests {
                 .filter(|(old, new)| old != new)
                 .count();
             assert!(kept_word && differing <= 1, "{fields:?}");
+        }
+    }
+
+    #[test]
+    fn neighbours_of_the_largest_number_do_not_overflow() {
+        for seed in 0..50 {
+            for edge in [
+                "170141183460469231731687303715884105727",
+                "-170141183460469231731687303715884105728",
+            ] {
+                change_number(&mut input(&[edge], ""), &mut Rng(seed));
+            }
         }
     }
 
@@ -356,14 +359,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn kept_inputs_each_show_new_behaviour() {
-        let dir = std::env::temp_dir().join(format!("fuzz-test-{}", std::process::id()));
+    /// Fuzzes a program that prints `n % 7` for its first argument, given
+    /// the C declaration of `n`. Returns the kept inputs and the number of
+    /// distinct behaviours across the original and kept inputs.
+    fn fuzz_modulo(test: &str, declaration: &str) -> (Vec<Input>, usize) {
+        let dir = std::env::temp_dir().join(format!("fuzz-{test}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let c_file = dir.join("g1_mod.c");
         std::fs::write(
             &c_file,
-            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    if (argc < 2) return 2;\n    long n = strtol(argv[1], 0, 10);\n    printf(\"%ld\\n\", n % 7);\n    return 0;\n}\n",
+            format!(
+                "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {{\n    if (argc < 2) return 2;\n    {declaration}\n    printf(\"%ld\\n\", (long)n % 7);\n    return 0;\n}}\n"
+            ),
         )
         .unwrap();
         std::fs::write(
@@ -384,8 +391,21 @@ mod tests {
             })
             .collect();
         std::fs::remove_dir_all(&dir).unwrap();
+        (kept, behaviours.len())
+    }
+
+    #[test]
+    fn kept_inputs_each_show_new_behaviour() {
+        let (kept, behaviours) = fuzz_modulo("strtol", "long n = strtol(argv[1], 0, 10);");
         assert!(kept.len() >= 3, "{kept:?}");
-        assert_eq!(behaviours.len(), kept.len() + 1);
+        assert_eq!(behaviours, kept.len() + 1);
         assert_eq!(kept[0].name, "fuzz_1");
+    }
+
+    #[test]
+    fn numbers_for_atoi_stay_within_int() {
+        let (kept, _) = fuzz_modulo("atoi", "int n = atoi(argv[1]);");
+        assert!(!kept.is_empty());
+        assert!(kept.iter().all(eval::numbers_fit_int), "{kept:?}");
     }
 }

@@ -67,9 +67,9 @@ A translation passes when:
 
 A program may also have fuzzed inputs in `NAME.fuzz.json`. For a translation
 that passes, the evaluator runs them the same way and prints the result as
-`fuzz: STAGE`; the last line, `FUZZ held/passed`, counts the passes that also
-pass their fuzzed inputs. These inputs do not change whether a translation
-passes.
+`fuzz: STAGE`; the last line, `FUZZ held/fuzzed`, counts the passes with
+fuzzed inputs and how many of them also pass those. These inputs do not change
+whether a translation passes.
 
 Standard error is not compared. Both programs run as `./program` from their
 own directories. Every program may write files of at most 64 MiB and print at

@@ -73,7 +73,7 @@ share a set.
 | Total | 24 | 14 | 13 |
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`dfb2d93432e8c9c5ad03ee087d5a6b6e8184a30e4045ef0b2278f02cfb14762d`.
+`a03d8f01cf81045cd8ba4496d4c00518138bb9256ab18993305217e063d3a44a`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -114,9 +114,12 @@ random: numbers become edge values such as `2147483648`, neighbours or other
 digits; arguments and lines of standard input are dropped, repeated or cut
 off; single characters are deleted, replaced or inserted. A candidate is kept
 when it passes the same C checks as the benchmarks and the C program prints or
-exits unlike on every input kept before, up to 10 per program. Development
-programs get `NAME.fuzz.json` here; the private sets keep theirs. The seed is
-fixed, so a rerun writes the same files.
+exits unlike on every input kept before, up to 10 per program. Programs that
+call `atoi`, `atol`, `atoll` or the `scanf` family only get numbers that fit
+an `int`: these functions have undefined behaviour on larger numbers, which
+the sanitizers do not catch. Development programs get `NAME.fuzz.json` here;
+the private sets keep theirs. The seed is fixed, so a rerun writes the same
+files.
 
 | Set | Fuzzed inputs | Programs with them | Programs |
 |---|---:|---:|---:|

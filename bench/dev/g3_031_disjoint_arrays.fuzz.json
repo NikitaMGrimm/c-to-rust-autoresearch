@@ -13,44 +13,46 @@
     {
       "args": [],
       "name": "fuzz_3",
-      "stdin": "-2147483649\n"
-    },
-    {
-      "args": [],
-      "name": "fuzz_4",
       "stdin": "42\n123\n-2"
     },
     {
       "args": [],
-      "name": "fuzz_5",
+      "name": "fuzz_4",
       "stdin": "42\n123\n--2"
     },
     {
       "args": [
         "1"
       ],
-      "name": "fuzz_6",
+      "name": "fuzz_5",
       "stdin": "-32769\n"
     },
     {
       "args": [],
-      "name": "fuzz_7",
+      "name": "fuzz_6",
       "stdin": "1 4294967a95 3"
     },
     {
       "args": [],
-      "name": "fuzz_8",
-      "stdin": "9223372036854775807\n"
-    },
-    {
-      "args": [],
-      "name": "fuzz_9",
+      "name": "fuzz_7",
       "stdin": "1\n2\nZ3"
     },
     {
       "args": [],
-      "name": "fuzz_10",
+      "name": "fuzz_8",
       "stdin": "32Z67\n123\n-3"
+    },
+    {
+      "args": [],
+      "name": "fuzz_9",
+      "stdin": "32767\n"
+    },
+    {
+      "args": [
+        "10"
+      ],
+      "name": "fuzz_10",
+      "stdin": "1\n203"
     }
   ]
 }

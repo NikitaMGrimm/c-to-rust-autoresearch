@@ -6,55 +6,53 @@
       "stdin": "55 "
     },
     {
-      "args": [
-        "4294967295"
-      ],
-      "name": "fuzz_2",
-      "stdin": "7"
-    },
-    {
       "args": [],
-      "name": "fuzz_3",
+      "name": "fuzz_2",
       "stdin": "66"
     },
     {
       "args": [
         "127"
       ],
-      "name": "fuzz_4",
+      "name": "fuzz_3",
       "stdin": "50"
     },
     {
       "args": [],
-      "name": "fuzz_5",
+      "name": "fuzz_4",
       "stdin": "-"
     },
     {
       "args": [],
-      "name": "fuzz_6",
+      "name": "fuzz_5",
       "stdin": "9"
     },
     {
       "args": [
         "256"
       ],
-      "name": "fuzz_7",
+      "name": "fuzz_6",
       "stdin": "127"
     },
     {
       "args": [],
-      "name": "fuzz_8",
+      "name": "fuzz_7",
       "stdin": "80"
     },
     {
       "args": [],
-      "name": "fuzz_9",
+      "name": "fuzz_8",
       "stdin": "128"
     },
     {
       "args": [],
-      "name": "fuzz_10",
+      "name": "fuzz_9",
       "stdin": "8888"
+    },
+    {
+      "args": [],
+      "name": "fuzz_10",
+      "stdin": "-1"
     }
   ]
 }

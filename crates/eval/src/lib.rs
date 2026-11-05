@@ -126,6 +126,83 @@ pub fn fuzzed_inputs(c_file: &Path) -> Result<Vec<Input>, String> {
     parse_inputs(&json["inputs"], invalid)
 }
 
+/// Functions whose behaviour is undefined when a number they read does not
+/// fit its type. The sanitizers miss this, so generated inputs for programs
+/// that call them keep their numbers within `int`.
+const UNCHECKED_PARSERS: [&str; 6] = ["atoi", "atol", "atoll", "scanf", "sscanf", "fscanf"];
+
+/// Whether the C `source` calls one of [`UNCHECKED_PARSERS`]. A mention in a
+/// comment also counts, which only makes generated inputs smaller.
+pub fn parses_numbers_unchecked(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut i = 0;
+    while i < bytes.len() {
+        if !word(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && word(bytes[i]) {
+            i += 1;
+        }
+        let called = source[i..].trim_start().starts_with('(');
+        if called && UNCHECKED_PARSERS.contains(&&source[start..i]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Byte ranges of the decimal numbers in `text`, with a minus sign that does
+/// not follow a word or another number.
+pub fn number_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let mut start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let glued = |at: usize| bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_';
+        if start > 0 && bytes[start - 1] == b'-' && (start == 1 || !glued(start - 2)) {
+            start -= 1;
+        }
+        found.push((start, i));
+    }
+    found
+}
+
+/// Whether every number in the arguments and standard input fits in `int`.
+pub fn numbers_fit_int(input: &Input) -> bool {
+    let stdin = String::from_utf8_lossy(&input.stdin);
+    input
+        .args
+        .iter()
+        .map(String::as_str)
+        .chain([stdin.as_ref()])
+        .all(|text| {
+            number_spans(text)
+                .iter()
+                .all(|&(start, end)| text[start..end].parse::<i32>().is_ok())
+        })
+}
+
+/// Passes whose program has fuzzed inputs, and how many of them hold on them.
+pub fn fuzz_counts(records: &[Record]) -> (usize, usize) {
+    let fuzzed: Vec<&Record> = records
+        .iter()
+        .filter(|record| record.stage == "pass" && record.fuzz.is_some())
+        .collect();
+    let held = fuzzed.iter().filter(|record| !record.fails_fuzz()).count();
+    (held, fuzzed.len())
+}
+
 fn parse_inputs(
     list: &serde_json::Value,
     invalid: impl Fn(&str) -> String,
@@ -1096,6 +1173,56 @@ fn main() {
         assert_eq!(counts["lint_allows"], 1);
         assert_eq!(counts["lines"], 11);
         assert_eq!(idiom_counts("fn main( {"), None);
+    }
+
+    #[test]
+    fn unchecked_number_parsers_are_found_only_when_called() {
+        assert!(parses_numbers_unchecked("int n = atoi (argv[1]);"));
+        assert!(parses_numbers_unchecked(
+            "if (sscanf(line, \"%d\", &n) != 1)"
+        ));
+        assert!(!parses_numbers_unchecked(
+            "long n = strtol(argv[1], 0, 10);"
+        ));
+        assert!(!parses_numbers_unchecked(
+            "int my_atoi(const char *s); int atoi_count;"
+        ));
+    }
+
+    #[test]
+    fn numbers_beyond_int_are_found_in_arguments_and_input() {
+        let input = |args: &[&str], stdin: &str| Input {
+            name: String::new(),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            stdin: stdin.as_bytes().to_vec(),
+        };
+        assert!(numbers_fit_int(&input(
+            &["2147483647", "x-5"],
+            "-2147483648\n"
+        )));
+        assert!(!numbers_fit_int(&input(&["2147483648"], "")));
+        assert!(!numbers_fit_int(&input(&[], "1 -2147483649\n")));
+    }
+
+    #[test]
+    fn fuzz_counts_leave_out_passes_without_fuzzed_inputs() {
+        let record = |stage: &'static str, fuzz: Option<&'static str>| Record {
+            name: String::new(),
+            group: String::new(),
+            stage,
+            detail: String::new(),
+            warnings: BTreeMap::new(),
+            metrics: None,
+            fuzz: fuzz.map(|stage| (stage, String::new())),
+            seconds: 0.0,
+        };
+        let records = [
+            record("pass", None),
+            record("pass", Some("pass")),
+            record("pass", Some("mismatch")),
+            record("mismatch", None),
+        ];
+        assert_eq!(fuzz_counts(&records), (1, 2));
     }
 
     #[test]
