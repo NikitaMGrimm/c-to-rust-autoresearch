@@ -1,6 +1,6 @@
-//! Decides whether the research loop keeps a candidate commit. Run it from a
-//! trusted checkout: it evaluates the base and the candidate transpiler on the
-//! development set, the private validation set and the private variants of the
+//! Decides whether the research loop keeps a candidate commit. It runs only
+//! from a clean checkout of main, since it trusts its own code: it evaluates
+//! the base and the candidate transpiler on the development set, the private validation set and the private variants of the
 //! development set, appends everything to a private log and prints only what the
 //! loop agent may see.
 
@@ -13,7 +13,8 @@ use eval::Stage;
 
 const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage FILE]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
-     --usage adds a usage report (from the usage tool) to the private log.";
+     --usage adds a report of the transcripts usage tool to the private log.\n\
+     Run it from a clean checkout of main, not from the loop agent's checkout.";
 
 /// The only paths a loop change may touch; the evaluator and the benchmarks
 /// are fixed.
@@ -74,6 +75,12 @@ fn main() -> ExitCode {
 }
 
 fn gate(args: &Args) -> Result<bool, String> {
+    let head = git(&["rev-parse", "HEAD"])?;
+    let main = git(&["rev-parse", "--verify", "main^{commit}"])?;
+    let changes = git(&["status", "--porcelain", "--untracked-files=no"])?;
+    if let Some(problem) = untrusted(&head, &main, &changes) {
+        return Err(problem);
+    }
     let usage = match &args.usage {
         Some(path) => std::fs::read_to_string(path)
             .map_err(|err| err.to_string())
@@ -225,6 +232,19 @@ fn rejection(before: &Results, after: &Results) -> Option<String> {
     }
 }
 
+/// Why the gate's own checkout cannot be trusted, if so. The gate is built
+/// from it, so a checkout off main or with changes could run altered code,
+/// such as the loop agent's.
+fn untrusted(head: &str, main: &str, changes: &str) -> Option<String> {
+    if head != main {
+        Some("the gate's checkout is not at main; run it from a checkout of main".to_owned())
+    } else if !changes.is_empty() {
+        Some("the gate's checkout has uncommitted changes".to_owned())
+    } else {
+        None
+    }
+}
+
 /// Why the change from `base` to `candidate` may not be evaluated, if so.
 fn change_problem(base: &str, candidate: &str) -> Result<Option<String>, String> {
     let descends = Command::new("git")
@@ -348,6 +368,14 @@ mod tests {
         assert_eq!(rejection(&before, &gain), None);
         assert!(rejection(&before, &trade).unwrap().contains("development"));
         assert!(rejection(&before, &overfit).unwrap().contains("validation"));
+    }
+
+    #[test]
+    fn only_a_clean_checkout_of_main_is_trusted() {
+        assert_eq!(untrusted("a1", "a1", ""), None);
+        assert!(untrusted("b2", "a1", "").unwrap().contains("not at main"));
+        let changed = untrusted("a1", "a1", " M crates/eval/src/lib.rs").unwrap();
+        assert!(changed.contains("uncommitted"));
     }
 
     #[test]

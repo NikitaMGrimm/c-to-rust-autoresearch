@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Claude Code PreToolUse hook for the loop agent, installed by loop/setup.
+# Claude Code's deny rules cover its own file tools but not the shell, so this
+# blocks any tool call that names a denied place or the TRACTOR corpus, or
+# changes Claude Code settings. The arguments are the texts to block.
+# Exit code 2 blocks the call; on unreadable input it blocks too.
+
+block() {
+  echo "Blocked: $1. The loop agent may not reach the private programs or the corpus that holds them; see loop/program.md." >&2
+  exit 2
+}
+
+input=$(cat)
+tool=$(jq -r '.tool_name // ""' <<<"$input") || block "the hook could not read the tool call"
+text=$(jq -c '.tool_input // {}' <<<"$input") || block "the hook could not read the tool call"
+
+for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus; do
+  if [[ $text == *"$marker"* ]]; then
+    block "the call names $marker"
+  fi
+done
+if [[ $tool == Web* && ${text,,} == *tractor* ]]; then
+  block "the call looks for TRACTOR"
+fi
+case $tool in
+  Bash | Edit | Write | NotebookEdit)
+    if [[ $text == *.claude/settings* ]]; then
+      block "the call touches Claude Code settings"
+    fi
+    ;;
+esac
+exit 0

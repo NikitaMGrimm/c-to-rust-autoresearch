@@ -8,7 +8,7 @@ stays fixed while a loop runs.
 | `transpiler` | Translates one C file to Rust | the loop |
 | `eval` | The evaluator library, the `eval` command and the loop's `gate` | the owner |
 | `bench` | Builds the benchmark sets: `intake`, `variants`, `fuzz`, `near-copies` | the owner |
-| `usage` | Sums model usage from Claude Code transcripts | the owner |
+| `transcripts` | Reads Claude Code transcripts: model `usage` and the loop's `audit` | the owner |
 
 ## Evaluating a program
 
@@ -90,5 +90,31 @@ score does not drop. Every result goes to `PRIVATE_DIR/loop/log.jsonl`, with
 the validation score without [near-copies](../bench/README.md#near-copies) and
 the passes that fail their fuzzed inputs. The gate prints only the
 development results and the decision. Exit code 0 means keep, 1 reject and 2
-error. Run it from a checkout the loop agent cannot write to, since it trusts
-its own code and the benchmarks.
+error. The gate trusts its own code and the benchmarks, so it refuses to run
+from anything but a clean checkout of main.
+
+## Keeping the loop agent out
+
+A look at a private program cannot be undone, and the TRACTOR corpus that
+holds them is public. Agents rarely go looking on purpose, but one that wants
+more examples of a construct might, so the loop has several layers:
+
+- `loop/program.md` tells the agent where the private programs are and why it
+  must not look.
+- `loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]` clones main for the agent,
+  so its Claude Code settings and memory are its own. Its settings deny
+  Claude Code's file tools the private directory, the corpus cache, the main
+  checkout's `local/` and transcripts, and each `DENIED_DIR`; deny fetches
+  from GitHub and network commands; and install `loop/guard`. That hook blocks
+  any tool call, shell commands included, that names those places or the
+  corpus, or changes Claude Code settings.
+- `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
+  agent's transcripts afterwards. It reports every private program name the
+  agent saw or wrote, and every tool call that named the private directory or
+  the corpus, looked for TRACTOR on the web, or touched Claude Code settings.
+  Exit code 0 means none.
+
+`intake` fetches the corpus again when its cache is missing, so the cache can
+be deleted while a loop runs. Only the audit catches a command that reaches a
+private program without naming it, such as a search of the whole home
+directory, and nothing catches what the model learned in pretraining.

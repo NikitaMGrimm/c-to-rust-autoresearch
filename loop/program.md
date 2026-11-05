@@ -10,8 +10,18 @@ see.
 
 Only `crates/transpiler/` and `Cargo.lock`. The evaluator, the benchmarks and
 these instructions are fixed; the gate rejects any other change. Keep to
-`AGENTS.md`, and do not try to reach anything outside this repository: the
-network, other directories or private benchmarks.
+`AGENTS.md`.
+
+## What you may not see
+
+The development programs come from DARPA's TRACTOR test corpus, which also
+holds the private programs the loop is measured on. Do not fetch, clone or
+search for that corpus or any copy of it, and stay inside this checkout: no
+other directories, no Claude Code transcripts or settings, and no network
+except cargo fetching crates. One look at a private program invalidates the
+experiment and cannot be undone. Your settings block these, and every session
+is audited afterwards. When a construct needs more examples than the
+development programs give, write small C programs of your own as tests.
 
 ## One iteration
 
@@ -32,10 +42,10 @@ network, other directories or private benchmarks.
 
 ## The gate
 
-After each iteration the gate builds the transpiler from your commit and
-evaluates it on the development set, a private validation set and private
+After each iteration the gate, run outside your session, builds the
+transpiler from your commit and evaluates it on the development set, a private validation set and private
 variants of the development programs with renamed identifiers, changed
 constants and new inputs. It keeps the commit when the development score rises
 and the validation score does not drop, and otherwise reverts it. You see the
-development results and the decision. Overfitting the development programs
-fails on the rest.
+development results and the decision. Do not run the gate or the benchmark
+tools yourself. Overfitting the development programs fails on the rest.
