@@ -48,15 +48,12 @@ for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus; do
     block "the call names $marker"
   fi
 done
-# Settings, transcripts and memory are off limits; skills and plugins are the
-# owner's tools. A path with .. could climb out of either exception.
+# Settings, transcripts, memory and the owner's skills are off limits. The
+# agent may read back the tool output that Claude Code saved for it, but a
+# path with .. could climb out of that directory.
 rest=$text
-if [[ $rest != *..* ]]; then
-  rest=${rest//.claude\/skills\//}
-  rest=${rest//.claude\/plugins\//}
-  if [[ $tool == Read ]]; then
-    rest=${rest//"$own"/}
-  fi
+if [[ $tool == Read && $rest != *..* ]]; then
+  rest=${rest//"$own"/}
 fi
 if names "$rest" .claude; then
   block "the call touches Claude Code's files"

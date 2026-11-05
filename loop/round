@@ -5,6 +5,7 @@
 # the next iteration. Run it by this checkout's path, never the loop
 # checkout's copy, which the agent can change. See docs/architecture.md.
 set -euo pipefail
+trap 'exit 2' ERR
 
 if (($# < 2)); then
   cat >&2 <<'EOF'
@@ -19,16 +20,29 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 private=$(cd "$1" && pwd -P)
 loop=$(cd "$2" && pwd -P)
 shift 2
+denied=()
+for dir in "$@"; do
+  denied+=("$(cd "$dir" && pwd -P)")
+done
 # The checkout is deleted below, so it must be one that loop/setup made.
-if [[ $loop == "$repo" || ! -f $loop/.claude/settings.local.json ]] ||
-  ! grep -qF -- "'$repo/loop/guard'" "$loop/.claude/settings.local.json" ||
+settings=$loop/.claude/settings.local.json
+if [[ $loop == "$repo" || ! -f $settings ]] ||
+  ! jq -e --arg guard "$repo/loop/guard" \
+    '.hooks.PreToolUse[0].hooks[0].command | startswith($guard | @sh)' "$settings" >/dev/null ||
   [[ $(git config -f "$loop/.git/config" --get c2r.loop) != true ]]; then
   echo "$loop is not a loop checkout made by loop/setup" >&2
   exit 2
 fi
-state=$repo/local/loop
+name=$(printf %s "$loop" | tr -c 'a-zA-Z0-9' '-')
+transcripts=$HOME/.claude/projects/$name
+state=$repo/local/loop/$name
 mkdir -p "$state"
-transcripts="$HOME/.claude/projects/$(printf %s "$loop" | tr -c 'a-zA-Z0-9' '-')"
+# Two rounds at once would judge the same commit and delete each other's clone.
+exec 9>"$repo/local/loop/lock"
+if ! flock -n 9; then
+  echo "round stopped: another round is running" >&2
+  exit 2
+fi
 cd "$repo"
 
 # After a look at a private program, the gate's results would mean nothing.
@@ -54,15 +68,17 @@ if [[ $candidate == "$base" ]]; then
 fi
 
 report=$(mktemp)
-trap 'rm -f "$report"' EXIT
+printed=$(mktemp)
+trap 'rm -f "$report" "$printed"' EXIT
 since=()
 if [[ -f $state/since ]]; then
   since=(--since "$(cat "$state/since")")
 fi
 cargo run -q -p transcripts --bin usage -- "${since[@]}" "$transcripts" >"$report"
 status=0
-cargo run -q -p eval --bin gate -- "$private" "$base" "$candidate" --usage "$report" |
-  tee "$state/gate.txt" || status=$?
+cargo run -q -p eval --bin gate -- "$private" "$base" "$candidate" --usage "$report" \
+  >"$printed" || status=$?
+cat "$printed"
 if ((status > 1)); then
   echo "round stopped: the gate failed; nothing was changed" >&2
   exit 2
@@ -74,12 +90,12 @@ fi
 {
   echo "## $(git log -1 --format='%h %s' "$candidate")"
   echo
-  cat "$state/gate.txt"
+  cat "$printed"
   echo
 } >>"$state/rounds.md"
 
 rm -rf "$loop"
-"$repo/loop/setup" "$private" "$loop" "$@" >/dev/null
+"$repo/loop/setup" "$private" "$loop" "${denied[@]}" >/dev/null
 cp "$state/rounds.md" "$loop/ROUNDS.md"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
 echo "next iteration: a fresh $loop at $(git log -1 --format='%h %s' main)"

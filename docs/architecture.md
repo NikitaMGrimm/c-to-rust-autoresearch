@@ -107,7 +107,8 @@ clone and runs `loop/setup` again, so every session starts from a fresh clone
 of main. The new clone's `ROUNDS.md` lists every judged commit with what the
 gate printed. The script reads the clone only through `git fetch`, because
 git run inside it would apply settings and hooks the agent could have
-changed, and its state stays in the main checkout's `local/loop/`.
+changed. Its state stays in the main checkout's `local/loop/`, one directory
+for each loop checkout, and a lock there lets only one round run at a time.
 
 ## Keeping the loop agent out
 
@@ -127,10 +128,10 @@ more examples of a construct might, so the loop has several layers:
   `~/.claude`; deny the web tools, network commands and T3 Code's tools; and
   install `loop/guard`. That hook blocks any tool call, shell commands
   included, that names those places, by path or by their own name, or the
-  corpus, or touches Claude Code's files other than skills, plugins and the
-  tool output Claude Code saves for the agent. It also blocks every MCP tool,
-  since T3 Code's reach other threads, a browser and agents in other
-  directories, and every skill outside `loop/skills`.
+  corpus, or touches Claude Code's files other than the tool output Claude
+  Code saves for the agent. It also blocks every MCP tool, since T3 Code's
+  reach other threads, a browser and agents in other directories, and every
+  skill outside `loop/skills`.
 - `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private

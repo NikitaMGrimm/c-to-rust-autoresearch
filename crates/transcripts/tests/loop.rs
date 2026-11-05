@@ -64,6 +64,7 @@ fn calls_reaching_private_places_are_blocked() {
             "Bash",
             json!({"command": "cat ~/.claude/skills/../settings.json"}),
         ),
+        ("Read", json!({"file_path": "/h/.claude/skills/x/SKILL.md"})),
         (
             "Read",
             json!({"file_path": "/h/.claude/projects/-loop/../-main/s.jsonl"}),
@@ -86,7 +87,6 @@ fn ordinary_calls_pass() {
             "Read",
             json!({"file_path": "/h/.claude/projects/-loop/s/tool-results/a.txt"}),
         ),
-        ("Read", json!({"file_path": "/h/.claude/skills/x/SKILL.md"})),
         (
             "Bash",
             json!({"command": "echo https://code.claude.com/docs"}),
@@ -152,7 +152,8 @@ impl Fixture {
     fn new() -> Fixture {
         let scratch = eval::Scratch::new("test").unwrap();
         let dir = scratch.canonicalize().unwrap();
-        let (repo, home) = (dir.join("repo"), dir.join("home"));
+        // A quote in the path tests how the scripts quote it.
+        let (repo, home) = (dir.join("it's repo"), dir.join("home"));
         for path in [
             repo.join("loop/skills/inspect"),
             home.join("notes"),
@@ -167,7 +168,11 @@ impl Fixture {
             std::fs::copy(source, repo.join("loop").join(script)).unwrap();
         }
         std::fs::write(repo.join("loop/skills/inspect/SKILL.md"), "name: inspect\n").unwrap();
-        std::fs::write(home.join(".claude/skills/mine/SKILL.md"), "name: mine\n").unwrap();
+        std::fs::write(
+            home.join(".claude/skills/mine/SKILL.md"),
+            "name: \"mine\"\n",
+        )
+        .unwrap();
         std::fs::write(repo.join(".gitignore"), "/local/\n").unwrap();
         let cargo = dir.join("bin/cargo");
         std::fs::write(
@@ -203,13 +208,19 @@ esac
     /// Runs a loop script with the private directory, the loop checkout and
     /// `notes` as a denied directory, and returns its exit code.
     fn run(&self, script: &str, audit: u8, gate: u8) -> Option<i32> {
-        let path = format!("{}:{}", self.dir.join("bin").display(), env!("PATH"));
+        let notes = self.home.join("notes");
+        self.run_in(&self.dir, script, audit, gate, &notes)
+    }
+
+    fn run_in(&self, cwd: &Path, script: &str, audit: u8, gate: u8, denied: &Path) -> Option<i32> {
+        let path = format!(
+            "{}:{}",
+            self.dir.join("bin").display(),
+            std::env::var("PATH").unwrap()
+        );
         Command::new(self.repo.join("loop").join(script))
-            .args([
-                self.dir.join("private"),
-                self.loop_dir.clone(),
-                self.home.join("notes"),
-            ])
+            .args([&self.dir.join("private"), &self.loop_dir, denied])
+            .current_dir(cwd)
             .env("HOME", &self.home)
             .env("PATH", path)
             .env("CALLS", self.dir.join("calls"))
@@ -299,8 +310,10 @@ fn setup_keeps_the_agent_out_of_denied_places_and_off_the_web() {
         .as_str()
         .unwrap();
     let own = transcripts(home, &fixture.loop_dir);
+    let quote = |text: String| format!("'{}'", text.replace('\'', "'\\''"));
+    let guard = quote(format!("{}/loop/guard", repo.display()));
     assert!(
-        hook.starts_with(&format!("'{}/loop/guard' '{own}' ", repo.display())),
+        hook.starts_with(&format!("{guard} {} ", quote(own))),
         "{hook}"
     );
     let bash = |command: &str| fixture.hook("Bash", json!({"command": command}));
@@ -331,6 +344,12 @@ fn a_round_keeps_or_drops_the_commit_and_starts_afresh() {
     assert_eq!(git(&fixture.loop_dir, &["status", "--porcelain"]), "");
 
     commit(&fixture.loop_dir, "dropped");
+    let state = std::fs::read_dir(fixture.repo.join("local/loop"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir())
+        .unwrap();
+    let since = std::fs::read_to_string(state.join("since")).unwrap();
     assert_eq!(fixture.run("round", 0, 1), Some(0));
     assert_eq!(git(&fixture.repo, &["rev-parse", "main"]), kept);
     assert_eq!(git(&fixture.loop_dir, &["rev-parse", "HEAD"]), kept);
@@ -340,7 +359,8 @@ fn a_round_keeps_or_drops_the_commit_and_starts_afresh() {
     let candidates = git(&fixture.repo, &["for-each-ref", "refs/loop/"]);
     assert_eq!(candidates.lines().count(), 2, "{candidates}");
     // The second round's usage counts from the start of its session.
-    assert!(fixture.calls().contains("--bin usage -- --since "));
+    let usage = format!("--bin usage -- --since {}", since.trim());
+    assert!(fixture.calls().contains(&usage), "{}", fixture.calls());
 }
 
 #[test]
@@ -363,4 +383,58 @@ fn a_round_judges_nothing_without_a_commit_or_after_contact() {
     std::fs::write(fixture.loop_dir.join(".claude/settings.local.json"), "{}").unwrap();
     assert_eq!(fixture.run("round", 0, 0), Some(2));
     assert!(fixture.loop_dir.join(".git").is_dir());
+}
+
+#[test]
+fn a_failed_gate_changes_nothing() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run("setup", 0, 0), Some(0));
+    let main = git(&fixture.repo, &["rev-parse", "main"]);
+    let work = commit(&fixture.loop_dir, "work");
+    assert_eq!(fixture.run("round", 0, 2), Some(2));
+    assert_eq!(git(&fixture.repo, &["rev-parse", "main"]), main);
+    assert_eq!(git(&fixture.loop_dir, &["rev-parse", "HEAD"]), work);
+    assert!(!fixture.loop_dir.join("ROUNDS.md").exists());
+}
+
+#[test]
+fn a_round_resolves_denied_directories_where_it_was_started() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run("setup", 0, 0), Some(0));
+    commit(&fixture.loop_dir, "work");
+    let started = fixture.run_in(&fixture.home, "round", 0, 0, Path::new("notes"));
+    assert_eq!(started, Some(0));
+    let deny = fixture.settings()["permissions"]["deny"].clone();
+    let rule = format!("Read(/{}/notes/**)", fixture.home.display());
+    assert!(deny.as_array().unwrap().contains(&json!(rule)), "{deny}");
+}
+
+#[test]
+fn a_round_fails_with_2_and_runs_alone() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run("setup", 0, 0), Some(0));
+    commit(&fixture.loop_dir, "work");
+    // A failed command that the script does not check, here the fetch.
+    let head = fixture.loop_dir.join(".git/HEAD");
+    let saved = std::fs::read(&head).unwrap();
+    std::fs::remove_file(&head).unwrap();
+    assert_eq!(fixture.run("round", 0, 0), Some(2));
+    std::fs::write(&head, saved).unwrap();
+
+    let lock = fixture.repo.join("local/loop/lock");
+    let mut holder = Command::new("flock")
+        // Without forking, the process that holds the lock is the one killed.
+        .args([
+            "--no-fork".as_ref(),
+            lock.as_os_str(),
+            "sleep".as_ref(),
+            "10".as_ref(),
+        ])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(fixture.run("round", 0, 0), Some(2));
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    assert_eq!(fixture.run("round", 0, 0), Some(0));
 }

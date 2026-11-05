@@ -63,7 +63,8 @@ done
 # The owner's skills, by the names they declare.
 skills=()
 while IFS= read -r file; do
-  name=$(sed -n 's/^name: *//p' "$file" | head -1)
+  # A YAML name may be quoted; Claude Code matches it unquoted.
+  name=$(sed -n 's/^name: *//p' "$file" | head -1 | sed -E 's/^"(.*)"$|^'"'"'(.*)'"'"'$/\1\2/')
   if [[ -n $name ]]; then
     skills+=("$name")
   fi
