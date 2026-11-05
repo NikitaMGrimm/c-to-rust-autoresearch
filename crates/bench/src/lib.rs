@@ -1,7 +1,28 @@
 //! Shared parts of the benchmark tools: seeded random numbers and the numbers
 //! in program inputs.
 
+use std::path::{Path, PathBuf};
+
 use eval::Input;
+
+/// The benchmark sets, each with its directory: development in this
+/// repository, validation and held-out in the private directory.
+pub fn sets(private: &Path) -> [(&'static str, PathBuf); 3] {
+    [
+        ("dev", eval::dev_dir()),
+        ("validation", private.join("validation")),
+        ("held-out", private.join("held-out")),
+    ]
+}
+
+/// The secret seed in the private directory, from which every assignment and
+/// variant is derived.
+pub fn seed(private: &Path) -> Result<u64, String> {
+    let path = private.join("seed");
+    let seed = std::fs::read_to_string(&path)
+        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    u64::from_str_radix(seed.trim(), 16).map_err(|_| "seed must be hexadecimal".to_owned())
+}
 
 /// SplitMix64 finaliser: spreads a seed into an evenly distributed value.
 pub fn mix(mut x: u64) -> u64 {

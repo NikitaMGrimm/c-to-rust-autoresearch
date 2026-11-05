@@ -1,3 +1,4 @@
+use eval::Stage;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -62,14 +63,14 @@ fn evaluate(test: &str, c: &str, inputs: Option<&str>, rust: &str) -> eval::Reco
 #[test]
 fn translation_matching_every_input_passes() {
     let record = evaluate("inputs-pass", ECHO_C, Some(INPUTS), ECHO_RS);
-    assert_eq!(record.stage, "pass", "{}", record.detail);
+    assert_eq!(record.stage, Stage::Pass, "{}", record.detail);
 }
 
 #[test]
 fn translation_ignoring_stdin_fails_on_that_input() {
     let ignores_stdin = ECHO_RS.replace("std::io::stdin().read_line(&mut line).unwrap();", "");
     let record = evaluate("inputs-mismatch", ECHO_C, Some(INPUTS), &ignores_stdin);
-    assert_eq!(record.stage, "mismatch");
+    assert_eq!(record.stage, Stage::Mismatch);
     assert!(
         record.detail.starts_with("input both: "),
         "{}",
@@ -81,7 +82,7 @@ fn translation_ignoring_stdin_fails_on_that_input() {
 fn undefined_behaviour_on_one_input_invalidates_the_c_program() {
     let c = "#include <stdlib.h>\nint main(int argc, char **argv) {\n    int a[4] = {0};\n    return argc > 1 ? a[atoi(argv[1])] : 0;\n}\n";
     let record = evaluate("inputs-ub", c, Some(INPUTS), ECHO_RS);
-    assert_eq!(record.stage, "c_invalid");
+    assert_eq!(record.stage, Stage::CInvalid);
     assert!(
         record.detail.starts_with("input both: "),
         "{}",
@@ -97,7 +98,7 @@ fn malformed_inputs_file_is_reported() {
         Some(r#"{"inputs": []}"#),
         ECHO_RS,
     );
-    assert_eq!(record.stage, "c_invalid");
+    assert_eq!(record.stage, Stage::CInvalid);
     assert!(record.detail.contains("non-empty"), "{}", record.detail);
 }
 
@@ -105,7 +106,7 @@ fn malformed_inputs_file_is_reported() {
 fn input_that_cannot_be_passed_is_not_a_pass() {
     let nul = r#"{"inputs": [{"name": "nul", "args": ["a\u0000b"]}]}"#;
     let record = evaluate("inputs-nul", ECHO_C, Some(nul), ECHO_RS);
-    assert_eq!(record.stage, "c_invalid", "{}", record.detail);
+    assert_eq!(record.stage, Stage::CInvalid, "{}", record.detail);
 }
 
 #[test]
@@ -122,7 +123,7 @@ fn unsafe_is_reported_after_a_mismatch_on_a_later_input() {
         Some(INPUTS),
         &unsafe_ignoring_stdin,
     );
-    assert_eq!(record.stage, "mismatch", "{}", record.detail);
+    assert_eq!(record.stage, Stage::Mismatch, "{}", record.detail);
 }
 
 #[test]
@@ -134,7 +135,7 @@ fn rust_panic_fails_even_when_c_exits_with_101() {
         None,
         "fn main() {\n    panic!(\"boom\");\n}\n",
     );
-    assert_eq!(record.stage, "panic", "{}", record.detail);
+    assert_eq!(record.stage, Stage::Panic, "{}", record.detail);
 }
 
 #[test]
@@ -142,14 +143,14 @@ fn c_and_rust_programs_see_the_same_argv0() {
     let c = "#include <stdio.h>\nint main(int argc, char **argv) { (void)argc; puts(argv[0]); return 0; }\n";
     let rust = "fn main() {\n    println!(\"{}\", std::env::args().next().unwrap());\n}\n";
     let record = evaluate("argv0", c, None, rust);
-    assert_eq!(record.stage, "pass", "{}", record.detail);
+    assert_eq!(record.stage, Stage::Pass, "{}", record.detail);
 }
 
 #[test]
 fn c_output_beyond_the_limit_is_invalid() {
     let c = "#include <stdio.h>\nint main(void) { for (int i = 0; i < (9 << 20) / 64; i++) printf(\"%063d\\n\", i); return 0; }\n";
     let record = evaluate("output-limit", c, None, ECHO_RS);
-    assert_eq!(record.stage, "c_invalid");
+    assert_eq!(record.stage, Stage::CInvalid);
     assert!(
         record.detail.contains("output exceeds"),
         "{}",
@@ -163,7 +164,7 @@ fn translation_beyond_the_memory_limit_fails() {
     // Zeroed pages are never touched, so this cannot exhaust memory if the limit is missing.
     let rust = "fn main() {\n    let big = vec![0u8; 8 << 30];\n    println!(\"{}\", big[big.len() - 1]);\n}\n";
     let record = evaluate("memory-limit", c, None, rust);
-    assert_ne!(record.stage, "pass", "{}", record.detail);
+    assert_ne!(record.stage, Stage::Pass, "{}", record.detail);
 }
 
 #[test]
@@ -184,8 +185,8 @@ fn existing_translations_are_evaluated_without_the_transpiler() {
         &dir.join("work2"),
     );
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(found.stage, "pass", "{}", found.detail);
-    assert_eq!(missing.stage, "transpile_fail");
+    assert_eq!(found.stage, Stage::Pass, "{}", found.detail);
+    assert_eq!(missing.stage, Stage::TranspileFail);
 }
 
 #[test]
@@ -197,9 +198,9 @@ fn only_known_c_flags_are_accepted() {
         Some(&with(r#"["-fno-strict-aliasing"]"#)),
         ECHO_RS,
     );
-    assert_eq!(allowed.stage, "pass", "{}", allowed.detail);
+    assert_eq!(allowed.stage, Stage::Pass, "{}", allowed.detail);
     let other = evaluate("flags-bad", ECHO_C, Some(&with(r#"["-O3"]"#)), ECHO_RS);
-    assert_eq!(other.stage, "c_invalid");
+    assert_eq!(other.stage, Stage::CInvalid);
     assert!(other.detail.contains("c_flags"), "{}", other.detail);
 }
 
@@ -242,7 +243,7 @@ fn agent_code_cannot_read_home_keep_files_or_connect() {
     );
     let escaped = ["escaped-translation", "escaped-transpiler"].map(|name| dir.join(name).exists());
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(record.stage, "pass", "{}", record.detail);
+    assert_eq!(record.stage, Stage::Pass, "{}", record.detail);
     assert_eq!(escaped, [false, false]);
 }
 
@@ -254,7 +255,7 @@ fn translations_cannot_include_hidden_files_when_compiled() {
         "fn main() {\n    println!(\"{}\", include_str!(\"../../g1_program.c\").len());\n}\n";
     let record = evaluate("sandbox-include", c, None, rust);
     if scratch_is_hidden() {
-        assert_eq!(record.stage, "compile_fail", "{}", record.detail);
+        assert_eq!(record.stage, Stage::CompileFail, "{}", record.detail);
     }
 }
 
@@ -280,11 +281,14 @@ fn fuzzed_inputs_are_a_separate_result_for_passes() {
     let held = run("fuzz-right", right);
     let lucky = run("fuzz-lucky", always_small);
     let failed = run("fuzz-broken", broken);
-    assert_eq!((held.stage, held.fuzz.map(|f| f.0)), ("pass", Some("pass")));
-    assert_eq!(lucky.stage, "pass", "{}", lucky.detail);
+    assert_eq!(
+        (held.stage, held.fuzz.map(|f| f.0)),
+        (Stage::Pass, Some(Stage::Pass))
+    );
+    assert_eq!(lucky.stage, Stage::Pass, "{}", lucky.detail);
     assert!(lucky.fails_fuzz());
     let (stage, detail) = lucky.fuzz.unwrap();
-    assert_eq!(stage, "mismatch");
+    assert_eq!(stage, Stage::Mismatch);
     assert!(detail.starts_with("input fuzz_1: "), "{detail}");
-    assert_eq!((failed.stage, failed.fuzz), ("mismatch", None));
+    assert_eq!((failed.stage, failed.fuzz), (Stage::Mismatch, None));
 }

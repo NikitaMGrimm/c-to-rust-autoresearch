@@ -6,7 +6,6 @@
 //! public programs, private ones next to theirs, and only counts are printed.
 
 use std::collections::BTreeSet;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -52,7 +51,6 @@ const EDGES: [&str; 21] = [
 ];
 /// Characters put into text, from the kinds that parsers treat differently.
 const CHARACTERS: [char; 8] = ['a', 'Z', ' ', '-', '0', '.', ',', 'x'];
-const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -70,18 +68,8 @@ fn main() -> ExitCode {
 }
 
 fn generate(private: &Path) -> Result<(), String> {
-    let sets = [
-        ("dev", Path::new(REPO).join("bench/dev")),
-        ("validation", private.join("validation")),
-        ("held-out", private.join("held-out")),
-    ];
-    // Private and new: a planted directory or symlink at this path must not be used.
-    let scratch = std::env::temp_dir().join(format!("c2r-fuzz-{}", std::process::id()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&scratch)
-        .map_err(|err| format!("cannot create {}: {err}", scratch.display()))?;
-    let result = sets.iter().try_for_each(|(set, dir)| {
+    let scratch = eval::Scratch::new("fuzz")?;
+    bench::sets(private).iter().try_for_each(|(set, dir)| {
         let programs = eval::c_programs(dir)?;
         let (mut fuzzed, mut inputs) = (0, 0);
         for c_file in &programs {
@@ -106,9 +94,7 @@ fn generate(private: &Path) -> Result<(), String> {
             programs.len()
         );
         Ok(())
-    });
-    let _ = std::fs::remove_dir_all(&scratch);
-    result
+    })
 }
 
 /// The fuzzed inputs of one program, in the order they were found.
@@ -363,9 +349,8 @@ mod tests {
     /// Fuzzes a program that prints `n % 7` for its first argument, given
     /// the C declaration of `n`. Returns the kept inputs and the number of
     /// distinct behaviours across the original and kept inputs.
-    fn fuzz_modulo(test: &str, declaration: &str) -> (Vec<Input>, usize) {
-        let dir = std::env::temp_dir().join(format!("fuzz-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn fuzz_modulo(declaration: &str) -> (Vec<Input>, usize) {
+        let dir = eval::Scratch::new("test").unwrap();
         let c_file = dir.join("g1_mod.c");
         std::fs::write(
             &c_file,
@@ -391,13 +376,12 @@ mod tests {
                 (run.stdout, run.exit)
             })
             .collect();
-        std::fs::remove_dir_all(&dir).unwrap();
         (kept, behaviours.len())
     }
 
     #[test]
     fn kept_inputs_each_show_new_behaviour() {
-        let (kept, behaviours) = fuzz_modulo("strtol", "long n = strtol(argv[1], 0, 10);");
+        let (kept, behaviours) = fuzz_modulo("long n = strtol(argv[1], 0, 10);");
         assert!(kept.len() >= 3, "{kept:?}");
         assert_eq!(behaviours, kept.len() + 1);
         assert_eq!(kept[0].name, "fuzz_1");
@@ -405,7 +389,7 @@ mod tests {
 
     #[test]
     fn numbers_for_atoi_stay_within_int() {
-        let (kept, _) = fuzz_modulo("atoi", "int n = atoi(argv[1]);");
+        let (kept, _) = fuzz_modulo("int n = atoi(argv[1]);");
         assert!(!kept.is_empty());
         assert!(kept.iter().all(bench::numbers_fit_int), "{kept:?}");
     }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::REPO;
+use crate::files::REPO;
 use crate::run::{COMPILE_TIMEOUT, DETAIL_LIMIT, Run, limited, run, tail};
 use crate::sandbox::{sandboxed, toolchain};
 
@@ -182,8 +182,7 @@ mod tests {
 
     #[test]
     fn unsafe_code_is_counted_despite_allow() {
-        let dir = std::env::temp_dir().join(format!("eval-unsafe-allow-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::Scratch::new("test").unwrap();
         let source = dir.join("translation.rs");
         std::fs::write(
             &source,
@@ -194,7 +193,6 @@ mod tests {
         let compiled = compile(&source, &dir.join("program"));
         let mut warnings = BTreeMap::new();
         let errors = diagnostics(&compiled.stderr, &mut warnings);
-        std::fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(compiled.exit, Some(0), "{errors}");
         assert_eq!(warnings.get("unsafe_code"), Some(&1));

@@ -6,9 +6,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+
+use eval::Stage;
 
 const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage FILE]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
@@ -20,10 +21,9 @@ const TRANSPILER: &str = "crates/transpiler/";
 const LOCKFILE: &str = "Cargo.lock";
 const RULES: &str = "crates/transpiler/src/";
 const CATALOGUE: &str = "crates/transpiler/CATALOGUE.md";
-const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 /// Stage of each program, by set and program name.
-type Results = BTreeMap<&'static str, BTreeMap<String, &'static str>>;
+type Results = BTreeMap<&'static str, BTreeMap<String, Stage>>;
 /// Passes that fail their fuzzed inputs, by set.
 type FuzzFailures = BTreeMap<&'static str, BTreeSet<String>>;
 
@@ -92,7 +92,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         &format!("{}^{{commit}}", args.candidate),
     ])?;
     let sets: [(&'static str, PathBuf); 3] = [
-        ("dev", Path::new(REPO).join("bench/dev")),
+        ("dev", eval::dev_dir()),
         ("validation", args.private.join("validation")),
         ("dev_variants", args.private.join("variants/dev")),
     ];
@@ -117,8 +117,8 @@ fn gate(args: &Args) -> Result<bool, String> {
             let changed: BTreeMap<&str, [&str; 2]> = candidate_stages
                 .iter()
                 .filter_map(|(name, &stage)| {
-                    let old = base_stages.get(name).copied().unwrap_or("missing");
-                    (old != stage).then_some((name.as_str(), [old, stage]))
+                    let old = base_stages.get(name).map_or("missing", |old| old.as_str());
+                    (old != stage.as_str()).then_some((name.as_str(), [old, stage.as_str()]))
                 })
                 .collect();
             let mut json = serde_json::json!({
@@ -197,19 +197,19 @@ fn near_copies(private: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, Str
 }
 
 /// Passes and programs, leaving out `skipped`.
-fn passes_without(stages: &BTreeMap<String, &str>, skipped: &BTreeSet<String>) -> (usize, usize) {
-    let kept: Vec<&str> = stages
+fn passes_without(stages: &BTreeMap<String, Stage>, skipped: &BTreeSet<String>) -> (usize, usize) {
+    let kept: Vec<Stage> = stages
         .iter()
         .filter(|(name, _)| !skipped.contains(*name))
         .map(|(_, &stage)| stage)
         .collect();
-    let passed = kept.iter().filter(|&&stage| stage == "pass").count();
+    let passed = kept.iter().filter(|&&stage| stage == Stage::Pass).count();
     (passed, kept.len())
 }
 
 fn passes(results: &Results, set: &str) -> usize {
     results.get(set).map_or(0, |stages| {
-        stages.values().filter(|&&s| s == "pass").count()
+        stages.values().filter(|&&s| s == Stage::Pass).count()
     })
 }
 
@@ -229,7 +229,7 @@ fn rejection(before: &Results, after: &Results) -> Option<String> {
 fn change_problem(base: &str, candidate: &str) -> Result<Option<String>, String> {
     let descends = Command::new("git")
         .args(["merge-base", "--is-ancestor", base, candidate])
-        .current_dir(REPO)
+        .current_dir(eval::REPO)
         .status()
         .map_err(|err| format!("cannot run git: {err}"))?;
     if !descends.success() {
@@ -266,50 +266,42 @@ fn results(
     sets: &[(&'static str, PathBuf)],
     jobs: usize,
 ) -> Result<(Results, FuzzFailures), String> {
-    let scratch = std::env::temp_dir().join(format!("c2r-gate-{}-{commit}", std::process::id()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&scratch)
-        .map_err(|err| format!("cannot create {}: {err}", scratch.display()))?;
-    let evaluated = (|| {
-        let workspace = scratch.join("workspace");
-        std::fs::create_dir(&workspace).map_err(|err| err.to_string())?;
-        let archive = scratch.join("workspace.tar");
-        let archive = archive.to_str().ok_or("temporary directory is not UTF-8")?;
-        git(&["archive", "--output", archive, commit])?;
-        let unpacked = Command::new("tar")
-            .args(["-xf", archive, "-C"])
-            .arg(&workspace)
-            .status()
-            .map_err(|err| format!("cannot run tar: {err}"))?;
-        if !unpacked.success() {
-            return Err(format!("cannot unpack {commit}"));
+    let scratch = eval::Scratch::new("gate")?;
+    let workspace = scratch.join("workspace");
+    std::fs::create_dir(&workspace).map_err(|err| err.to_string())?;
+    let archive = scratch.join("workspace.tar");
+    let archive = archive.to_str().ok_or("temporary directory is not UTF-8")?;
+    git(&["archive", "--output", archive, commit])?;
+    let unpacked = Command::new("tar")
+        .args(["-xf", archive, "-C"])
+        .arg(&workspace)
+        .status()
+        .map_err(|err| format!("cannot run tar: {err}"))?;
+    if !unpacked.success() {
+        return Err(format!("cannot unpack {commit}"));
+    }
+    let transpiler =
+        eval::build_transpiler_sandboxed(&workspace).map_err(|err| format!("{commit}: {err}"))?;
+    let translator = eval::Translator::Transpiler(transpiler);
+    let (mut results, mut fuzz_failures) = (Results::new(), FuzzFailures::new());
+    for (set, dir) in sets {
+        let programs = eval::c_programs(dir)?;
+        if programs.is_empty() {
+            return Err(format!("no .c programs in {}", dir.display()));
         }
-        let transpiler = eval::build_transpiler_sandboxed(&workspace)
-            .map_err(|err| format!("{commit}: {err}"))?;
-        let translator = eval::Translator::Transpiler(transpiler);
-        let (mut results, mut fuzz_failures) = (Results::new(), FuzzFailures::new());
-        for (set, dir) in sets {
-            let programs = eval::c_programs(dir)?;
-            if programs.is_empty() {
-                return Err(format!("no .c programs in {}", dir.display()));
-            }
-            let records = eval::evaluate_all(&programs, &translator, jobs)?;
-            let failing = records.iter().filter(|r| r.fails_fuzz());
-            fuzz_failures.insert(set, failing.map(|r| r.name.clone()).collect());
-            let stages = records.into_iter().map(|r| (r.name, r.stage)).collect();
-            results.insert(set, stages);
-        }
-        Ok((results, fuzz_failures))
-    })();
-    let _ = std::fs::remove_dir_all(&scratch);
-    evaluated
+        let records = eval::evaluate_all(&programs, &translator, jobs)?;
+        let failing = records.iter().filter(|r| r.fails_fuzz());
+        fuzz_failures.insert(set, failing.map(|r| r.name.clone()).collect());
+        let stages = records.into_iter().map(|r| (r.name, r.stage)).collect();
+        results.insert(set, stages);
+    }
+    Ok((results, fuzz_failures))
 }
 
 fn git(args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
-        .current_dir(REPO)
+        .current_dir(eval::REPO)
         .output()
         .map_err(|err| format!("cannot run git: {err}"))?;
     if !output.status.success() {
@@ -338,8 +330,8 @@ fn append_log(dir: &Path, entry: &serde_json::Value) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn results(dev: &[&'static str], validation: &[&'static str]) -> Results {
-        let stages = |stages: &[&'static str]| {
+    fn results(dev: &[Stage], validation: &[Stage]) -> Results {
+        let stages = |stages: &[Stage]| {
             let named = stages.iter().enumerate();
             named.map(|(i, &stage)| (format!("p{i}"), stage)).collect()
         };
@@ -348,10 +340,11 @@ mod tests {
 
     #[test]
     fn keeps_a_dev_gain_unless_validation_drops() {
-        let before = results(&["pass", "mismatch"], &["pass", "panic"]);
-        let gain = results(&["pass", "pass"], &["pass", "panic"]);
-        let trade = results(&["mismatch", "pass"], &["pass", "pass"]);
-        let overfit = results(&["pass", "pass"], &["panic", "panic"]);
+        use Stage::{Mismatch, Panic, Pass};
+        let before = results(&[Pass, Mismatch], &[Pass, Panic]);
+        let gain = results(&[Pass, Pass], &[Pass, Panic]);
+        let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
+        let overfit = results(&[Pass, Pass], &[Panic, Panic]);
         assert_eq!(rejection(&before, &gain), None);
         assert!(rejection(&before, &trade).unwrap().contains("development"));
         assert!(rejection(&before, &overfit).unwrap().contains("validation"));
@@ -359,7 +352,7 @@ mod tests {
 
     #[test]
     fn near_copies_are_left_out_of_both_counts() {
-        let stages = results(&[], &["pass", "pass", "panic"])["validation"].clone();
+        let stages = results(&[], &[Stage::Pass, Stage::Pass, Stage::Panic])["validation"].clone();
         let skipped = BTreeSet::from(["p0".to_owned()]);
         assert_eq!(passes_without(&stages, &skipped), (1, 2));
         assert_eq!(passes_without(&stages, &BTreeSet::new()), (2, 3));
