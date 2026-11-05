@@ -606,32 +606,42 @@ fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
         "{calls}"
     );
 
-    // Unreviewed, it waits. A push gets a review on its own; otherwise
-    // CodeRabbit is asked once for the head.
-    let skipped = json!([check("Rust", "SUCCESS"), check("CodeRabbit", "SKIPPED")]);
-    fixture.answer(pull_request(&kept, skipped, json!([])));
-    std::fs::write(fixture.state().join("published"), "0").unwrap();
-    let later = commit(&fixture.loop_dir, "later");
-    let (code, output) = fixture.github_round(0);
-    assert_eq!(code, Some(0), "{output}");
-    assert!(output.contains("#7 waits for CodeRabbit"), "{output}");
-    assert_eq!(fixture.origin("loop"), later);
+    // CodeRabbit is asked to review each push.
     let requests = || {
         fixture
             .gh_calls()
             .matches("body=@coderabbitai review")
             .count()
     };
-    assert_eq!(requests(), 0, "{}", fixture.gh_calls());
-    for name in ["again", "once more"] {
-        commit(&fixture.loop_dir, name);
-        fixture.github_round(1);
-    }
-    assert_eq!(requests(), 1, "{}", fixture.gh_calls());
+    assert_eq!(requests(), 1, "{calls}");
+
+    // Unreviewed, it waits, and CodeRabbit is asked again only after the
+    // interval.
+    let skipped = json!([check("Rust", "SUCCESS"), check("CodeRabbit", "SKIPPED")]);
+    fixture.answer(pull_request(&kept, skipped.clone(), json!([])));
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    let later = commit(&fixture.loop_dir, "later");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("#7 waits for CodeRabbit"), "{output}");
+    assert_eq!(fixture.origin("loop"), later);
+    assert_eq!(requests(), 2, "{}", fixture.gh_calls());
+    fixture.answer(pull_request(&later, skipped, json!([])));
+    commit(&fixture.loop_dir, "again");
+    fixture.github_round(1);
+    assert_eq!(requests(), 2, "{}", fixture.gh_calls());
+    std::fs::write(fixture.state().join("requested"), "0").unwrap();
+    commit(&fixture.loop_dir, "once more");
+    fixture.github_round(1);
+    assert_eq!(requests(), 3, "{}", fixture.gh_calls());
     assert_eq!(fixture.origin("main"), start);
     assert_eq!(fixture.origin("loop"), later);
 
-    // Missing or pending checks and open or unfetched threads hold it too.
+    // Missing or pending checks, a review in progress and open or unfetched
+    // threads hold it too. A reviewed head or one in review is not asked for.
+    std::fs::write(fixture.state().join("requested"), "0").unwrap();
+    let reviewing =
+        json!({"__typename": "CheckRun", "name": "CodeRabbit", "status": "IN_PROGRESS"});
     let rabbit = check("CodeRabbit", "SUCCESS");
     let passed = json!([check("Rust", "SUCCESS"), rabbit]);
     let pending = json!({"__typename": "StatusContext", "context": "ci", "state": "PENDING"});
@@ -646,6 +656,14 @@ fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
             pull_request(&kept, json!([pending, rabbit]), json!([])),
             "checks",
         ),
+        (
+            pull_request(
+                &kept,
+                json!([check("Rust", "SUCCESS"), reviewing]),
+                json!([]),
+            ),
+            "CodeRabbit",
+        ),
         (pull_request(&kept, passed.clone(), open), "review threads"),
         (unfetched, "review threads"),
     ] {
@@ -658,6 +676,7 @@ fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
         );
         assert_eq!(fixture.origin("main"), start);
     }
+    assert_eq!(requests(), 3, "{}", fixture.gh_calls());
 
     // Reviewed, resolved and passed: GitHub's main moves to the head, and the
     // commits kept since go to a new pull request at once.

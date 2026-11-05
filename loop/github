@@ -194,16 +194,23 @@ if ((posted)); then
   echo "github: posted $posted replies"
 fi
 
-# CodeRabbit reviews each push on its own, but skips some, such as when it is
-# rate limited. Ask once for a head it has not reviewed.
-if [[ -n $number && $pushed == false ]]; then
-  head=$(jq -r .headRefOid <<<"$pr")
-  rabbit=$(jq -r '[.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
-    | select(.name == "CodeRabbit")] | last | if . == null then "none" else "\(.status) \(.conclusion)" end' <<<"$pr")
-  if [[ $rabbit != "COMPLETED SUCCESS" && ($rabbit == none || $rabbit == COMPLETED*) &&
-    $head != "$(cat "$state/requested" 2>/dev/null)" ]]; then
+# CodeRabbit reviews this repository only on request, so ask after each push,
+# and again at most every interval for a head it has not reviewed, as when it
+# was rate limited.
+if [[ -n $number ]]; then
+  ask=$pushed
+  if ! $pushed; then
+    rabbit=$(jq -r '[.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
+      | select(.name == "CodeRabbit")] | last | if . == null then "none" else "\(.status) \(.conclusion)" end' <<<"$pr")
+    last=$(cat "$state/requested" 2>/dev/null || echo 0)
+    if [[ $rabbit != "COMPLETED SUCCESS" && ($rabbit == none || $rabbit == COMPLETED*) ]] &&
+      (($(date +%s) - last >= interval)); then
+      ask=true
+    fi
+  fi
+  if $ask; then
     gh api "repos/$slug/issues/$number/comments" -f body="@$bot review" </dev/null >/dev/null
-    echo "$head" >"$state/requested"
+    date +%s >"$state/requested"
     echo "github: asked CodeRabbit to review #$number"
   fi
 fi

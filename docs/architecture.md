@@ -124,8 +124,10 @@ through `gh` and `git` from the main checkout:
   succeeded and every review thread is resolved. CodeRabbit resolves its own
   threads when it accepts a reply.
 - It publishes main to the `loop` branch, at once when no pull request is
-  open and otherwise at most every two hours, and asks CodeRabbit once to
-  review a head it skipped.
+  open and otherwise at most every two hours. CodeRabbit reviews this
+  repository only on request, so the step asks after each push, and again at
+  most every two hours for a head it has not reviewed, as when it was rate
+  limited.
 - It writes `REVIEWS.md` into the new clone: the unresolved threads that
   CodeRabbit or the owner started, with only their comments, and the log tail
   of each failed check. A thread where CodeRabbit answered the agent's reply
