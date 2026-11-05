@@ -145,10 +145,11 @@ through `gh` and `git` from the main checkout:
   comments than it reads, and a check that ended otherwise without passing,
   such as a cancelled run.
 
-The step overwrites neither main nor a `loop/` branch, so it publishes and
-merges nothing while any of them has commits on GitHub that main lacks.
-Commits on a `loop/` branch that main lacks did not pass the gate. A stack
-that GitHub's main moved past, and a loop pull request off the stack, also
+The step overwrites neither main nor a `loop/` branch. It publishes and
+merges nothing while GitHub's main or a batch of the stack has commits that
+main lacks, or a batch lacks the one below it. Commits on a `loop/` branch
+that main lacks did not pass the gate. A stack that GitHub's main moved past,
+a loop pull request off the stack and more than 50 open pull requests also
 wait for the owner. The step's failures only print a warning.
 
 ## Keeping the loop agent out

@@ -48,12 +48,15 @@ note="> [!NOTE]
 > 🤖 **$model replied on behalf of $viewer**"
 
 # The open pull requests from this repository's loop branches, with the checks
-# on their heads and their review threads.
+# on their heads and their review threads. It fails when more are open than it
+# reads, since a missing batch would look like an empty stack.
 pull_requests() {
-  gh api graphql -f owner="${slug%/*}" -f name="${slug#*/}" -f query='
+  local prs
+  prs=$(gh api graphql -f owner="${slug%/*}" -f name="${slug#*/}" -f query='
     query($owner: String!, $name: String!) {
       repository(owner: $owner, name: $name) {
         pullRequests(states: OPEN, first: 50) {
+          totalCount
           nodes {
             number url baseRefName headRefName headRefOid isCrossRepository
             commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
@@ -73,8 +76,14 @@ pull_requests() {
           }
         }
       }
-    }' --jq "[.data.repository.pullRequests.nodes[]
-      | select((.isCrossRepository | not) and (.headRefName | startswith(\"$prefix\")))]"
+    }' --jq ".data.repository.pullRequests | if .totalCount > (.nodes | length) then null
+      else [.nodes[] | select((.isCrossRepository | not) and (.headRefName | startswith(\"$prefix\")))] end") ||
+    return
+  if [[ $prs == null ]]; then
+    echo "github: more than 50 pull requests are open; the step reads only 50" >&2
+    return 1
+  fi
+  echo "$prs"
 }
 # The stack, from the pull request into main upwards. A loop pull request off
 # the stack is the owner's.
@@ -91,17 +100,23 @@ jq -r --argjson stack "$stack" '.[] | select(.number as $n | $stack | map(.numbe
 git fetch -q --no-tags --prune origin
 # The step never rewrites main, so commits that only GitHub's main has must be
 # pulled by hand, between rounds. Commits on a loop branch that main lacks did
-# not pass the gate, and are the owner's to keep or drop.
+# not pass the gate, and are the owner's to keep or drop. Each batch must also
+# hold the one below it, or merging it would drop that one.
 synced=true
 if ! git merge-base --is-ancestor origin/main main; then
   synced=false
   echo "github: GitHub's main has commits that main lacks; nothing is published or merged until main has them"
 fi
+below=
 while read -r head name; do
   if ! git merge-base --is-ancestor "$head" main 2>/dev/null; then
     synced=false
     echo "github: GitHub's $name has commits that main lacks; nothing is published or merged until the owner resets it"
+  elif [[ -n $below ]] && ! git merge-base --is-ancestor "$below" "$head"; then
+    synced=false
+    echo "github: GitHub's $name lacks the batch below it; nothing is published or merged until the owner resets it"
   fi
+  below=$head
 done < <(jq -r '.[] | "\(.headRefOid) \(.headRefName)"' <<<"$stack")
 
 # The agent's replies, to comments it was offered. A fix's reply waits until
@@ -198,8 +213,13 @@ if $synced && [[ $stack != "[]" ]]; then
       gh api -X PATCH "repos/$slug/pulls/$number" -f base=main </dev/null >/dev/null
     done < <(jq -r --argjson top "$top" '.[1:$top + 2][] | .number' <<<"$stack")
     git push -q origin "$head:refs/heads/main"
+    # A branch that moved since the listing keeps the new commits.
     mapfile -t merged < <(jq -r --argjson top "$top" '.[:$top + 1][] | .headRefName' <<<"$stack")
-    git push -q origin --delete "${merged[@]}"
+    mapfile -t leases < <(jq -r --argjson top "$top" \
+      '.[:$top + 1][] | "--force-with-lease=refs/heads/\(.headRefName):\(.headRefOid)"' <<<"$stack")
+    if ! git push -q origin "${leases[@]}" --delete "${merged[@]}"; then
+      echo "github: a merged branch moved on GitHub; it stays for the owner"
+    fi
     echo "github: merged $(jq -r --argjson top "$top" '[.[:$top + 1][] | "#\(.number)"] | join(", ")' <<<"$stack") into GitHub's main"
     stack=$(jq -c --argjson top "$top" '.[$top + 1:]' <<<"$stack")
   fi
@@ -225,8 +245,8 @@ if $synced; then
     name=$prefix$(date -u +%Y%m%dT%H%M%S.%3NZ)
     base=$(jq -r 'last | .headRefName // "main"' <<<"$stack")
     below=$(jq -r 'last | .number // empty' <<<"$stack")
-    git push -q origin "main:refs/heads/$name"
-    date +%s >"$state/published"
+    sha=$(git rev-parse main)
+    git push -q origin "$sha:refs/heads/$name"
     models=$(git rev-list "$top..main" |
       awk 'NR == FNR { commits[$1]; next } $1 in commits { sub(/^[^ ]+ /, ""); print }' - "$state/models" |
       sort -u | paste -sd, - | sed 's/,/, /g')
@@ -248,9 +268,16 @@ if $synced; then
       echo "> [!NOTE]"
       echo "> 🤖 **Agent assistance: ${models:-Claude} via Claude Code** — implementation; replies to review comments."
     } >"$body"
-    published=$(gh api "repos/$slug/pulls" -f head="$name" -f base="$base" \
+    if ! published=$(gh api "repos/$slug/pulls" -f head="$name" -f base="$base" \
       -f title="feat(transpiler): research loop rules until $(date -u '+%Y-%m-%d %H:%M') UTC" \
-      -F body=@"$body" --jq .number)
+      -F body=@"$body" --jq .number); then
+      # Unless someone pushed to it since, the branch goes, so that the next
+      # round publishes these commits again.
+      git push -q origin --force-with-lease="refs/heads/$name:$sha" --delete "$name" ||
+        echo "github: $name moved on GitHub; it stays for the owner"
+      exit 1
+    fi
+    date +%s >"$state/published"
     echo "github: published $(git rev-list --count "$top..main") commits as #$published"
     ask "$published"
   fi
@@ -275,7 +302,8 @@ fi
 # in threads that a third party did not start, on any batch, and the failed
 # checks of the top batch, which holds every commit. A thread whose reply waits
 # in the outbox is answered.
-stack=$(stack_of "$(pull_requests)")
+prs=$(pull_requests)
+stack=$(stack_of "$prs")
 items=$(jq -c --arg viewer "$viewer" --arg bot "$bot" --argjson disputes "$disputes" \
   --slurpfile outbox "$state/outbox.json" '
   def reply: .author.login == $viewer and (.body | startswith("> [!NOTE]\n> 🤖 **"));

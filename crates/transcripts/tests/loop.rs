@@ -201,7 +201,8 @@ esac
     if [[ $arg == body=@* && -f ${arg#body=@} ]]; then cat "${arg#body=@}"; echo; fi
   done
 } >>"$GH/calls"
-[[ ! -e $GH/fail ]] || exit 1
+# $GH/fail holds the part of a call that fails, or nothing for every call.
+if [[ -e $GH/fail && $* == *$(cat "$GH/fail")* ]]; then exit 1; fi
 if [[ $1 == run ]]; then
   cat "$GH/log"
   exit
@@ -912,6 +913,39 @@ fn a_github_round_leaves_foreign_commits_and_strays_to_the_owner() {
     assert_eq!(branches.len(), 2, "{branches:?}");
     assert_eq!(fixture.origin(&second), foreign);
     assert_ne!(later, foreign);
+
+    // A batch that lacks the one below it would drop that one when it goes in.
+    fixture.answer(listing(&[
+        pull_request(7, "main", &first, &kept, &passed, &none),
+        pull_request(8, &first, &second, &start, &passed, &none),
+    ]));
+    commit(&fixture.loop_dir, "kept once more");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    let message = format!("GitHub's {second} lacks the batch below it");
+    assert!(output.contains(&message), "{output}");
+    assert_eq!(fixture.origin("main"), start);
+    assert_eq!(fixture.loop_branches().len(), 2);
+
+    // A merged branch that moved after the listing keeps its new commits.
+    fixture.answer(listing(&[
+        pull_request(7, "main", &first, &kept, &passed, &none),
+        pull_request(8, &first, &second, &later, &passed, &none),
+    ]));
+    commit(&fixture.loop_dir, "kept at last");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("merged #7, #8 into GitHub's main"),
+        "{output}"
+    );
+    assert!(
+        output.contains("a merged branch moved on GitHub"),
+        "{output}"
+    );
+    assert_eq!(fixture.origin("main"), later);
+    assert_eq!(fixture.origin(&first), "");
+    assert_eq!(fixture.origin(&second), foreign);
 }
 
 #[test]
@@ -1109,6 +1143,52 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
     let reviews = std::fs::read_to_string(fixture.loop_dir.join("REVIEWS.md")).unwrap();
     assert!(!reviews.contains("Failed check"), "{reviews}");
     assert!(!output.contains("CANCELLED"), "{output}");
+}
+
+#[test]
+fn a_github_round_takes_back_a_batch_it_could_not_open_and_stops_short_of_a_partial_listing() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run("setup", 0, 0), Some(0));
+    // A branch without its pull request goes, and its commits go up again.
+    std::fs::write(fixture.dir.join("gh/fail"), "repos/o/r/pulls -f head").unwrap();
+    commit(&fixture.loop_dir, "kept");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("the GitHub step failed"), "{output}");
+    assert!(fixture.loop_branches().is_empty());
+    assert!(!fixture.state().join("published").exists());
+    std::fs::remove_file(fixture.dir.join("gh/fail")).unwrap();
+    let later = commit(&fixture.loop_dir, "later");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 1, "{branches:?}");
+    assert_eq!(branches[0].1, later);
+    assert!(fixture.state().join("published").exists());
+
+    // Without the listing, the stack is unknown.
+    std::fs::write(fixture.dir.join("gh/fail"), "pullRequests(states").unwrap();
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    commit(&fixture.loop_dir, "unlisted");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("the GitHub step failed"), "{output}");
+    assert_eq!(fixture.loop_branches().len(), 1);
+    std::fs::remove_file(fixture.dir.join("gh/fail")).unwrap();
+
+    // Beyond the pull requests the step reads, the stack may lack a batch.
+    let mut many = listing(&[]);
+    many["data"]["repository"]["pullRequests"]["totalCount"] = json!(51);
+    fixture.answer(many);
+    commit(&fixture.loop_dir, "more");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("more than 50 pull requests are open"),
+        "{output}"
+    );
+    assert!(output.contains("the GitHub step failed"), "{output}");
+    assert_eq!(fixture.loop_branches().len(), 1);
 }
 
 #[test]
