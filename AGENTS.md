@@ -71,7 +71,7 @@ deleting code is welcome. A new dependency needs a reason.
 | `crates/bench/` | Builds the sets: `intake`, `variants`, `fuzz`, `near-copies` |
 | `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |
-| `loop/` | Instructions for the loop agent, the setup of its checkout and the end of each round |
+| `loop/` | Instructions for the loop agent, the setup of its checkout, the end of each round and its GitHub step |
 | `scripts/inspect` | A C or Rust file's warnings, lints and run result |
 | `docs/architecture.md` | How a program is evaluated and a commit judged |
 

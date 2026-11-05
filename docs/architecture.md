@@ -85,8 +85,9 @@ transpilers from `git archive` in the sandbox, after fetching dependencies
 outside it, and evaluates them on the development set, the private validation
 set and the private variants of the development set.
 
-The keep rule is provisional: the development score rises and the validation
-score does not drop. Every result goes to `PRIVATE_DIR/loop/log.jsonl`, with
+The keep rule is provisional: the development score rises, or does not drop
+for a candidate whose commits are all fixes with a `fix(transpiler)` subject,
+such as for a review comment, and the validation score does not drop. Every result goes to `PRIVATE_DIR/loop/log.jsonl`, with
 the validation score without [near-copies](../bench/README.md#near-copies) and
 the passes that fail their fuzzed inputs. The gate prints only the
 development results and the decision. Exit code 0 means keep, 1 reject and 2
@@ -109,6 +110,35 @@ gate printed. The script reads the clone only through `git fetch`, because
 git run inside it would apply settings and hooks the agent could have
 changed. Its state stays in the main checkout's `local/loop/`, one directory
 for each loop checkout, and a lock there lets only one round run at a time.
+
+With `--github`, the round then runs `loop/github`, which reaches GitHub
+through `gh` and `git` from the main checkout:
+
+- It posts the replies from the old clone's `REPLIES.json`: an answer at once,
+  and a fix's reply, with the commit's hash, once the gate kept the fix and
+  GitHub has it. Only comments that the last `REVIEWS.md` offered get a reply,
+  and its mentions are broken, so that no reply notifies anyone or commands
+  CodeRabbit.
+- It merges the open pull request from the `loop` branch by pushing its head
+  to GitHub's main, once every check on the head passed, CodeRabbit's check
+  succeeded and every review thread is resolved. CodeRabbit resolves its own
+  threads when it accepts a reply.
+- It publishes main to the `loop` branch, at once when no pull request is
+  open and otherwise at most every two hours. CodeRabbit reviews this
+  repository only on request, so the step asks after each push, and again at
+  most every two hours for a head it has not reviewed, as when it was rate
+  limited.
+- It writes `REVIEWS.md` into the new clone: the unresolved threads that
+  CodeRabbit or the owner started, with only their comments, and the log tail
+  of each failed check. It prints for the owner instead a thread where
+  CodeRabbit answered the agent's reply without resolving it, a thread with
+  more comments than it reads, and a check that ended otherwise without
+  passing, such as a cancelled run.
+
+The step overwrites neither main nor the `loop` branch, so it publishes and
+merges nothing while either has commits on GitHub that main lacks. Commits
+on `loop` that main lacks did not pass the gate. Its failures only print a
+warning.
 
 ## Keeping the loop agent out
 

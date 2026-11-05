@@ -2,17 +2,24 @@
 # Ends one iteration of the research loop, after the loop agent's session:
 # audits the agent's transcripts, runs the gate on its commit, keeps the
 # commit on main or drops it, and makes a fresh loop checkout from main for
-# the next iteration. Run it by this checkout's path, never the loop
+# the next iteration. With --github, loop/github then takes main to GitHub
+# and brings the reviews back. Run it by this checkout's path, never the loop
 # checkout's copy, which the agent can change. See docs/architecture.md.
 set -euo pipefail
 trap 'exit 2' ERR
 
+github=false
+if [[ ${1-} == --github ]]; then
+  github=true
+  shift
+fi
 if (($# < 2)); then
   cat >&2 <<'EOF'
-usage: loop/round PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+usage: loop/round [--github] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 Takes the arguments of loop/setup, which it runs again for the next iteration.
 Exits 0 when the gate decided, 1 when there was nothing to judge or the audit
-found contact with the private sets, and 2 on errors.
+found contact with the private sets, and 2 on errors. A failed GitHub step
+only prints a warning.
 EOF
   exit 2
 fi
@@ -83,8 +90,18 @@ if ((status > 1)); then
   echo "round stopped: the gate failed; nothing was changed" >&2
   exit 2
 fi
+decision=reject
 if ((status == 0)); then
   git merge -q --ff-only "$candidate"
+  decision=keep
+fi
+# The model that wrote most of the session, by its display name, such as
+# Opus 5.5 for claude-opus-5-5. loop/github names it on the pull request.
+model=$(jq -r '.models // {} | to_entries | max_by(.value.output_tokens) | .key // empty' "$report" |
+  sed -E 's/^claude-([a-z])([a-z]*)-([0-9]+)-([0-9]+)\b.*$/\u\1\2 \3.\4/')
+model=${model:-Claude}
+if [[ $decision == keep ]]; then
+  echo "$candidate $model" >>"$state/models"
 fi
 # What the next session may see: each commit and the gate's printed results.
 {
@@ -94,8 +111,17 @@ fi
   echo
 } >>"$state/rounds.md"
 
+# The agent's answers to review comments, for loop/github. A link could point
+# anywhere.
+if $github && [[ -f $loop/REPLIES.json && ! -L $loop/REPLIES.json ]]; then
+  cp "$loop/REPLIES.json" "$state/replies.json"
+fi
 rm -rf "$loop"
 "$repo/loop/setup" "$private" "$loop" "${denied[@]}" >/dev/null
 cp "$state/rounds.md" "$loop/ROUNDS.md"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
+if $github; then
+  "$repo/loop/github" "$state" "$loop" "$candidate" "$decision" "$model" ||
+    echo "round: the GitHub step failed; it runs again after the next round" >&2
+fi
 echo "next iteration: a fresh $loop at $(git log -1 --format='%h %s' main)"
