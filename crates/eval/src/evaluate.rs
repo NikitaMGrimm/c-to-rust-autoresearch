@@ -99,7 +99,7 @@ impl Record {
 }
 
 /// Decides the stage of a translation that compiled, given both runs.
-pub fn classify(c: &Run, rust: &Run, unsafe_uses: u32) -> (Stage, String) {
+pub(crate) fn classify(c: &Run, rust: &Run, unsafe_uses: u32) -> (Stage, String) {
     if rust.timed_out() {
         return (Stage::Timeout, String::new());
     }

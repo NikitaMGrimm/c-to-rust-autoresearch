@@ -58,7 +58,7 @@ pub fn spec(c_file: &Path) -> Result<Spec, String> {
 pub const FUZZ_EXTENSION: &str = "fuzz.json";
 
 /// Reads the fuzzed inputs of `c_file`; a program may have none.
-pub fn fuzzed_inputs(c_file: &Path) -> Result<Vec<Input>, String> {
+pub(crate) fn fuzzed_inputs(c_file: &Path) -> Result<Vec<Input>, String> {
     let path = c_file.with_extension(FUZZ_EXTENSION);
     let text = match std::fs::read(&path) {
         Ok(text) => text,

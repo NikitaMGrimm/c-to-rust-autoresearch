@@ -6,7 +6,7 @@ use crate::run::{COMPILE_TIMEOUT, OUTPUT_LIMIT, Run, limited, run, run_program, 
 use crate::spec::Input;
 
 /// Builds `c_file` with AddressSanitizer and UndefinedBehaviorSanitizer.
-pub fn build_c(c_file: &Path, program: &Path, c_flags: &[String]) -> Run {
+pub(crate) fn build_c(c_file: &Path, program: &Path, c_flags: &[String]) -> Run {
     run(
         limited(COMPILE_TIMEOUT, false)
             .arg("clang-18")
@@ -99,7 +99,7 @@ impl References {
 }
 
 /// Why a C run is not a valid reference, if it is not.
-pub fn c_problem(c: &Run) -> Option<String> {
+pub(crate) fn c_problem(c: &Run) -> Option<String> {
     if c.exit.is_none() {
         // For example an argument containing a NUL byte; the Rust side would fail alike.
         Some(format!("cannot run:\n{}", tail(&c.stderr)))

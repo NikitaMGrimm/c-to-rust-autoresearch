@@ -25,8 +25,9 @@ deleting code is welcome. A new dependency needs a reason.
 - **program**: a benchmark `NAME.c` with its **spec** `NAME.json` (inputs and
   C flags) and maybe **fuzzed inputs** `NAME.fuzz.json`. The name starts with
   its difficulty **group**, `g1` to `g5`.
-- **reference**: the C program's run that a translation must match
-  (`eval::References`).
+- **reference**: the C program's run on an input, which a translation must
+  match. The bench tools keep an input only when its reference passes stricter
+  checks (`eval::References`).
 - **stage**: how far a translation got (`eval::Stage`); only `pass` succeeds.
 - **variant**: a private copy of a program with renamed identifiers, changed
   constants or new inputs. **near-copy**: a private program that nearly
@@ -47,18 +48,18 @@ deleting code is welcome. A new dependency needs a reason.
    credentials, private notes, thesis drafts, supervisor correspondence or
    anything from the private holdout repository. Keep unpublished benchmarks
    and outputs in the ignored `local/` directory.
-3. **Running agent code outside the sandbox.** The transpiler, its build, the
-   compile of a translation and the translated program all run through
-   `sandbox::sandboxed`. A new way to run any of them must too, with a test
+3. **Running agent code outside the sandbox.** The transpiler, its build in
+   the gate, the compile of a translation and the translated program all run
+   through `sandbox::sandboxed`. A new way to run any of them must too, with a test
    that fails without the sandbox.
 4. **Changing the measurement on the side.** Pass rules, limits, inputs and
    the keep rule change every result after them. The bench tools must write
    the same files from the same seed, and a change to the private sets needs
    a new manifest hash in `bench/README.md`.
-5. **Trusting C behaviour the sanitizers miss.** A reference must pass the
-   sanitizers, run the same twice and agree with `clang -O2` and `gcc -O2`.
-   Generated inputs also avoid undefined behaviour the checks miss, such as
-   numbers beyond `int` for `atoi`.
+5. **Trusting C behaviour the sanitizers miss.** The bench tools keep an
+   input only when the sanitized C program runs the same twice and agrees with
+   `clang -O2` and `gcc -O2`. Generated inputs also avoid undefined behaviour
+   these checks miss, such as numbers beyond `int` for `atoi`.
 
 ## Layout
 
@@ -75,6 +76,8 @@ deleting code is welcome. A new dependency needs a reason.
 | `docs/architecture.md` | How a program is evaluated and a commit judged |
 
 ## Checks
+
+Before committing Rust changes, run:
 
 ```sh
 cargo fmt

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 /// Counts constructs that show how idiomatic a translation is. Counting the
 /// syntax tree ignores comments and strings that mention them.
-pub fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> {
+pub(crate) fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> {
     use syn::visit::Visit;
 
     struct Counter(BTreeMap<&'static str, u32>);

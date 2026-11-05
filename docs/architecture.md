@@ -19,8 +19,9 @@ the first that fails:
    and standard input, and may list `c_flags` for the C build from a fixed
    set. Without it the program runs once without input (`spec`).
 2. **C reference.** The C program is built with AddressSanitizer and
-   UndefinedBehaviorSanitizer and run on every input. A build failure, a
-   sanitizer error or a timeout makes it `c_invalid` (`reference`).
+   UndefinedBehaviorSanitizer and run on every input. An invalid spec, a build
+   failure, a sanitizer error, a timeout or too much output makes it
+   `c_invalid` (`reference`).
 3. **Translation.** The transpiler writes `translation.rs` within 30 s
    (`transpile_fail`), or `--translations` copies an existing one
    (`translate`).
@@ -53,8 +54,9 @@ The research agent writes the transpiler and so every translation, and the
 evaluator runs both on the private programs. The transpiler, its build in the
 gate, the compile of a translation and the Rust program therefore run in a
 bubblewrap sandbox (`sandbox`): no network, a read-only file system except the
-translation's directory, and an empty home directory apart from the
-transpiler, its input and the Rust toolchain. Scratch directories are new and
+translation's directory (the unpacked workspace for the gate's build), and an
+empty home directory apart from the transpiler, its input and the Rust
+toolchain. Scratch directories are new and
 private to the user (`files::Scratch`).
 
 ## Benchmark data

@@ -18,7 +18,7 @@ struct Args {
 
 fn parse_args() -> Option<Args> {
     let mut args = Args {
-        bench: PathBuf::from("bench/dev"),
+        bench: eval::dev_dir(),
         only: None,
         json: None,
         translations: None,
