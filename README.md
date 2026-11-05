@@ -73,8 +73,8 @@ cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]
 
 It keeps a candidate that changes only the transpiler when the development
 score rises and the validation score does not drop, and prints only the
-development results and the decision. It runs only from a clean checkout of
-main.
+development results and the decision. Run it from this checkout, which the
+loop agent cannot write, at a clean main.
 
 The loop agent works in its own clone, which keeps it away from the private
 programs, and its transcripts are audited after each session:

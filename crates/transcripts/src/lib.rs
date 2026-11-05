@@ -40,7 +40,7 @@ fn collect(
     for entry in entries {
         if entry.is_dir() {
             collect(&entry, files, visited)?;
-        } else if entry.extension().is_some_and(|ext| ext == "jsonl") {
+        } else if entry.is_file() && entry.extension().is_some_and(|ext| ext == "jsonl") {
             files.push(entry);
         }
     }
@@ -59,5 +59,13 @@ mod tests {
         std::os::unix::fs::symlink(&*dir, dir.join("project/loop")).unwrap();
         let files = find(&[dir.to_path_buf(), dir.join("project")]).unwrap();
         assert_eq!(files.len(), 1, "{files:?}");
+    }
+
+    #[test]
+    fn only_files_are_transcripts() {
+        let dir = eval::Scratch::new("test").unwrap();
+        std::fs::write(dir.join("s1.jsonl"), "{}\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("gone"), dir.join("s2.jsonl")).unwrap();
+        assert_eq!(find(&[dir.to_path_buf()]).unwrap(), [dir.join("s1.jsonl")]);
     }
 }

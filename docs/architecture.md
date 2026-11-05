@@ -90,8 +90,11 @@ score does not drop. Every result goes to `PRIVATE_DIR/loop/log.jsonl`, with
 the validation score without [near-copies](../bench/README.md#near-copies) and
 the passes that fail their fuzzed inputs. The gate prints only the
 development results and the decision. Exit code 0 means keep, 1 reject and 2
-error. The gate trusts its own code and the benchmarks, so it refuses to run
-from anything but a clean checkout of main.
+error. The gate trusts its own code and the benchmarks, so it must run from a
+checkout the loop agent cannot write. It refuses a checkout that is off main,
+has changes or untracked files, or is the loop agent's clone; that catches a
+mistaken checkout, but the gate is built before it checks, so it cannot stop a
+hostile one.
 
 ## Keeping the loop agent out
 
@@ -102,19 +105,24 @@ more examples of a construct might, so the loop has several layers:
 - `loop/program.md` tells the agent where the private programs are and why it
   must not look.
 - `loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]` clones main for the agent,
-  so its Claude Code settings and memory are its own. Its settings deny
-  Claude Code's file tools the private directory, the corpus cache, the main
-  checkout's `local/` and transcripts, and each `DENIED_DIR`; deny fetches
-  from GitHub and network commands; and install `loop/guard`. That hook blocks
-  any tool call, shell commands included, that names those places or the
-  corpus, or changes Claude Code settings.
+  so its Claude Code settings are its own, and marks the clone so that the
+  gate refuses to run from it. Its settings turn auto memory off; deny Claude
+  Code's file tools the private directory, the corpus cache, the main
+  checkout, its transcripts and each `DENIED_DIR`, and edits under
+  `~/.claude`; deny the web tools and network commands; and install
+  `loop/guard`. That hook blocks any tool call, shell commands included, that
+  names those places or the corpus, or touches Claude Code's files other than
+  skills, plugins and the tool output Claude Code saves for the agent.
 - `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
-  agent's transcripts afterwards. It reports every private program name the
-  agent saw or wrote, and every tool call that named the private directory or
-  the corpus, looked for TRACTOR on the web, or touched Claude Code settings.
-  Exit code 0 means none.
+  agent's transcripts afterwards. It reports every private program name in
+  what the agent saw or wrote, every tool call that named the private
+  directory or the corpus, looked for TRACTOR on the web or touched Claude
+  Code's files, and every record it cannot read. Exit code 0 means none; a
+  path without transcripts is an error.
 
 `intake` fetches the corpus again when its cache is missing, so the cache can
-be deleted while a loop runs. Only the audit catches a command that reaches a
-private program without naming it, such as a search of the whole home
-directory, and nothing catches what the model learned in pretraining.
+be deleted while a loop runs. The guard and the audit see only what a tool
+call names and what the transcript records. A command that reaches a private
+program without naming it, such as a search of the whole home directory,
+shows only if the program's name reaches the transcript, and nothing catches
+what the model learned in pretraining.

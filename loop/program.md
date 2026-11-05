@@ -17,11 +17,12 @@ these instructions are fixed; the gate rejects any other change. Keep to
 The development programs come from DARPA's TRACTOR test corpus, which also
 holds the private programs the loop is measured on. Do not fetch, clone or
 search for that corpus or any copy of it, and stay inside this checkout: no
-other directories, no Claude Code transcripts or settings, and no network
-except cargo fetching crates. One look at a private program invalidates the
-experiment and cannot be undone. Your settings block these, and every session
-is audited afterwards. When a construct needs more examples than the
-development programs give, write small C programs of your own as tests.
+other directories, no Claude Code files such as transcripts or settings, no
+web and no network except cargo fetching crates. One look at a private program
+invalidates the experiment and cannot be undone. Your settings block these,
+and every session is audited afterwards. When a construct needs more examples
+than the development programs give, write small C programs of your own as
+tests.
 
 ## One iteration
 

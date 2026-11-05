@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Makes the checkout the loop agent works in: its own clone of this
-# repository, so that its Claude Code settings and memory are its own, with
-# settings that keep it away from the private programs. See loop/program.md.
+# repository, so that its Claude Code settings are its own, with settings that
+# keep it away from the private programs. See loop/program.md.
 set -euo pipefail
 
 if (($# < 2)); then
   cat >&2 <<'EOF'
 usage: loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 Clones main into LOOP_DIR and writes its Claude Code settings. The loop agent
-may not read or edit PRIVATE_DIR, the corpus cache, this checkout's local/
-directory and Claude Code transcripts, or any DENIED_DIR; it may not fetch
-from GitHub; and loop/guard blocks any other tool call that names them.
+may not read or edit PRIVATE_DIR, the corpus cache, this checkout, its Claude
+Code transcripts or any DENIED_DIR; may not use the web or network commands;
+and loop/guard blocks any other tool call that names them or Claude Code's
+files. Auto memory is off, so each session starts from the repository alone.
 EOF
   exit 2
 fi
@@ -26,33 +27,38 @@ fi
 
 # Claude Code keeps a project's transcripts in a directory named after its
 # path, with every other character than letters and digits turned into -.
-transcripts="$HOME/.claude/projects/$(printf %s "$repo" | tr -c 'a-zA-Z0-9' '-')"
-denied=("$private" "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch" "$repo/local" "$transcripts")
+transcripts() { echo "$HOME/.claude/projects/$(printf %s "$1" | tr -c 'a-zA-Z0-9' '-')"; }
+denied=("$private" "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch" "$repo" "$(transcripts "$repo")")
 for dir in "$@"; do
   denied+=("$(cd "$dir" && pwd -P)")
 done
-markers=("${denied[@]}" "$(basename "$private")" ".cache/c-to-rust-autoresearch")
+# The gate refuses to run from a checkout marked with c2r.loop.
+markers=("${denied[@]}" "$(basename "$private")" "$(basename "$repo")" .cache/c-to-rust-autoresearch c2r.loop)
 json_array() { printf '%s\n' "$@" | jq -R . | jq -sc .; }
 
 git clone -q --branch main "$repo" "$loop"
 loop=$(cd "$loop" && pwd -P)
+git -C "$loop" config c2r.loop true
 mkdir "$loop/.claude"
 jq -n \
   --argjson denied "$(json_array "${denied[@]}")" \
   --argjson markers "$(json_array "${markers[@]}")" \
-  --arg guard "$repo/loop/guard" '{
+  --arg guard "$repo/loop/guard" \
+  --arg own "$(transcripts "$loop")" \
+  --arg home "$HOME" '{
+  autoMemoryEnabled: false,
   permissions: {
     deny: ([$denied[] | "Read(/\(.)/**)", "Edit(/\(.)/**)"] + [
-      "WebFetch(domain:github.com)", "WebFetch(domain:*.github.com)",
-      "WebFetch(domain:githubusercontent.com)", "WebFetch(domain:*.githubusercontent.com)",
+      "Edit(/\($home)/.claude/**)",
+      "WebFetch", "WebSearch",
       "Bash(curl *)", "Bash(wget *)", "Bash(gh *)",
       "Bash(git clone *)", "Bash(git fetch *)", "Bash(git pull *)",
       "Bash(git push *)", "Bash(git remote *)", "Bash(git submodule *)"
     ])
   },
   hooks: {PreToolUse: [{matcher: "*", hooks: [
-    {type: "command", command: ([$guard] + $markers | map(@sh) | join(" "))}
+    {type: "command", command: ([$guard, $own] + $markers | map(@sh) | join(" "))}
   ]}]}
 }' >"$loop/.claude/settings.local.json"
 echo "loop checkout: $loop"
-echo "Claude Code transcripts of the loop: $HOME/.claude/projects/$(printf %s "$loop" | tr -c 'a-zA-Z0-9' '-')"
+echo "its Claude Code transcripts: $(transcripts "$loop")"
