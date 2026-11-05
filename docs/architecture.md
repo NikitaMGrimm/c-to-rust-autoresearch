@@ -96,6 +96,19 @@ has changes or untracked files, or is the loop agent's clone; that catches a
 mistaken checkout, but the gate is built before it checks, so it cannot stop a
 hostile one.
 
+## A round
+
+`loop/round PRIVATE_DIR LOOP_DIR [DENIED_DIR...]` ends one iteration, after the
+loop agent's session. It stops if the audit below finds anything or the clone
+has no new commit. Otherwise it fetches the clone's `HEAD` into
+`refs/loop/TIME` of the main checkout, runs the gate on it with the
+session's model usage, and on keep fast-forwards main. It then deletes the
+clone and runs `loop/setup` again, so every session starts from a fresh clone
+of main. The new clone's `ROUNDS.md` lists every judged commit with what the
+gate printed. The script reads the clone only through `git fetch`, because
+git run inside it would apply settings and hooks the agent could have
+changed, and its state stays in the main checkout's `local/loop/`.
+
 ## Keeping the loop agent out
 
 A look at a private program cannot be undone, and the TRACTOR corpus that
@@ -106,14 +119,18 @@ more examples of a construct might, so the loop has several layers:
   must not look.
 - `loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]` clones main for the agent,
   so its Claude Code settings are its own, and marks the clone so that the
-  gate refuses to run from it. Its settings turn auto memory off; deny Claude
-  Code's file tools the private directory, the corpus cache, the main
+  gate refuses to run from it. Its settings turn auto memory off, skip every
+  CLAUDE.md outside the clone and turn the owner's skills off, so the agent
+  follows only the repository's instructions and `loop/skills`. They deny
+  Claude Code's file tools the private directory, the corpus cache, the main
   checkout, its transcripts and each `DENIED_DIR`, and edits under
-  `~/.claude`; deny the web tools and network commands; and install
-  `loop/guard`. That hook blocks any tool call, shell commands included, that
-  names those places, by path or by their own name, or the corpus, or touches
-  Claude Code's files other than skills, plugins and the tool output Claude
-  Code saves for the agent.
+  `~/.claude`; deny the web tools, network commands and T3 Code's tools; and
+  install `loop/guard`. That hook blocks any tool call, shell commands
+  included, that names those places, by path or by their own name, or the
+  corpus, or touches Claude Code's files other than skills, plugins and the
+  tool output Claude Code saves for the agent. It also blocks every MCP tool,
+  since T3 Code's reach other threads, a browser and agents in other
+  directories, and every skill outside `loop/skills`.
 - `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private

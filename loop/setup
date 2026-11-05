@@ -9,9 +9,11 @@ if (($# < 2)); then
 usage: loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 Clones main into LOOP_DIR and writes its Claude Code settings. The loop agent
 may not read or edit PRIVATE_DIR, the corpus cache, this checkout, its Claude
-Code transcripts or any DENIED_DIR; may not use the web or network commands;
-and loop/guard blocks any other tool call that names them or Claude Code's
-files. Auto memory is off, so each session starts from the repository alone.
+Code transcripts or any DENIED_DIR; may not use the web, network commands or
+tools from MCP servers such as T3 Code's; and loop/guard blocks any other tool
+call that names them or Claude Code's files. The agent follows only the
+repository's instructions and the skills in loop/skills: the owner's own
+instructions, skills and auto memory are off.
 EOF
   exit 2
 fi
@@ -39,23 +41,55 @@ for dir in "$@"; do
 done
 # The gate refuses to run from a checkout marked with c2r.loop.
 markers=("${denied[@]}" "${names[@]}" c2r.loop)
-json_array() { printf '%s\n' "$@" | jq -R . | jq -sc .; }
+json_array() {
+  if (($# == 0)); then
+    echo '[]'
+    return
+  fi
+  printf '%s\n' "$@" | jq -R . | jq -sc .
+}
 
 git clone -q --branch main "$repo" "$loop"
 loop=$(cd "$loop" && pwd -P)
+# Instructions outside the repository: the owner's, and any in a directory
+# above the checkout, which Claude Code loads too.
+excludes=("$HOME/.claude/**")
+dir=$(dirname "$loop")
+while :; do
+  excludes+=("${dir%/}/CLAUDE.md" "${dir%/}/CLAUDE.local.md" "${dir%/}/.claude/**")
+  [[ $dir == / ]] && break
+  dir=$(dirname "$dir")
+done
+# The owner's skills, by the names they declare.
+skills=()
+while IFS= read -r file; do
+  name=$(sed -n 's/^name: *//p' "$file" | head -1)
+  if [[ -n $name ]]; then
+    skills+=("$name")
+  fi
+done < <(find "$HOME/.claude/skills" -maxdepth 3 -name SKILL.md 2>/dev/null | sort)
 git -C "$loop" config c2r.loop true
 mkdir "$loop/.claude"
+if [[ -d $loop/loop/skills ]]; then
+  ln -s ../loop/skills "$loop/.claude/skills"
+fi
+# Neither the skills link nor the gate's notes may end up in a commit.
+printf '%s\n' /.claude/ /ROUNDS.md >>"$loop/.git/info/exclude"
 jq -n \
   --argjson denied "$(json_array "${denied[@]}")" \
   --argjson markers "$(json_array "${markers[@]}")" \
+  --argjson excludes "$(json_array "${excludes[@]}")" \
+  --argjson skills "$(json_array "${skills[@]}")" \
   --arg guard "$repo/loop/guard" \
   --arg own "$(transcripts "$loop")" \
   --arg home "$HOME" '{
   autoMemoryEnabled: false,
+  claudeMdExcludes: $excludes,
+  skillOverrides: ($skills | map({key: ., value: "off"}) | from_entries),
   permissions: {
     deny: ([$denied[] | "Read(/\(.)/**)", "Edit(/\(.)/**)"] + [
       "Edit(/\($home)/.claude/**)",
-      "WebFetch", "WebSearch",
+      "WebFetch", "WebSearch", "mcp__t3-code",
       "Bash(curl *)", "Bash(wget *)", "Bash(gh *)",
       "Bash(git clone *)", "Bash(git fetch *)", "Bash(git pull *)",
       "Bash(git push *)", "Bash(git remote *)", "Bash(git submodule *)"
