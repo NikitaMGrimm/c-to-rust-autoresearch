@@ -109,14 +109,14 @@ fn transcripts(home: &Path, path: &Path) -> String {
 }
 
 #[test]
-fn setup_keeps_the_agent_out_of_the_main_checkout_and_off_the_web() {
+fn setup_keeps_the_agent_out_of_denied_places_and_off_the_web() {
     let dir = eval::Scratch::new("test").unwrap();
     let dir = dir.canonicalize().unwrap();
     let (repo, home) = (dir.join("repo"), dir.join("home"));
     // CI checks out no main branch, so setup runs from a copy with one.
     std::fs::create_dir_all(repo.join("loop")).unwrap();
     std::fs::create_dir_all(dir.join("private")).unwrap();
-    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(home.join("notes")).unwrap();
     for script in ["setup", "guard"] {
         let source = format!("{}/../../loop/{script}", env!("CARGO_MANIFEST_DIR"));
         std::fs::copy(source, repo.join("loop").join(script)).unwrap();
@@ -146,7 +146,7 @@ fn setup_keeps_the_agent_out_of_the_main_checkout_and_off_the_web() {
         "loop",
     ]);
     let status = Command::new(repo.join("loop/setup"))
-        .args([dir.join("private"), dir.join("loop")])
+        .args([dir.join("private"), dir.join("loop"), home.join("notes")])
         .env("HOME", &home)
         .env_remove("XDG_CACHE_HOME")
         .stdout(Stdio::null())
@@ -169,6 +169,7 @@ fn setup_keeps_the_agent_out_of_the_main_checkout_and_off_the_web() {
         format!("Read(/{}/**)", transcripts(&home, &repo)),
         format!("Read(/{}/**)", dir.join("private").display()),
         format!("Read(/{home_dir}/.cache/c-to-rust-autoresearch/**)"),
+        format!("Read(/{home_dir}/notes/**)"),
         format!("Edit(/{home_dir}/.claude/**)"),
         "WebFetch".to_owned(),
         "WebSearch".to_owned(),
@@ -183,6 +184,22 @@ fn setup_keeps_the_agent_out_of_the_main_checkout_and_off_the_web() {
         hook.starts_with(&format!("'{}/loop/guard' '{own}' ", repo.display())),
         "{hook}"
     );
+    // The installed hook, run as Claude Code runs it.
+    let run = |command: &str| {
+        let mut child = Command::new("sh")
+            .args(["-c", hook])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let call = json!({"tool_name": "Bash", "tool_input": {"command": command}});
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(call.to_string().as_bytes()).unwrap();
+        drop(stdin);
+        child.wait().unwrap().code()
+    };
+    assert_eq!(run("cat ~/notes/a.md"), Some(2));
+    assert_eq!(run("cargo test"), Some(0));
     let marked = Command::new("git")
         .args(["config", "c2r.loop"])
         .current_dir(dir.join("loop"))

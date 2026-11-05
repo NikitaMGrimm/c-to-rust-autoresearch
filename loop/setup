@@ -29,11 +29,16 @@ fi
 # path, with every other character than letters and digits turned into -.
 transcripts() { echo "$HOME/.claude/projects/$(printf %s "$1" | tr -c 'a-zA-Z0-9' '-')"; }
 denied=("$private" "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch" "$repo" "$(transcripts "$repo")")
+# A shell call can name a place by a shorter path, such as ~/notes, so the
+# guard looks for each directory's own name too.
+names=("$(basename "$private")" "$(basename "$repo")" .cache/c-to-rust-autoresearch)
 for dir in "$@"; do
-  denied+=("$(cd "$dir" && pwd -P)")
+  dir=$(cd "$dir" && pwd -P)
+  denied+=("$dir")
+  names+=("$(basename "$dir")")
 done
 # The gate refuses to run from a checkout marked with c2r.loop.
-markers=("${denied[@]}" "$(basename "$private")" "$(basename "$repo")" .cache/c-to-rust-autoresearch c2r.loop)
+markers=("${denied[@]}" "${names[@]}" c2r.loop)
 json_array() { printf '%s\n' "$@" | jq -R . | jq -sc .; }
 
 git clone -q --branch main "$repo" "$loop"

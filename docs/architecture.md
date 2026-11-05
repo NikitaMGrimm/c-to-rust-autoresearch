@@ -111,8 +111,9 @@ more examples of a construct might, so the loop has several layers:
   checkout, its transcripts and each `DENIED_DIR`, and edits under
   `~/.claude`; deny the web tools and network commands; and install
   `loop/guard`. That hook blocks any tool call, shell commands included, that
-  names those places or the corpus, or touches Claude Code's files other than
-  skills, plugins and the tool output Claude Code saves for the agent.
+  names those places, by path or by their own name, or the corpus, or touches
+  Claude Code's files other than skills, plugins and the tool output Claude
+  Code saves for the agent.
 - `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private
