@@ -1,0 +1,56 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "fuzz_1",
+      "stdin": "set myvar XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nset myvar XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_2",
+      "stdin": "set x 100\nunset x\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_3",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile test.txt\ncreatefile test.txt\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_4",
+      "stdin": "set x 1\nset x 1\nvars\nexit\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_5",
+      "stdin": "adduser alice pass\nlogout\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_6",
+      "stdin": "cmp abc abc\ncmpn hello help 0\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_7",
+      "stdin": ""
+    },
+    {
+      "args": [],
+      "name": "fuzz_8",
+      "stdin": "verbosexon\nverbosexon\nverbose off\nexit\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_9",
+      "stdin": "adduser alice pass\nlogin alice pass\ncreatefile file1.txt\ncreatefile file0.txt\ncreatefile file3.txt\nlistfiles\nexit\n"
+    },
+    {
+      "args": [
+        "2"
+      ],
+      "name": "fuzz_10",
+      "stdin": "listusers\nlistusers\nexit\n"
+    }
+  ]
+}

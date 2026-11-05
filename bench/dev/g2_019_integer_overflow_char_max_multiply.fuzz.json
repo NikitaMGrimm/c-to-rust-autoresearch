@@ -1,0 +1,9 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "fuzz_1",
+      "stdin": ""
+    }
+  ]
+}

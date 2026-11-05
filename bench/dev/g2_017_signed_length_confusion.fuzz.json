@@ -1,0 +1,54 @@
+{
+  "inputs": [
+    {
+      "args": [],
+      "name": "fuzz_1",
+      "stdin": "76"
+    },
+    {
+      "args": [],
+      "name": "fuzz_2",
+      "stdin": "6"
+    },
+    {
+      "args": [],
+      "name": "fuzz_3",
+      "stdin": "8a0"
+    },
+    {
+      "args": [],
+      "name": "fuzz_4",
+      "stdin": "2\n"
+    },
+    {
+      "args": [],
+      "name": "fuzz_5",
+      "stdin": "7"
+    },
+    {
+      "args": [],
+      "name": "fuzz_6",
+      "stdin": "11"
+    },
+    {
+      "args": [],
+      "name": "fuzz_7",
+      "stdin": "12Z34"
+    },
+    {
+      "args": [],
+      "name": "fuzz_8",
+      "stdin": "88"
+    },
+    {
+      "args": [],
+      "name": "fuzz_9",
+      "stdin": "9a"
+    },
+    {
+      "args": [],
+      "name": "fuzz_10",
+      "stdin": "1.234"
+    }
+  ]
+}

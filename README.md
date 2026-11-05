@@ -65,6 +65,12 @@ A translation passes when:
   (`mismatch`);
 - it contains no `unsafe` code (`unsafe`).
 
+A program may also have fuzzed inputs in `NAME.fuzz.json`. For a translation
+that passes, the evaluator runs them the same way and prints the result as
+`fuzz: STAGE`; the last line, `FUZZ held/passed`, counts the passes that also
+pass their fuzzed inputs. These inputs do not change whether a translation
+passes.
+
 Standard error is not compared. Both programs run as `./program` from their
 own directories. Every program may write files of at most 64 MiB and print at
 most 8 MiB; the transpiler and the Rust program may use 4 GiB of address
@@ -114,6 +120,7 @@ them on the development set, the private validation set and the private
 variants of the development set. It keeps the candidate when the development
 score rises and the validation score does not drop, appends all results to
 `PRIVATE_DIR/loop/log.jsonl`, with the validation score without
-[near-copies](bench/README.md#near-copies) when they are marked, and prints
-only the development results and the decision. Run it from a checkout the loop agent cannot write to, since it
+[near-copies](bench/README.md#near-copies) when they are marked and the number
+of passes that fail their fuzzed inputs, and prints only the development
+results and the decision. Run it from a checkout the loop agent cannot write to, since it
 trusts its own code and the benchmarks.

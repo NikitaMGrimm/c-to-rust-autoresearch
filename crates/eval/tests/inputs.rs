@@ -257,3 +257,34 @@ fn translations_cannot_include_hidden_files_when_compiled() {
         assert_eq!(record.stage, "compile_fail", "{}", record.detail);
     }
 }
+
+#[test]
+fn fuzzed_inputs_are_a_separate_result_for_passes() {
+    let c = "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    puts(argc > 1 && atoi(argv[1]) > 10 ? \"big\" : \"small\");\n    return 0;\n}\n";
+    let inputs = r#"{"inputs": [{"name": "five", "args": ["5"]}]}"#;
+    let fuzzed = r#"{"inputs": [{"name": "fuzz_1", "args": ["50"]}]}"#;
+    let right = "fn main() {\n    let n: i32 = std::env::args().nth(1).map_or(0, |a| a.parse().unwrap_or(0));\n    println!(\"{}\", if n > 10 { \"big\" } else { \"small\" });\n}\n";
+    let always_small = "fn main() {\n    println!(\"small\");\n}\n";
+    let broken = "fn main() {\n    println!(\"other\");\n}\n";
+    let run = |test: &str, rust: &str| {
+        let (dir, transpiler) = setup(test, c, Some(inputs), rust);
+        std::fs::write(dir.join("g1_program.fuzz.json"), fuzzed).unwrap();
+        let record = eval::evaluate(
+            &dir.join("g1_program.c"),
+            &eval::Translator::Transpiler(transpiler),
+            &dir.join("work"),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        record
+    };
+    let held = run("fuzz-right", right);
+    let lucky = run("fuzz-lucky", always_small);
+    let failed = run("fuzz-broken", broken);
+    assert_eq!((held.stage, held.fuzz.map(|f| f.0)), ("pass", Some("pass")));
+    assert_eq!(lucky.stage, "pass", "{}", lucky.detail);
+    assert!(lucky.fails_fuzz());
+    let (stage, detail) = lucky.fuzz.unwrap();
+    assert_eq!(stage, "mismatch");
+    assert!(detail.starts_with("input fuzz_1: "), "{detail}");
+    assert_eq!((failed.stage, failed.fuzz), ("mismatch", None));
+}

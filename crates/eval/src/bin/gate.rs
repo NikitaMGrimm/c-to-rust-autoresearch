@@ -24,6 +24,8 @@ const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 /// Stage of each program, by set and program name.
 type Results = BTreeMap<&'static str, BTreeMap<String, &'static str>>;
+/// Passes that fail their fuzzed inputs, by set.
+type FuzzFailures = BTreeMap<&'static str, BTreeSet<String>>;
 
 struct Args {
     private: PathBuf,
@@ -97,13 +99,15 @@ fn gate(args: &Args) -> Result<bool, String> {
 
     let near_copies = near_copies(&args.private)?;
     let problem = change_problem(&base, &candidate)?;
-    let (before, after) = match problem {
-        Some(_) => (Results::new(), Results::new()),
+    let ((before, fuzz_before), (after, fuzz_after)) = match problem {
+        Some(_) => Default::default(),
         None => (
             results(&base, &sets, args.jobs)?,
             results(&candidate, &sets, args.jobs)?,
         ),
     };
+    let failing_fuzz =
+        |failures: &FuzzFailures, set: &str| failures.get(set).map_or(0, BTreeSet::len);
     let reason = problem.or_else(|| rejection(&before, &after));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
@@ -122,6 +126,10 @@ fn gate(args: &Args) -> Result<bool, String> {
                 "candidate": passes(&after, set),
                 "total": candidate_stages.len(),
                 "changed": changed,
+                "passes_failing_fuzz": {
+                    "base": failing_fuzz(&fuzz_before, set),
+                    "candidate": failing_fuzz(&fuzz_after, set),
+                },
             });
             if let Some(copies) = near_copies.get(set) {
                 let (base, _) = passes_without(base_stages, copies);
@@ -157,6 +165,11 @@ fn gate(args: &Args) -> Result<bool, String> {
             let stage = |i: usize| stages[i].as_str().unwrap_or_default();
             println!("  {name}: {} -> {}", stage(0), stage(1));
         }
+        let fuzz = &dev["passes_failing_fuzz"];
+        println!(
+            "dev passes failing fuzzed inputs: {} -> {}",
+            fuzz["base"], fuzz["candidate"]
+        );
     }
     match &reason {
         None => println!("keep"),
@@ -248,7 +261,11 @@ fn check_paths(paths: &[&str]) -> Option<String> {
 }
 
 /// Builds the transpiler at `commit` in the sandbox and evaluates every set.
-fn results(commit: &str, sets: &[(&'static str, PathBuf)], jobs: usize) -> Result<Results, String> {
+fn results(
+    commit: &str,
+    sets: &[(&'static str, PathBuf)],
+    jobs: usize,
+) -> Result<(Results, FuzzFailures), String> {
     let scratch = std::env::temp_dir().join(format!("c2r-gate-{}-{commit}", std::process::id()));
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -271,17 +288,19 @@ fn results(commit: &str, sets: &[(&'static str, PathBuf)], jobs: usize) -> Resul
         let transpiler = eval::build_transpiler_sandboxed(&workspace)
             .map_err(|err| format!("{commit}: {err}"))?;
         let translator = eval::Translator::Transpiler(transpiler);
-        let mut results = Results::new();
+        let (mut results, mut fuzz_failures) = (Results::new(), FuzzFailures::new());
         for (set, dir) in sets {
             let programs = eval::c_programs(dir)?;
             if programs.is_empty() {
                 return Err(format!("no .c programs in {}", dir.display()));
             }
             let records = eval::evaluate_all(&programs, &translator, jobs)?;
+            let failing = records.iter().filter(|r| r.fails_fuzz());
+            fuzz_failures.insert(set, failing.map(|r| r.name.clone()).collect());
             let stages = records.into_iter().map(|r| (r.name, r.stage)).collect();
             results.insert(set, stages);
         }
-        Ok(results)
+        Ok((results, fuzz_failures))
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     evaluated
