@@ -103,11 +103,12 @@ branch, at most every two hours, and merges it by fast-forward once its
 checks pass and CodeRabbit has reviewed it with every thread resolved. Open
 review comments and failed checks come back to the agent in the next clone,
 and the round posts the agent's replies; the agent itself never reaches
-GitHub. The round prints what waits for the owner: a thread where CodeRabbit
-disputes a reply, a check that ended without failing or passing, and commits
-that reach GitHub's `main` or `loop` some other way. Pull those on `main`
-into this checkout's main between rounds, then make the clone afresh with
-`loop/setup`.
+GitHub. When CodeRabbit disputes a reply, the thread goes back to the agent;
+after the second dispute it waits for the owner. The round prints what waits
+for the owner: such threads, a check that ended without failing or passing,
+and commits that reach GitHub's `main` or `loop` some other way. Pull those
+on `main` into this checkout's main between rounds, then make the clone
+afresh with `loop/setup`.
 
 ## Model usage
 
