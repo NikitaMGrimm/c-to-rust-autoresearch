@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "bench"
+version = "0.1.0"
+dependencies = [
+ "eval",
+ "serde_json",
+]
+
+[[package]]
 name = "eval"
 version = "0.1.0"
 dependencies = [
@@ -115,6 +123,13 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "usage"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "zmij"

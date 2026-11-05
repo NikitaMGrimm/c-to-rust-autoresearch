@@ -10,7 +10,7 @@
 //! private repository, including those of development programs: the loop
 //! agent must not see them. Only counts are printed.
 
-use eval::Rng;
+use bench::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -159,7 +159,7 @@ fn variants(c_file: &Path, seed: u64, work: &Path) -> Vec<(&'static str, Variant
         _ => return vec![("r", Err("unreadable"))],
     };
     let name = c_file.file_name().unwrap_or_default().to_string_lossy();
-    let rng = |kind: &str| Rng(eval::mix(seed ^ eval::fnv(&format!("{name}/{kind}"))));
+    let rng = |kind: &str| Rng(bench::mix(seed ^ bench::fnv(&format!("{name}/{kind}"))));
     let renamed = rename(c_file, &source, &mut rng("r"));
     let mut result = Vec::new();
     result.push((

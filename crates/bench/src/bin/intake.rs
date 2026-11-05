@@ -551,7 +551,7 @@ fn assign(
             .into_iter()
             .filter(|p| !split.contains_key(&p.family))
             .collect();
-        new.sort_by_key(|p| (eval::mix(seed ^ eval::fnv(&p.family)), p.family.clone()));
+        new.sort_by_key(|p| (bench::mix(seed ^ bench::fnv(&p.family)), p.family.clone()));
         for program in new {
             // The set furthest below its share after this program is added.
             let (set, _) = SPLITS

@@ -1,0 +1,12 @@
+[package]
+name = "usage"
+version = "0.1.0"
+description = "Sums model usage from Claude Code transcripts"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"

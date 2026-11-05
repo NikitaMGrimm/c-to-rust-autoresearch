@@ -10,7 +10,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process::ExitCode;
 
-use eval::{Input, Rng};
+use bench::Rng;
+use eval::Input;
 
 const USAGE: &str = "usage: fuzz PRIVATE_DIR\n\
      Writes NAME.fuzz.json next to every program in bench/dev and in the\n\
@@ -117,7 +118,7 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
     let spec = eval::spec(c_file)?;
     let source =
         std::fs::read(c_file).map_err(|err| format!("cannot read {}: {err}", c_file.display()))?;
-    let bounded = eval::parses_numbers_unchecked(&String::from_utf8_lossy(&source));
+    let bounded = bench::parses_numbers_unchecked(&String::from_utf8_lossy(&source));
     let references = eval::References::build(c_file, &spec.c_flags, work)
         .map_err(|err| format!("{}: {err}", c_file.display()))?;
     let behaviour = |run: eval::Run| (run.stdout, run.exit);
@@ -127,7 +128,7 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
         .filter_map(|input| references.check(input).ok())
         .map(behaviour)
         .collect();
-    let mut rng = Rng(eval::mix(SEED ^ eval::fnv(name)));
+    let mut rng = Rng(bench::mix(SEED ^ bench::fnv(name)));
     let (mut kept, mut timeouts) = (Vec::new(), 0);
     for _ in 0..ATTEMPTS {
         if kept.len() == KEEP || timeouts == TIMEOUTS {
@@ -140,7 +141,7 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
         }
         let known = |input: &Input| input.args == candidate.args && input.stdin == candidate.stdin;
         if spec.inputs.iter().chain(&kept).any(known)
-            || (bounded && !eval::numbers_fit_int(&candidate))
+            || (bounded && !bench::numbers_fit_int(&candidate))
         {
             continue;
         }
@@ -208,7 +209,7 @@ fn change_number(input: &mut Input, rng: &mut Rng) {
         .iter()
         .enumerate()
         .flat_map(|(field, text)| {
-            eval::number_spans(text)
+            bench::number_spans(text)
                 .into_iter()
                 .map(move |(start, end)| (field, start, end))
         })
@@ -308,7 +309,7 @@ mod tests {
     #[test]
     fn numbers_keep_a_leading_minus_but_not_a_hyphen() {
         let text = "-5 x-3 a12 7-2 (-40)";
-        let found: Vec<&str> = eval::number_spans(text)
+        let found: Vec<&str> = bench::number_spans(text)
             .iter()
             .map(|&(s, e)| &text[s..e])
             .collect();
@@ -406,6 +407,6 @@ mod tests {
     fn numbers_for_atoi_stay_within_int() {
         let (kept, _) = fuzz_modulo("atoi", "int n = atoi(argv[1]);");
         assert!(!kept.is_empty());
-        assert!(kept.iter().all(eval::numbers_fit_int), "{kept:?}");
+        assert!(kept.iter().all(bench::numbers_fit_int), "{kept:?}");
     }
 }
