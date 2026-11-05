@@ -108,8 +108,12 @@ fn main() -> ExitCode {
 
 fn report(records: &[eval::Record], quiet: bool) {
     for record in records {
+        let fuzz = match &record.fuzz {
+            Some((stage, _)) => format!("  fuzz: {stage}"),
+            None => String::new(),
+        };
         println!(
-            "{:>14}  {}  ({:.1}s)",
+            "{:>14}  {}  ({:.1}s){fuzz}",
             record.stage, record.name, record.seconds
         );
     }
@@ -125,6 +129,17 @@ fn report(records: &[eval::Record], quiet: bool) {
                 record.detail.trim_end()
             );
         }
+        for record in records {
+            if let Some((stage, detail)) = &record.fuzz
+                && *stage != "pass"
+            {
+                println!(
+                    "\n===== {}: fuzz {stage} =====\n{}",
+                    record.name,
+                    detail.trim_end()
+                );
+            }
+        }
     }
     let mut groups: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for record in records {
@@ -138,4 +153,6 @@ fn report(records: &[eval::Record], quiet: bool) {
     }
     let passed = records.iter().filter(|r| r.stage == "pass").count();
     println!("SCORE {passed}/{}", records.len());
+    let (held, fuzzed) = eval::fuzz_counts(records);
+    println!("FUZZ {held}/{fuzzed}");
 }

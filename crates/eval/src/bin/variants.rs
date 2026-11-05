@@ -10,6 +10,7 @@
 //! private repository, including those of development programs: the loop
 //! agent must not see them. Only counts are printed.
 
+use eval::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -93,19 +94,6 @@ struct Token {
     start: usize,
     end: usize,
     kind: Kind,
-}
-
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(1);
-        eval::mix(self.0)
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
 }
 
 fn main() -> ExitCode {

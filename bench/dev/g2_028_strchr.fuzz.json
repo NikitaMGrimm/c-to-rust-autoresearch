@@ -1,0 +1,43 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "2147483647"
+      ],
+      "name": "fuzz_1",
+      "stdin": ""
+    },
+    {
+      "args": [],
+      "name": "fuzz_2",
+      "stdin": "another line with an x"
+    },
+    {
+      "args": [],
+      "name": "fuzz_3",
+      "stdin": "asdfAXXAasdxf\nanother line with an xanother line with an x"
+    },
+    {
+      "args": [],
+      "name": "fuzz_4",
+      "stdin": "asdf0XXAasxf"
+    },
+    {
+      "args": [],
+      "name": "fuzz_5",
+      "stdin": "asdfAXXAasdxfasdfAXXAasdxf"
+    },
+    {
+      "args": [
+        "1"
+      ],
+      "name": "fuzz_6",
+      "stdin": "asdfAXXAasdxf\nasdfAXXAasdxf\nanother line with an x"
+    },
+    {
+      "args": [],
+      "name": "fuzz_7",
+      "stdin": "asdfAXXAasdf"
+    }
+  ]
+}

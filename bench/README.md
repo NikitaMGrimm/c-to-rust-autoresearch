@@ -73,7 +73,7 @@ share a set.
 | Total | 24 | 14 | 13 |
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`b7af4d493d0e2ccb4cc89a5dea651b3b0419f7b18f3a1c9c7c80c75ac40480a2`.
+`a03d8f01cf81045cd8ba4496d4c00518138bb9256ab18993305217e063d3a44a`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -105,6 +105,33 @@ them either.
 
 Renamed variants kept every input of their original.
 
+## Fuzzed inputs
+
+TRACTOR gives most programs a few inputs, and a translation can pass all of
+them while getting C's behaviour wrong elsewhere.
+`cargo run -p eval --bin fuzz -- PRIVATE_DIR` changes each program's inputs at
+random: numbers become edge values such as `2147483648`, neighbours or other
+digits; arguments and lines of standard input are dropped, repeated or cut
+off; single characters are deleted, replaced or inserted. A candidate is kept
+when it passes the same C checks as the benchmarks and the C program prints or
+exits unlike on every input kept before, up to 10 per program. Programs that
+call `atoi`, `atol`, `atoll` or the `scanf` family only get numbers that fit
+an `int`: these functions have undefined behaviour on larger numbers, which
+the sanitizers do not catch. Development programs get `NAME.fuzz.json` here;
+the private sets keep theirs. The seed is fixed, so a rerun writes the same
+files.
+
+| Set | Fuzzed inputs | Programs with them | Programs |
+|---|---:|---:|---:|
+| Dev | 198 | 21 | 24 |
+| Validation | 100 | 10 | 14 |
+| Held-out | 95 | 11 | 13 |
+
+The evaluator reports them as a separate result for now, so the pass rule
+stays as it is. Of the four hand translations of dev programs that pass, two
+fail a fuzzed input: one where `strtod` accepts an empty argument, and one
+where `scanf("%d")` reads `44Z` as 44.
+
 ## Near-copies
 
 Some TRACTOR test cases nearly repeat another under a different name, and the
@@ -132,5 +159,6 @@ cargo run -p eval --bin intake -- ~/.cache/c-to-rust-autoresearch/tractor ../c-t
 The first argument is where the corpus is fetched. Keep it outside this
 repository, because it contains the validation and held-out programs too. The
 second argument is a checkout of the private repository. Run `variants` after
-`intake`, then update the manifest as the private README describes, and run
-`near-copies` whenever a set changes.
+`intake`, then `fuzz` (`intake` removes the fuzzed inputs), then update the
+manifest as the private README describes, and run `near-copies` whenever a set
+changes.

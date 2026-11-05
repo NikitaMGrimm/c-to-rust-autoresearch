@@ -104,7 +104,110 @@ pub fn spec(c_file: &Path) -> Result<Spec, String> {
             .ok_or_else(|| invalid(&format!("\"c_flags\" may only contain {C_FLAGS:?}")))?,
         _ => return Err(invalid("\"c_flags\" must be a list")),
     };
-    let list = json["inputs"]
+    let inputs = parse_inputs(&json["inputs"], invalid)?;
+    Ok(Spec { inputs, c_flags })
+}
+
+/// Extension of the file next to a benchmark program that holds its fuzzed
+/// inputs, in the same form as the spec's `inputs`.
+pub const FUZZ_EXTENSION: &str = "fuzz.json";
+
+/// Reads the fuzzed inputs of `c_file`; a program may have none.
+pub fn fuzzed_inputs(c_file: &Path) -> Result<Vec<Input>, String> {
+    let path = c_file.with_extension(FUZZ_EXTENSION);
+    let text = match std::fs::read(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    let invalid = |why: &str| format!("{}: {why}", path.display());
+    let json: serde_json::Value =
+        serde_json::from_slice(&text).map_err(|err| invalid(&err.to_string()))?;
+    parse_inputs(&json["inputs"], invalid)
+}
+
+/// Functions whose behaviour is undefined when a number they read does not
+/// fit its type. The sanitizers miss this, so generated inputs for programs
+/// that call them keep their numbers within `int`.
+const UNCHECKED_PARSERS: [&str; 6] = ["atoi", "atol", "atoll", "scanf", "sscanf", "fscanf"];
+
+/// Whether the C `source` calls one of [`UNCHECKED_PARSERS`]. A mention in a
+/// comment also counts, which only makes generated inputs smaller.
+pub fn parses_numbers_unchecked(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut i = 0;
+    while i < bytes.len() {
+        if !word(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && word(bytes[i]) {
+            i += 1;
+        }
+        let called = source[i..].trim_start().starts_with('(');
+        if called && UNCHECKED_PARSERS.contains(&&source[start..i]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Byte ranges of the decimal numbers in `text`, with a minus sign that does
+/// not follow a word or another number.
+pub fn number_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let mut start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let glued = |at: usize| bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_';
+        if start > 0 && bytes[start - 1] == b'-' && (start == 1 || !glued(start - 2)) {
+            start -= 1;
+        }
+        found.push((start, i));
+    }
+    found
+}
+
+/// Whether every number in the arguments and standard input fits in `int`.
+pub fn numbers_fit_int(input: &Input) -> bool {
+    let stdin = String::from_utf8_lossy(&input.stdin);
+    input
+        .args
+        .iter()
+        .map(String::as_str)
+        .chain([stdin.as_ref()])
+        .all(|text| {
+            number_spans(text)
+                .iter()
+                .all(|&(start, end)| text[start..end].parse::<i32>().is_ok())
+        })
+}
+
+/// Passes whose program has fuzzed inputs, and how many of them hold on them.
+pub fn fuzz_counts(records: &[Record]) -> (usize, usize) {
+    let fuzzed: Vec<&Record> = records
+        .iter()
+        .filter(|record| record.stage == "pass" && record.fuzz.is_some())
+        .collect();
+    let held = fuzzed.iter().filter(|record| !record.fails_fuzz()).count();
+    (held, fuzzed.len())
+}
+
+fn parse_inputs(
+    list: &serde_json::Value,
+    invalid: impl Fn(&str) -> String,
+) -> Result<Vec<Input>, String> {
+    let list = list
         .as_array()
         .filter(|list| !list.is_empty())
         .ok_or_else(|| invalid("expected a non-empty \"inputs\" list"))?;
@@ -133,8 +236,7 @@ pub fn spec(c_file: &Path) -> Result<Spec, String> {
                 stdin,
             })
         })
-        .collect::<Result<_, _>>()
-        .map(|inputs| Spec { inputs, c_flags })
+        .collect()
 }
 
 /// Where translations come from.
@@ -157,10 +259,22 @@ pub struct Record {
     pub warnings: BTreeMap<String, u32>,
     /// Idiomaticity counts of a translation that compiled.
     pub metrics: Option<BTreeMap<&'static str, u32>>,
+    /// Stage and detail on the fuzzed inputs, for a translation that passed
+    /// and a program that has them.
+    pub fuzz: Option<(&'static str, String)>,
     pub seconds: f64,
 }
 
 impl Record {
+    /// A pass that does not hold on the program's fuzzed inputs.
+    pub fn fails_fuzz(&self) -> bool {
+        self.stage == "pass"
+            && self
+                .fuzz
+                .as_ref()
+                .is_some_and(|(stage, _)| *stage != "pass")
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "name": self.name,
@@ -169,6 +283,9 @@ impl Record {
             "detail": self.detail,
             "warnings": self.warnings,
             "metrics": self.metrics,
+            "fuzz": self.fuzz.as_ref().map(|(stage, detail)| {
+                serde_json::json!({"stage": stage, "detail": detail})
+            }),
             "seconds": self.seconds,
         })
     }
@@ -363,8 +480,15 @@ pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
         .into_owned();
     let group = name.split('_').next().unwrap_or_default().to_owned();
     let mut warnings = BTreeMap::new();
-    let mut metrics = None;
-    let (stage, detail) = stages(c_file, translator, work, &mut warnings, &mut metrics);
+    let (mut metrics, mut fuzz) = (None, None);
+    let (stage, detail) = stages(
+        c_file,
+        translator,
+        work,
+        &mut warnings,
+        &mut metrics,
+        &mut fuzz,
+    );
     Record {
         name,
         group,
@@ -372,6 +496,7 @@ pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
         detail,
         warnings,
         metrics,
+        fuzz,
         seconds: (start.elapsed().as_secs_f64() * 10.0).round() / 10.0,
     }
 }
@@ -477,6 +602,21 @@ pub fn mix(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+/// Deterministic random numbers from a seed, so generated benchmarks can be
+/// regenerated exactly.
+pub struct Rng(pub u64);
+
+impl Rng {
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(1);
+        mix(self.0)
+    }
+
+    pub fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}
+
 /// FNV-1a hash, to derive seeds from names.
 pub fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
@@ -562,6 +702,7 @@ fn stages(
     work: &Path,
     warnings: &mut BTreeMap<String, u32>,
     metrics: &mut Option<BTreeMap<&'static str, u32>>,
+    fuzz: &mut Option<(&'static str, String)>,
 ) -> (&'static str, String) {
     let Spec { inputs, c_flags } = match spec(c_file) {
         Ok(spec) => spec,
@@ -632,7 +773,37 @@ fn stages(
     }
     let unsafe_uses = warnings.get("unsafe_code").copied().unwrap_or(0);
     let last = c_runs.last().expect("inputs are never empty");
-    classify(last, last, unsafe_uses)
+    let result = classify(last, last, unsafe_uses);
+    if result.0 == "pass" {
+        *fuzz = fuzz_stage(c_file, &c_program, &rust_program);
+    }
+    result
+}
+
+/// How a passing translation does on the fuzzed inputs, if there are any.
+/// They are a separate result, so the pass rule stays as it was.
+fn fuzz_stage(
+    c_file: &Path,
+    c_program: &Path,
+    rust_program: &Path,
+) -> Option<(&'static str, String)> {
+    let inputs = match fuzzed_inputs(c_file) {
+        Ok(inputs) if inputs.is_empty() => return None,
+        Ok(inputs) => inputs,
+        Err(err) => return Some(("c_invalid", err)),
+    };
+    for input in &inputs {
+        let c = run_program(c_program, input);
+        if let Some(problem) = c_problem(&c) {
+            return Some(("c_invalid", on_input(input, problem)));
+        }
+        let rust = run_in_place(rust_program, input, true);
+        let (stage, detail) = classify(&c, &rust, 0);
+        if stage != "pass" {
+            return Some((stage, on_input(input, detail)));
+        }
+    }
+    Some(("pass", String::new()))
 }
 
 /// Writes the translation of `c_file` to `rust_file`, or says why it could not.
@@ -1002,6 +1173,56 @@ fn main() {
         assert_eq!(counts["lint_allows"], 1);
         assert_eq!(counts["lines"], 11);
         assert_eq!(idiom_counts("fn main( {"), None);
+    }
+
+    #[test]
+    fn unchecked_number_parsers_are_found_only_when_called() {
+        assert!(parses_numbers_unchecked("int n = atoi (argv[1]);"));
+        assert!(parses_numbers_unchecked(
+            "if (sscanf(line, \"%d\", &n) != 1)"
+        ));
+        assert!(!parses_numbers_unchecked(
+            "long n = strtol(argv[1], 0, 10);"
+        ));
+        assert!(!parses_numbers_unchecked(
+            "int my_atoi(const char *s); int atoi_count;"
+        ));
+    }
+
+    #[test]
+    fn numbers_beyond_int_are_found_in_arguments_and_input() {
+        let input = |args: &[&str], stdin: &str| Input {
+            name: String::new(),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            stdin: stdin.as_bytes().to_vec(),
+        };
+        assert!(numbers_fit_int(&input(
+            &["2147483647", "x-5"],
+            "-2147483648\n"
+        )));
+        assert!(!numbers_fit_int(&input(&["2147483648"], "")));
+        assert!(!numbers_fit_int(&input(&[], "1 -2147483649\n")));
+    }
+
+    #[test]
+    fn fuzz_counts_leave_out_passes_without_fuzzed_inputs() {
+        let record = |stage: &'static str, fuzz: Option<&'static str>| Record {
+            name: String::new(),
+            group: String::new(),
+            stage,
+            detail: String::new(),
+            warnings: BTreeMap::new(),
+            metrics: None,
+            fuzz: fuzz.map(|stage| (stage, String::new())),
+            seconds: 0.0,
+        };
+        let records = [
+            record("pass", None),
+            record("pass", Some("pass")),
+            record("pass", Some("mismatch")),
+            record("mismatch", None),
+        ];
+        assert_eq!(fuzz_counts(&records), (1, 2));
     }
 
     #[test]
