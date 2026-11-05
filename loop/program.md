@@ -67,6 +67,9 @@ them and the owner may comment. A round writes what is open there into
   transpiler, and say why. Replies are posted publicly as written, so write
   plain sentences without mentions.
 
+Answers alone do not end an iteration: a round without a commit posts
+nothing, so every iteration still ends with a fix or a new rule.
+
 ## The gate
 
 After each iteration the gate, run outside your session, builds the

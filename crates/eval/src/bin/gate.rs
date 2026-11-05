@@ -262,11 +262,14 @@ fn untrusted(dir: &Path) -> Result<Option<String>, String> {
 /// Whether every commit from `base` to `candidate` in the repository at `dir`
 /// is a fix.
 fn is_fix(dir: &Path, base: &str, candidate: &str) -> Result<bool, String> {
-    let subjects = git_in(
-        dir,
-        &["log", "--format=%s", &format!("{base}..{candidate}")],
-    )?;
-    Ok(!subjects.is_empty() && subjects.lines().all(|subject| subject.starts_with(FIX)))
+    // Each subject ends with NUL rather than a newline, so that the trim in
+    // `git_in` cannot drop an empty one.
+    let range = format!("{base}..{candidate}");
+    let subjects = git_in(dir, &["log", "-z", "--format=%s", &range])?;
+    Ok(!subjects.is_empty()
+        && subjects
+            .split_terminator('\0')
+            .all(|subject| subject.starts_with(FIX)))
 }
 
 /// Why the change from `base` to `candidate` may not be evaluated, if so.
@@ -413,6 +416,7 @@ mod tests {
         let same = results(&[Mismatch, Pass], &[Pass, Panic]);
         let worse = results(&[Mismatch, Mismatch], &[Pass, Panic]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
+        let same_overfit = results(&[Mismatch, Pass], &[Panic, Panic]);
         assert_eq!(rejection(&before, &same, true), None);
         assert!(rejection(&before, &same, false).is_some());
         assert!(
@@ -420,11 +424,10 @@ mod tests {
                 .unwrap()
                 .contains("lowered")
         );
-        assert!(
-            rejection(&before, &overfit, true)
-                .unwrap()
-                .contains("validation")
-        );
+        for candidate in [&overfit, &same_overfit] {
+            let reason = rejection(&before, candidate, true).unwrap();
+            assert!(reason.contains("validation"), "{reason}");
+        }
     }
 
     #[test]
@@ -434,15 +437,23 @@ mod tests {
         let commit = |subject: &str| {
             let author = ["-c", "user.name=t", "-c", "user.email=t@t"];
             let unsigned = ["-c", "commit.gpgsign=false", "commit", "-q", "--no-verify"];
-            git(&[&author[..], &unsigned, &["--allow-empty", "-m", subject]].concat());
+            let empty = ["--allow-empty", "--allow-empty-message", "-m", subject];
+            git(&[&author[..], &unsigned, &empty].concat());
             git(&["rev-parse", "HEAD"])
         };
         git(&["init", "-q", "-b", "main"]);
         let base = commit("feat(transpiler): a rule");
         let fix = commit("fix(transpiler): a review comment");
         let rule = commit("feat(transpiler): another rule");
+        let late = commit("fix(transpiler): a late fix");
+        let blank = commit("");
+        let after_blank = commit("fix(transpiler): after a blank subject");
         assert_eq!(is_fix(&dir, &base, &fix), Ok(true));
         assert_eq!(is_fix(&dir, &base, &rule), Ok(false));
+        assert_eq!(is_fix(&dir, &base, &late), Ok(false));
+        // A blank subject at either end of the range is no fix either.
+        assert_eq!(is_fix(&dir, &rule, &blank), Ok(false));
+        assert_eq!(is_fix(&dir, &late, &after_blank), Ok(false));
         assert_eq!(is_fix(&dir, &base, &base), Ok(false));
     }
 

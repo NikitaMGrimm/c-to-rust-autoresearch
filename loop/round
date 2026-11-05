@@ -95,6 +95,14 @@ if ((status == 0)); then
   git merge -q --ff-only "$candidate"
   decision=keep
 fi
+# The model that wrote most of the session, by its display name, such as
+# Opus 5.5 for claude-opus-5-5. loop/github names it on the pull request.
+model=$(jq -r '.models // {} | to_entries | max_by(.value.output_tokens) | .key // empty' "$report" |
+  sed -E 's/^claude-([a-z])([a-z]*)-([0-9]+)-([0-9]+)\b.*$/\u\1\2 \3.\4/')
+model=${model:-Claude}
+if [[ $decision == keep ]]; then
+  echo "$candidate $model" >>"$state/models"
+fi
 # What the next session may see: each commit and the gate's printed results.
 {
   echo "## $(git log -1 --format='%h %s' "$candidate")"
@@ -113,11 +121,7 @@ rm -rf "$loop"
 cp "$state/rounds.md" "$loop/ROUNDS.md"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
 if $github; then
-  # The model that wrote most of the session, by its display name, such as
-  # Opus 5.5 for claude-opus-5-5.
-  model=$(jq -r '.models // {} | to_entries | max_by(.value.output_tokens) | .key // empty' "$report" |
-    sed -E 's/^claude-([a-z])([a-z]*)-([0-9]+)-([0-9]+)\b.*$/\u\1\2 \3.\4/')
-  "$repo/loop/github" "$state" "$loop" "$candidate" "$decision" "${model:-Claude}" ||
+  "$repo/loop/github" "$state" "$loop" "$candidate" "$decision" "$model" ||
     echo "round: the GitHub step failed; it runs again after the next round" >&2
 fi
 echo "next iteration: a fresh $loop at $(git log -1 --format='%h %s' main)"

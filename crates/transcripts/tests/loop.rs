@@ -226,7 +226,7 @@ esac | jq -r "$filter"
                 .unwrap();
         }
         std::fs::create_dir(dir.join("gh")).unwrap();
-        let none = json!({"data": {"repository": {"pullRequests": {"nodes": []}}}});
+        let none = json!({"data": {"repository": {"ref": null}}});
         std::fs::write(dir.join("gh/graphql.json"), none.to_string()).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
         git(&repo, &["add", "."]);
@@ -440,6 +440,9 @@ fn a_round_keeps_or_drops_the_commit_and_starts_afresh() {
     assert_eq!(git(&fixture.repo, &["rev-parse", "main"]), kept);
     let rounds = std::fs::read_to_string(fixture.loop_dir.join("ROUNDS.md")).unwrap();
     assert!(rounds.contains("feat(transpiler): kept") && rounds.contains("keep"));
+    // Which model made each kept commit, for the pull request's note.
+    let models = || std::fs::read_to_string(fixture.state().join("models")).unwrap();
+    assert_eq!(models(), format!("{kept} Opus 5.5\n"));
     assert_eq!(git(&fixture.loop_dir, &["rev-parse", "HEAD"]), kept);
     assert_eq!(git(&fixture.loop_dir, &["status", "--porcelain"]), "");
 
@@ -450,6 +453,7 @@ fn a_round_keeps_or_drops_the_commit_and_starts_afresh() {
     assert_eq!(git(&fixture.loop_dir, &["rev-parse", "HEAD"]), kept);
     let rounds = std::fs::read_to_string(fixture.loop_dir.join("ROUNDS.md")).unwrap();
     assert!(rounds.contains("feat(transpiler): dropped") && rounds.contains("reject"));
+    assert_eq!(models(), format!("{kept} Opus 5.5\n"));
     // Both candidates stay in the main checkout for the record.
     let candidates = git(&fixture.repo, &["for-each-ref", "refs/loop/"]);
     assert_eq!(candidates.lines().count(), 2, "{candidates}");
@@ -534,25 +538,37 @@ fn a_round_fails_with_2_and_runs_alone() {
     assert_eq!(fixture.run("round", 0, 0), Some(0));
 }
 
-/// A GraphQL answer with pull request #7 open from the loop branch at `head`.
+/// A GraphQL answer with pull request #7 open from the loop branch at `head`
+/// into main.
 fn pull_request(
     head: &str,
     checks: serde_json::Value,
     threads: serde_json::Value,
 ) -> serde_json::Value {
-    let count = threads.as_array().unwrap().len();
-    json!({"data": {"repository": {"pullRequests": {"nodes": [
-        // A fork's branch of the same name is not the loop's.
-        {"number": 8, "url": "fork", "headRefOid": head, "isCrossRepository": true},
+    let (checks_count, threads_count) = (
+        checks.as_array().unwrap().len(),
+        threads.as_array().unwrap().len(),
+    );
+    let contexts = json!({"totalCount": checks_count, "nodes": checks});
+    json!({"data": {"repository": {"ref": {"associatedPullRequests": {"nodes": [
+        // Neither a fork's pull request nor one into another branch is the loop's.
+        {"number": 8, "baseRefName": "main", "headRefOid": head, "isCrossRepository": true},
+        {"number": 9, "baseRefName": "other", "headRefOid": head, "isCrossRepository": false},
         {
             "number": 7,
             "url": "https://github.com/o/r/pull/7",
+            "baseRefName": "main",
             "headRefOid": head,
             "isCrossRepository": false,
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": checks}}}}]},
-            "reviewThreads": {"totalCount": count, "nodes": threads},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": contexts}}}]},
+            "reviewThreads": {"totalCount": threads_count, "nodes": threads},
         },
-    ]}}}})
+    ]}}}}})
+}
+
+/// The pull request in an answer from `pull_request`.
+fn ours(answer: &mut serde_json::Value) -> &mut serde_json::Value {
+    &mut answer["data"]["repository"]["ref"]["associatedPullRequests"]["nodes"][2]
 }
 
 fn check(name: &str, conclusion: &str) -> serde_json::Value {
@@ -580,7 +596,8 @@ fn thread(resolved: bool, comments: &[(u64, &str, &str)]) -> serde_json::Value {
             })
         })
         .collect();
-    json!({"isResolved": resolved, "comments": {"nodes": comments}})
+    let count = comments.len();
+    json!({"isResolved": resolved, "comments": {"totalCount": count, "nodes": comments}})
 }
 
 const REPLY: &str = "> [!NOTE]\n> 🤖 **Opus 5.5 replied on behalf of owner**\n\nNot changed.";
@@ -647,7 +664,9 @@ fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
     let pending = json!({"__typename": "StatusContext", "context": "ci", "state": "PENDING"});
     let resolved = json!([thread(true, &[(11, "coderabbitai", "Nit.")])]);
     let mut unfetched = pull_request(&kept, passed.clone(), resolved.clone());
-    unfetched["data"]["repository"]["pullRequests"]["nodes"][1]["reviewThreads"]["totalCount"] =
+    ours(&mut unfetched)["reviewThreads"]["totalCount"] = json!(101);
+    let mut more_checks = pull_request(&kept, passed.clone(), json!([]));
+    ours(&mut more_checks)["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] =
         json!(101);
     let open = json!([thread(false, &[(11, "coderabbitai", "Nit.")])]);
     for (answer, waits) in [
@@ -666,6 +685,7 @@ fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
         ),
         (pull_request(&kept, passed.clone(), open), "review threads"),
         (unfetched, "review threads"),
+        (more_checks, "checks"),
     ] {
         fixture.answer(answer);
         commit(&fixture.loop_dir, "more");
@@ -702,14 +722,26 @@ fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
         &other,
         &["push", "-q", "origin", "HEAD:refs/heads/elsewhere"],
     );
-    for head in [elsewhere, start] {
-        fixture.answer(pull_request(&head, passed.clone(), json!([])));
+    for head in [&elsewhere, &start] {
+        fixture.answer(pull_request(head, passed.clone(), json!([])));
         commit(&fixture.loop_dir, "more");
         let (code, output) = fixture.github_round(1);
         assert_eq!(code, Some(0), "{output}");
         assert!(!output.contains("failed"), "{output}");
         assert_eq!(fixture.origin("main"), kept);
     }
+
+    // Commits on the loop branch that main lacks are not overwritten.
+    git(
+        &other,
+        &["push", "-q", "-f", "origin", "HEAD:refs/heads/loop"],
+    );
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    commit(&fixture.loop_dir, "kept again");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("loop branch has commits"), "{output}");
+    assert_eq!(fixture.origin("loop"), elsewhere);
 }
 
 #[test]
@@ -718,7 +750,15 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
     assert_eq!(fixture.run("setup", 0, 0), Some(0));
     let kept = commit(&fixture.loop_dir, "kept");
     fixture.github_round(0);
-    let checks = json!([check("Rust", "FAILURE"), check("CodeRabbit", "SUCCESS")]);
+    let status = json!({"__typename": "StatusContext", "context": "external", "state": "ERROR"});
+    let checks = json!([
+        check("Rust", "FAILURE"),
+        check("Fuzz", "CANCELLED"),
+        status,
+        check("CodeRabbit", "SUCCESS"),
+    ]);
+    let mut long = thread(false, &[(81, "coderabbitai", "Long.")]);
+    long["comments"]["totalCount"] = json!(101);
     let disputed = [
         (51, "coderabbitai", "Rename it."),
         (52, "owner", REPLY),
@@ -746,6 +786,7 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         thread(false, &disputed),
         thread(true, &[(61, "coderabbitai", "Done before.")]),
         thread(false, &followed),
+        long,
     ]);
     fixture.answer(pull_request(&kept, checks, threads));
     std::fs::write(fixture.dir.join("gh/log"), "error: a test failed\n").unwrap();
@@ -756,7 +797,13 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         output.contains("3 comments for the loop agent, 1 waiting for CodeRabbit"),
         "{output}"
     );
-    assert!(output.contains("pull/7#discussion_r51"), "{output}");
+    for text in [
+        "answered the loop agent and left the thread open; the owner decides: https://github.com/o/r/pull/7#discussion_r51",
+        "more comments than the step reads; the owner decides: https://github.com/o/r/pull/7#discussion_r81",
+        "the check Fuzz on #7 ended CANCELLED; the owner decides",
+    ] {
+        assert!(output.contains(text), "{text} not in {output}");
+    }
     let reviews = std::fs::read_to_string(fixture.loop_dir.join("REVIEWS.md")).unwrap();
     for text in [
         "Comment 11 on `crates/transpiler/src/lib.rs` line 3",
@@ -765,6 +812,7 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         "**The owner:**\n\nWhy this name?",
         "## Failed check: Rust",
         "error: a test failed",
+        "## Failed check: external",
         "Comment 71",
         "**Your earlier reply:**",
         "Please change it anyway.",
@@ -778,6 +826,8 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         "Comment 41",
         "Comment 51",
         "Comment 61",
+        "Comment 81",
+        "Fuzz",
     ] {
         assert!(!reviews.contains(text), "{text} in {reviews}");
     }
