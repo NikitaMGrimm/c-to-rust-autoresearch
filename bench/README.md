@@ -105,6 +105,24 @@ them either.
 
 Renamed variants kept every input of their original.
 
+## Near-copies
+
+Some TRACTOR test cases nearly repeat another under a different name, and the
+split by family can put the two on different sides. A rule learned on a
+development program then passes its private twin almost for free, which looks
+like transfer but is not. `cargo run -p eval --bin near-copies -- PRIVATE_DIR`
+compares every private program with every development program by the Jaccard
+similarity of their token 4-grams, ignoring comments. A private program
+counts as a near-copy from 0.5; no pair scores between 0.41 and 0.53. The
+list stays private, and results for the private sets are reported with and
+without near-copies. The gate logs both validation scores; its decision uses
+all programs.
+
+| Set | Near-copies | Programs |
+|---|---:|---:|
+| Validation | 4 | 14 |
+| Held-out | 2 | 13 |
+
 ## Regenerating
 
 ```sh
@@ -114,4 +132,5 @@ cargo run -p eval --bin intake -- ~/.cache/c-to-rust-autoresearch/tractor ../c-t
 The first argument is where the corpus is fetched. Keep it outside this
 repository, because it contains the validation and held-out programs too. The
 second argument is a checkout of the private repository. Run `variants` after
-`intake`, then update the manifest as the private README describes.
+`intake`, then update the manifest as the private README describes, and run
+`near-copies` whenever a set changes.

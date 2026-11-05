@@ -113,6 +113,7 @@ catalogue. Otherwise it builds both transpilers in the sandbox and evaluates
 them on the development set, the private validation set and the private
 variants of the development set. It keeps the candidate when the development
 score rises and the validation score does not drop, appends all results to
-`PRIVATE_DIR/loop/log.jsonl`, and prints only the development results and the
-decision. Run it from a checkout the loop agent cannot write to, since it
+`PRIVATE_DIR/loop/log.jsonl`, with the validation score without
+[near-copies](bench/README.md#near-copies) when they are marked, and prints
+only the development results and the decision. Run it from a checkout the loop agent cannot write to, since it
 trusts its own code and the benchmarks.
