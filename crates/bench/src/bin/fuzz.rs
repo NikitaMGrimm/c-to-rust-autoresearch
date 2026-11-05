@@ -6,11 +6,11 @@
 //! public programs, private ones next to theirs, and only counts are printed.
 
 use std::collections::BTreeSet;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process::ExitCode;
 
-use eval::{Input, Rng};
+use bench::Rng;
+use eval::Input;
 
 const USAGE: &str = "usage: fuzz PRIVATE_DIR\n\
      Writes NAME.fuzz.json next to every program in bench/dev and in the\n\
@@ -51,7 +51,6 @@ const EDGES: [&str; 21] = [
 ];
 /// Characters put into text, from the kinds that parsers treat differently.
 const CHARACTERS: [char; 8] = ['a', 'Z', ' ', '-', '0', '.', ',', 'x'];
-const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,18 +68,8 @@ fn main() -> ExitCode {
 }
 
 fn generate(private: &Path) -> Result<(), String> {
-    let sets = [
-        ("dev", Path::new(REPO).join("bench/dev")),
-        ("validation", private.join("validation")),
-        ("held-out", private.join("held-out")),
-    ];
-    // Private and new: a planted directory or symlink at this path must not be used.
-    let scratch = std::env::temp_dir().join(format!("c2r-fuzz-{}", std::process::id()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&scratch)
-        .map_err(|err| format!("cannot create {}: {err}", scratch.display()))?;
-    let result = sets.iter().try_for_each(|(set, dir)| {
+    let scratch = eval::Scratch::new("fuzz")?;
+    bench::sets(private).iter().try_for_each(|(set, dir)| {
         let programs = eval::c_programs(dir)?;
         let (mut fuzzed, mut inputs) = (0, 0);
         for c_file in &programs {
@@ -105,9 +94,7 @@ fn generate(private: &Path) -> Result<(), String> {
             programs.len()
         );
         Ok(())
-    });
-    let _ = std::fs::remove_dir_all(&scratch);
-    result
+    })
 }
 
 /// The fuzzed inputs of one program, in the order they were found.
@@ -117,7 +104,7 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
     let spec = eval::spec(c_file)?;
     let source =
         std::fs::read(c_file).map_err(|err| format!("cannot read {}: {err}", c_file.display()))?;
-    let bounded = eval::parses_numbers_unchecked(&String::from_utf8_lossy(&source));
+    let bounded = bench::parses_numbers_unchecked(&String::from_utf8_lossy(&source));
     let references = eval::References::build(c_file, &spec.c_flags, work)
         .map_err(|err| format!("{}: {err}", c_file.display()))?;
     let behaviour = |run: eval::Run| (run.stdout, run.exit);
@@ -127,7 +114,7 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
         .filter_map(|input| references.check(input).ok())
         .map(behaviour)
         .collect();
-    let mut rng = Rng(eval::mix(SEED ^ eval::fnv(name)));
+    let mut rng = Rng(bench::mix(SEED ^ bench::fnv(name)));
     let (mut kept, mut timeouts) = (Vec::new(), 0);
     for _ in 0..ATTEMPTS {
         if kept.len() == KEEP || timeouts == TIMEOUTS {
@@ -140,7 +127,7 @@ fn fuzz(c_file: &Path, name: &str, work: &Path) -> Result<Vec<Input>, String> {
         }
         let known = |input: &Input| input.args == candidate.args && input.stdin == candidate.stdin;
         if spec.inputs.iter().chain(&kept).any(known)
-            || (bounded && !eval::numbers_fit_int(&candidate))
+            || (bounded && !bench::numbers_fit_int(&candidate))
         {
             continue;
         }
@@ -208,7 +195,7 @@ fn change_number(input: &mut Input, rng: &mut Rng) {
         .iter()
         .enumerate()
         .flat_map(|(field, text)| {
-            eval::number_spans(text)
+            bench::number_spans(text)
                 .into_iter()
                 .map(move |(start, end)| (field, start, end))
         })
@@ -308,7 +295,7 @@ mod tests {
     #[test]
     fn numbers_keep_a_leading_minus_but_not_a_hyphen() {
         let text = "-5 x-3 a12 7-2 (-40)";
-        let found: Vec<&str> = eval::number_spans(text)
+        let found: Vec<&str> = bench::number_spans(text)
             .iter()
             .map(|&(s, e)| &text[s..e])
             .collect();
@@ -362,9 +349,8 @@ mod tests {
     /// Fuzzes a program that prints `n % 7` for its first argument, given
     /// the C declaration of `n`. Returns the kept inputs and the number of
     /// distinct behaviours across the original and kept inputs.
-    fn fuzz_modulo(test: &str, declaration: &str) -> (Vec<Input>, usize) {
-        let dir = std::env::temp_dir().join(format!("fuzz-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn fuzz_modulo(declaration: &str) -> (Vec<Input>, usize) {
+        let dir = eval::Scratch::new("test").unwrap();
         let c_file = dir.join("g1_mod.c");
         std::fs::write(
             &c_file,
@@ -390,13 +376,12 @@ mod tests {
                 (run.stdout, run.exit)
             })
             .collect();
-        std::fs::remove_dir_all(&dir).unwrap();
         (kept, behaviours.len())
     }
 
     #[test]
     fn kept_inputs_each_show_new_behaviour() {
-        let (kept, behaviours) = fuzz_modulo("strtol", "long n = strtol(argv[1], 0, 10);");
+        let (kept, behaviours) = fuzz_modulo("long n = strtol(argv[1], 0, 10);");
         assert!(kept.len() >= 3, "{kept:?}");
         assert_eq!(behaviours, kept.len() + 1);
         assert_eq!(kept[0].name, "fuzz_1");
@@ -404,8 +389,8 @@ mod tests {
 
     #[test]
     fn numbers_for_atoi_stay_within_int() {
-        let (kept, _) = fuzz_modulo("atoi", "int n = atoi(argv[1]);");
+        let (kept, _) = fuzz_modulo("int n = atoi(argv[1]);");
         assert!(!kept.is_empty());
-        assert!(kept.iter().all(eval::numbers_fit_int), "{kept:?}");
+        assert!(kept.iter().all(bench::numbers_fit_int), "{kept:?}");
     }
 }

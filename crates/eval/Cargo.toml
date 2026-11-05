@@ -1,7 +1,7 @@
 [package]
 name = "eval"
 version = "0.1.0"
-description = "Differential evaluator for the C-to-Rust transpiler"
+description = "Differential evaluator for the C-to-Rust transpiler, and the loop gate"
 default-run = "eval"
 edition.workspace = true
 rust-version.workspace = true

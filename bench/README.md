@@ -11,7 +11,7 @@ Agent-written and hand-written programs are not part of any set for now.
 
 ## Programs
 
-`cargo run -p eval --bin intake` converts the standalone programs of batteries
+`cargo run -p bench --bin intake` converts the standalone programs of batteries
 B01 and B02, from both the public tests and the formerly hidden tests:
 
 - `gN_name.c` is TRACTOR's `main.c`, unchanged.
@@ -80,7 +80,7 @@ find the validation and held-out programs. The loop must run without network.
 
 ## Variants
 
-`cargo run -p eval --bin variants -- PRIVATE_DIR` makes three variants of every
+`cargo run -p bench --bin variants -- PRIVATE_DIR` makes three variants of every
 program in every set, so that a rule which only memorises a program fails on
 them:
 
@@ -109,7 +109,7 @@ Renamed variants kept every input of their original.
 
 TRACTOR gives most programs a few inputs, and a translation can pass all of
 them while getting C's behaviour wrong elsewhere.
-`cargo run -p eval --bin fuzz -- PRIVATE_DIR` changes each program's inputs at
+`cargo run -p bench --bin fuzz -- PRIVATE_DIR` changes each program's inputs at
 random: numbers become edge values such as `2147483648`, neighbours or other
 digits; arguments and lines of standard input are dropped, repeated or cut
 off; single characters are deleted, replaced or inserted. A candidate is kept
@@ -137,7 +137,7 @@ where `scanf("%d")` reads `44Z` as 44.
 Some TRACTOR test cases nearly repeat another under a different name, and the
 split by family can put the two on different sides. A rule learned on a
 development program then passes its private twin almost for free, which looks
-like transfer but is not. `cargo run -p eval --bin near-copies -- PRIVATE_DIR`
+like transfer but is not. `cargo run -p bench --bin near-copies -- PRIVATE_DIR`
 compares every private program with every development program by the Jaccard
 similarity of their token 4-grams, ignoring comments. A private program
 counts as a near-copy from 0.5; no pair scores between 0.41 and 0.53. The
@@ -153,7 +153,7 @@ all programs.
 ## Regenerating
 
 ```sh
-cargo run -p eval --bin intake -- ~/.cache/c-to-rust-autoresearch/tractor ../c-to-rust-autoresearch-holdout
+cargo run -p bench --bin intake -- ~/.cache/c-to-rust-autoresearch/tractor ../c-to-rust-autoresearch-holdout
 ```
 
 The first argument is where the corpus is fetched. Keep it outside this

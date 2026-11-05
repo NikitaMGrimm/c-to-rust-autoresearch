@@ -10,7 +10,7 @@
 //! private repository, including those of development programs: the loop
 //! agent must not see them. Only counts are printed.
 
-use eval::Rng;
+use bench::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -112,22 +112,14 @@ fn main() -> ExitCode {
 }
 
 fn generate(private: &Path) -> Result<(), String> {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let seed = std::fs::read_to_string(private.join("seed"))
-        .map_err(|err| format!("cannot read seed: {err}"))?;
-    let seed = u64::from_str_radix(seed.trim(), 16).map_err(|_| "seed must be hexadecimal")?;
-    let scratch = std::env::temp_dir().join(format!("c2r-variants-{}", std::process::id()));
-    std::fs::create_dir(&scratch).map_err(|err| format!("cannot create scratch: {err}"))?;
-    let sets = [
-        ("dev", repo.join("bench/dev")),
-        ("validation", private.join("validation")),
-        ("held-out", private.join("held-out")),
-    ];
+    let seed = bench::seed(private)?;
+    let scratch = eval::Scratch::new("variants")?;
+    let sets = bench::sets(private);
     let mut counts: BTreeMap<(&str, &str), usize> = BTreeMap::new();
     for (set, dir) in &sets {
         let out = private.join("variants").join(set);
         clear(&out)?;
-        for c_file in c_files(dir)? {
+        for c_file in eval::c_programs(dir)? {
             let stem = c_file.file_stem().unwrap_or_default().to_string_lossy();
             let work = scratch.join(set).join(stem.as_ref());
             for (kind, result) in variants(&c_file, seed, &work) {
@@ -143,7 +135,7 @@ fn generate(private: &Path) -> Result<(), String> {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&scratch);
+    drop(scratch);
     for ((set, label), count) in counts {
         println!("{set:>10}  {label:<20} {count}");
     }
@@ -159,7 +151,7 @@ fn variants(c_file: &Path, seed: u64, work: &Path) -> Vec<(&'static str, Variant
         _ => return vec![("r", Err("unreadable"))],
     };
     let name = c_file.file_name().unwrap_or_default().to_string_lossy();
-    let rng = |kind: &str| Rng(eval::mix(seed ^ eval::fnv(&format!("{name}/{kind}"))));
+    let rng = |kind: &str| Rng(bench::mix(seed ^ bench::fnv(&format!("{name}/{kind}"))));
     let renamed = rename(c_file, &source, &mut rng("r"));
     let mut result = Vec::new();
     result.push((
@@ -493,15 +485,6 @@ fn tokens(source: &str) -> Vec<Token> {
     tokens
 }
 
-fn c_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .and_then(|entries| entries.map(|entry| entry.map(|e| e.path())).collect())
-        .map_err(|err| format!("cannot read {}: {err}", dir.display()))?;
-    files.retain(|path| path.extension().is_some_and(|ext| ext == "c"));
-    files.sort();
-    Ok(files)
-}
-
 fn clear(dir: &Path) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(dir)
@@ -579,12 +562,10 @@ int main(void) {
 
     #[test]
     fn renaming_changes_declared_names_only() {
-        let dir = std::env::temp_dir().join(format!("variants-rename-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = eval::Scratch::new("test").unwrap();
         let c_file = dir.join("program.c");
         std::fs::write(&c_file, PROGRAM).unwrap();
         let renamed = rename(&c_file, PROGRAM, &mut Rng(1)).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
 
         for kept in [
             "printf",
@@ -640,8 +621,7 @@ int main(void) {
 
     #[test]
     fn renamed_program_prints_the_same() {
-        let dir = std::env::temp_dir().join(format!("variants-same-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = eval::Scratch::new("test").unwrap();
         let c_file = dir.join("program.c");
         std::fs::write(&c_file, PROGRAM).unwrap();
         let renamed = rename(&c_file, PROGRAM, &mut Rng(2)).unwrap();
@@ -658,7 +638,6 @@ int main(void) {
             )
         };
         let (a, b) = (run("original"), run("variant"));
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(original.is_ok() && variant.is_ok());
         assert_eq!(a.stdout, b.stdout);
         assert_eq!(a.stdout, b"counter=20 total=180\n");

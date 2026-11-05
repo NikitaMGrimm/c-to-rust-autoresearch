@@ -90,17 +90,14 @@ fn main() -> ExitCode {
 
 fn intake(corpus: &Path, private: &Path) -> Result<(), String> {
     fetch(corpus)?;
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let seed = read(&private.join("seed"))?;
-    let seed = u64::from_str_radix(seed.trim(), 16).map_err(|_| "seed must be hexadecimal")?;
-    let inspected: BTreeSet<String> = read(&repo.join("bench/inspected.txt"))?
+    let seed = bench::seed(private)?;
+    let inspected: BTreeSet<String> = read(&Path::new(eval::REPO).join("bench/inspected.txt"))?
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(str::to_owned)
         .collect();
 
-    let scratch = std::env::temp_dir().join(format!("c2r-intake-{}", std::process::id()));
-    std::fs::create_dir(&scratch).map_err(|err| format!("cannot create scratch: {err}"))?;
+    let scratch = eval::Scratch::new("intake")?;
     let mut programs = Vec::new();
     let mut excluded: BTreeMap<String, String> = BTreeMap::new();
     let mut dropped: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -112,7 +109,7 @@ fn intake(corpus: &Path, private: &Path) -> Result<(), String> {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&scratch);
+    drop(scratch);
 
     // Clearing the sets after a failure everywhere, e.g. without clang-18, would empty them.
     if programs.is_empty() {
@@ -129,14 +126,9 @@ fn intake(corpus: &Path, private: &Path) -> Result<(), String> {
     };
     assign(&programs, &inspected, seed, &mut split)?;
 
-    let dev = repo.join("bench/dev");
-    let outputs = [
-        ("dev", dev.as_path()),
-        ("validation", &private.join("validation")),
-        ("held-out", &private.join("held-out")),
-    ];
+    let outputs = bench::sets(private);
     let mut resolved = BTreeSet::new();
-    for (_, dir) in outputs {
+    for (_, dir) in &outputs {
         std::fs::create_dir_all(dir)
             .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
         let dir = dir
@@ -147,7 +139,7 @@ fn intake(corpus: &Path, private: &Path) -> Result<(), String> {
             return Err(format!("two sets resolve to {}", dir.display()));
         }
     }
-    for (_, dir) in outputs {
+    for (_, dir) in &outputs {
         clear(dir)?;
     }
     let mut counts: BTreeMap<(u8, &str), usize> = BTreeMap::new();
@@ -233,12 +225,12 @@ fn fetch(dir: &Path) -> Result<(), String> {
 fn cases(corpus: &Path) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
     for visibility in ["Public-Tests", "Hidden-Tests"] {
-        for battery in sorted_dir(&corpus.join(visibility))? {
+        for battery in eval::entries(&corpus.join(visibility))? {
             let battery_name = file_name(&battery);
             if !(battery_name.starts_with("B01_") || battery_name.starts_with("B02_")) {
                 continue;
             }
-            for dir in sorted_dir(&battery)? {
+            for dir in eval::entries(&battery)? {
                 if dir.join("test_case").is_dir() && dir.join("test_vectors").is_dir() {
                     cases.push(Case {
                         visibility: visibility.to_owned(),
@@ -263,7 +255,7 @@ fn program(
         return Err("library".to_owned());
     }
     let test_case = case.dir.join("test_case");
-    let sources = sorted_dir(&test_case.join("src"))?;
+    let sources = eval::entries(&test_case.join("src"))?;
     let [c_file] = sources.as_slice() else {
         return Err("multiple_files".to_owned());
     };
@@ -300,7 +292,7 @@ fn program(
     let references = eval::References::build(c_file, &c_flags, &scratch.join(&case.name))?;
 
     let mut inputs = Vec::new();
-    for vector in sorted_dir(&case.dir.join("test_vectors"))? {
+    for vector in eval::entries(&case.dir.join("test_vectors"))? {
         if !file_name(&vector).ends_with(".json") {
             continue;
         }
@@ -551,7 +543,7 @@ fn assign(
             .into_iter()
             .filter(|p| !split.contains_key(&p.family))
             .collect();
-        new.sort_by_key(|p| (eval::mix(seed ^ eval::fnv(&p.family)), p.family.clone()));
+        new.sort_by_key(|p| (bench::mix(seed ^ bench::fnv(&p.family)), p.family.clone()));
         for program in new {
             // The set furthest below its share after this program is added.
             let (set, _) = SPLITS
@@ -601,7 +593,7 @@ fn write_program(program: &Program, dir: &Path) -> Result<(), String> {
 fn clear(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
-    for path in sorted_dir(dir)? {
+    for path in eval::entries(dir)? {
         let name = file_name(&path);
         if name.starts_with('g')
             && [".c", ".json", ".LICENSE"]
@@ -613,18 +605,6 @@ fn clear(dir: &Path) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn sorted_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut paths = std::fs::read_dir(dir)
-        .and_then(|entries| {
-            entries
-                .map(|entry| entry.map(|entry| entry.path()))
-                .collect::<std::io::Result<Vec<_>>>()
-        })
-        .map_err(|err| format!("cannot read {}: {err}", dir.display()))?;
-    paths.sort();
-    Ok(paths)
 }
 
 fn file_name(path: &Path) -> String {

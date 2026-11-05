@@ -18,7 +18,7 @@ struct Args {
 
 fn parse_args() -> Option<Args> {
     let mut args = Args {
-        bench: PathBuf::from("bench/dev"),
+        bench: eval::dev_dir(),
         only: None,
         json: None,
         translations: None,
@@ -90,7 +90,10 @@ fn main() -> ExitCode {
 
     report(&records, args.quiet);
     if let Some(path) = &args.json {
-        let passed = records.iter().filter(|r| r.stage == "pass").count();
+        let passed = records
+            .iter()
+            .filter(|r| r.stage == eval::Stage::Pass)
+            .count();
         let json = serde_json::json!({
             "versions": eval::versions(),
             "translations": args.translations,
@@ -120,7 +123,7 @@ fn report(records: &[eval::Record], quiet: bool) {
     if !quiet {
         for record in records
             .iter()
-            .filter(|r| r.stage != "pass" && !r.detail.is_empty())
+            .filter(|r| r.stage != eval::Stage::Pass && !r.detail.is_empty())
         {
             println!(
                 "\n===== {}: {} =====\n{}",
@@ -131,7 +134,7 @@ fn report(records: &[eval::Record], quiet: bool) {
         }
         for record in records {
             if let Some((stage, detail)) = &record.fuzz
-                && *stage != "pass"
+                && *stage != eval::Stage::Pass
             {
                 println!(
                     "\n===== {}: fuzz {stage} =====\n{}",
@@ -144,14 +147,17 @@ fn report(records: &[eval::Record], quiet: bool) {
     let mut groups: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for record in records {
         let entry = groups.entry(record.group.as_str()).or_default();
-        entry.0 += usize::from(record.stage == "pass");
+        entry.0 += usize::from(record.stage == eval::Stage::Pass);
         entry.1 += 1;
     }
     println!();
     for (group, (passed, total)) in &groups {
         println!("{group}: {passed}/{total}");
     }
-    let passed = records.iter().filter(|r| r.stage == "pass").count();
+    let passed = records
+        .iter()
+        .filter(|r| r.stage == eval::Stage::Pass)
+        .count();
     println!("SCORE {passed}/{}", records.len());
     let (held, fuzzed) = eval::fuzz_counts(records);
     println!("FUZZ {held}/{fuzzed}");

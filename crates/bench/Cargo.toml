@@ -1,0 +1,13 @@
+[package]
+name = "bench"
+version = "0.1.0"
+description = "Builds the benchmark sets: intake, variants, fuzzed inputs and near-copies"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+eval = { path = "../eval" }
+serde_json = "1"
