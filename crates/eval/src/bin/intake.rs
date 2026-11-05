@@ -297,37 +297,8 @@ fn program(
         }
     }
 
-    let work = scratch.join(&case.name);
-    // Optimised builds without sanitizers often expose undefined behaviour
-    // that the sanitizers miss, by printing something else.
-    let builds = [
-        ("sanitized", None),
-        ("clang_O2", Some("clang-18")),
-        ("gcc_O2", Some("gcc")),
-    ];
-    let mut programs = Vec::new();
-    for (name, compiler) in builds {
-        let program = work.join(name).join("program");
-        std::fs::create_dir_all(work.join(name))
-            .map_err(|err| format!("cannot create scratch: {err}"))?;
-        let built = match compiler {
-            None => eval::build_c(c_file, &program, &c_flags).exit == Some(0),
-            Some(compiler) => Command::new(compiler)
-                .args(["-O2", "-w"])
-                .args(&c_flags)
-                .arg("-o")
-                .arg(&program)
-                .arg(c_file)
-                .arg("-lm")
-                .output()
-                .is_ok_and(|output| output.status.success()),
-        };
-        if !built {
-            return Err(format!("c_build: {name}"));
-        }
-        programs.push(program);
-    }
-    let (c_program, optimised) = programs.split_first().unwrap();
+    let references = eval::References::build(c_file, &c_flags, &scratch.join(&case.name))?;
+
     let mut inputs = Vec::new();
     for vector in sorted_dir(&case.dir.join("test_vectors"))? {
         if !file_name(&vector).ends_with(".json") {
@@ -340,7 +311,7 @@ fn program(
             *dropped.entry("known_undefined_behaviour").or_default() += 1;
             continue;
         }
-        match input(&json, &name, c_program, optimised) {
+        match input(&json, &name, &references) {
             Ok(input) => inputs.push(input),
             Err(reason) => *dropped.entry(reason).or_default() += 1,
         }
@@ -379,14 +350,12 @@ fn cmake_commands(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Turns a test vector into an input after checking that the sanitized C
-/// program gives TRACTOR's expected result, twice, and that the optimised
-/// builds print the same and exit alike.
+/// Turns a test vector into an input after checking that it is a valid C
+/// reference run with TRACTOR's expected result.
 fn input(
     vector: &serde_json::Value,
     name: &str,
-    c_program: &Path,
-    optimised: &[PathBuf],
+    references: &eval::References,
 ) -> Result<eval::Input, &'static str> {
     let known = [
         "argv", "stdin", "stdout", "stderr", "rc", "note", "has_ub", "env",
@@ -424,28 +393,13 @@ fn input(
         args,
         stdin,
     };
-    let first = eval::run_program(c_program, &input);
-    if first.timed_out() {
-        return Err("c_timeout");
-    }
-    if first.sanitizer_error() {
-        return Err("c_sanitizer_error");
-    }
-    if eval::run_program(c_program, &input) != first {
-        return Err("c_nondeterministic");
-    }
+    let first = references.check(&input)?;
     let expected_exit = vector["rc"].as_i64().unwrap_or(0);
     let expected_stdout = stdout["pattern"].as_str();
     if first.exit != Some(expected_exit as i32)
         || expected_stdout.is_some_and(|out| out.as_bytes() != first.stdout)
     {
         return Err("c_differs_from_expected");
-    }
-    for program in optimised {
-        let other = eval::run_program(program, &input);
-        if (&other.stdout, other.exit) != (&first.stdout, first.exit) {
-            return Err("c_builds_disagree");
-        }
     }
     Ok(input)
 }
@@ -597,7 +551,7 @@ fn assign(
             .into_iter()
             .filter(|p| !split.contains_key(&p.family))
             .collect();
-        new.sort_by_key(|p| (mix(seed ^ fnv(&p.family)), p.family.clone()));
+        new.sort_by_key(|p| (eval::mix(seed ^ eval::fnv(&p.family)), p.family.clone()));
         for program in new {
             // The set furthest below its share after this program is added.
             let (set, _) = SPLITS
@@ -611,20 +565,6 @@ fn assign(
         }
     }
     Ok(())
-}
-
-/// SplitMix64 finaliser: spreads a seed into an evenly distributed order key.
-fn mix(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    x ^ (x >> 31)
-}
-
-fn fnv(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
-    })
 }
 
 fn write_program(program: &Program, dir: &Path) -> Result<(), String> {

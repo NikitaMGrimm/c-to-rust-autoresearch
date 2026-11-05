@@ -71,10 +71,37 @@ stored and never change; later runs only assign new families.
 | Total | 24 | 13 | 11 |
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`82df214cc92bb7f9bc2c3c6f8f8b5c32e8bb0a44b07eec79fc8fa4e0e956b1d4`.
+`29a085c159855033bff960f741aecd2d4d4ec6d005acd3522a7665b420f639d4`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
+
+## Variants
+
+`cargo run -p eval --bin variants -- PRIVATE_DIR` makes three variants of every
+program in every set, so that a rule which only memorises a program fails on
+them:
+
+- `__r`: every identifier the program declares, including macros, gets a
+  made-up name, the same everywhere.
+- `__k`: the renamed program with about half of its decimal constants of 2 or
+  more changed by a small amount.
+- `__i`: the original program on inputs whose numbers are partly replaced by
+  others with as many digits.
+
+A variant keeps the inputs on which it passes the same C checks as the
+benchmarks. Because the evaluator compares the Rust program with the C
+program, a variant needs no expected output. All variants are private,
+including those of development programs, so the loop agent cannot memorise
+them either.
+
+| Set | Variants | No valid constants change | No numbers in inputs |
+|---|---:|---:|---:|
+| Dev | 60 | 5 | 7 |
+| Validation | 34 | 2 | 3 |
+| Held-out | 24 | 5 | 4 |
+
+Renamed variants kept every input of their original.
 
 ## Regenerating
 
@@ -84,4 +111,5 @@ cargo run -p eval --bin intake -- ~/.cache/c-to-rust-autoresearch/tractor ../c-t
 
 The first argument is where the corpus is fetched. Keep it outside this
 repository, because it contains the validation and held-out programs too. The
-second argument is a checkout of the private repository.
+second argument is a checkout of the private repository. Run `variants` after
+`intake`, then update the manifest as the private README describes.
