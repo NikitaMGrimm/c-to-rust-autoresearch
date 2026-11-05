@@ -47,8 +47,8 @@ Code's, are blocked, and the only skills are those in `loop/skills`.
 
 ## Reviews
 
-Kept commits go to a pull request on GitHub, where CI and CodeRabbit check
-them and the owner may comment. A round writes what is open there into
+Kept commits go to pull requests on GitHub, a batch at a time, where CI and
+CodeRabbit check them and the owner may comment. A round writes what is open there into
 `REVIEWS.md`: review comments, each with its number, and failed checks.
 
 - Fix one comment or failed check per iteration, in a commit of its own whose

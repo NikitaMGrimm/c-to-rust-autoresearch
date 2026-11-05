@@ -98,17 +98,19 @@ cargo run -p transcripts --bin audit -- PRIVATE_DIR ~/.claude/projects/LOOP_PROJ
 ```
 
 With `--github`, CI and CodeRabbit check the loop's commits as they would a
-contributor's. The round publishes main to a pull request from the `loop`
-branch, at most every two hours, and merges it by fast-forward once its
-checks pass and CodeRabbit has reviewed it with every thread resolved. Open
-review comments and failed checks come back to the agent in the next clone,
-and the round posts the agent's replies; the agent itself never reaches
-GitHub. When CodeRabbit disputes a reply, the thread goes back to the agent;
-after the second dispute it waits for the owner. The round prints what waits
-for the owner: such threads, a check that ended without failing or passing,
-and commits that reach GitHub's `main` or `loop` some other way. Pull those
-on `main` into this checkout's main between rounds, then make the clone
-afresh with `loop/setup`.
+contributor's. At most every two hours, the round publishes the commits kept
+since the last batch as a pull request of their own, stacked on the one
+before, so that each batch is reviewed while the loop goes on. It merges the
+stack from the bottom by fast-forward once CodeRabbit has reviewed it with
+every thread resolved and a head's checks pass. Open review comments and
+failed checks come back to the agent in the next clone, and the round posts
+the agent's replies; the agent itself never reaches GitHub. When CodeRabbit
+disputes a reply, the thread goes back to the agent; after the second dispute
+it waits for the owner. The round prints what waits for the owner: such
+threads, a check that ended without failing or passing, and commits that
+reach GitHub's `main` or a `loop/` branch some other way. Pull those on
+`main` into this checkout's main between rounds, then make the clone afresh
+with `loop/setup`.
 
 ## Model usage
 

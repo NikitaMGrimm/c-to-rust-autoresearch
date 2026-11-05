@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # The GitHub step of a round, run by loop/round --github after the gate: takes
-# main's kept commits to a pull request from the loop branch, and brings back
-# what CI and CodeRabbit said there. It posts the loop agent's replies to
-# review comments, merges the pull request by fast-forward once its checks pass
-# and CodeRabbit has reviewed it with every thread resolved, publishes main at
-# most every two hours, and writes the open comments and failed checks into the
-# fresh loop checkout as REVIEWS.md. The loop agent itself never reaches GitHub.
-# See docs/architecture.md.
+# main's kept commits to GitHub as a stack of pull requests, one per batch, and
+# brings back what CI and CodeRabbit said there. It posts the loop agent's
+# replies to review comments, merges the stack from the bottom by fast-forward
+# as far as CodeRabbit has reviewed it with every thread resolved and up to a
+# head whose checks pass, publishes a new batch at most every two hours, and
+# writes the open comments and failed checks into the fresh loop checkout as
+# REVIEWS.md. The loop agent itself never reaches GitHub. See
+# docs/architecture.md.
 set -euo pipefail
 
 if (($# != 5)); then
@@ -33,7 +34,9 @@ outbox() {
   mv "$state/outbox.json.new" "$state/outbox.json"
 }
 
-branch=loop
+# Each batch is a branch loop/TIME with a pull request into the batch below it,
+# or into main for the bottom one.
+prefix=loop/
 interval=$((2 * 60 * 60))
 bot=coderabbitai
 # How many times CodeRabbit may answer the agent's replies in a thread before
@@ -44,56 +47,62 @@ viewer=$(gh api user --jq .login)
 note="> [!NOTE]
 > 🤖 **$model replied on behalf of $viewer**"
 
-git fetch -q --no-tags origin
+# The open pull requests from this repository's loop branches, with the checks
+# on their heads and their review threads.
+pull_requests() {
+  gh api graphql -f owner="${slug%/*}" -f name="${slug#*/}" -f query='
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        pullRequests(states: OPEN, first: 50) {
+          nodes {
+            number url baseRefName headRefName headRefOid isCrossRepository
+            commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
+              totalCount
+              nodes {
+                __typename
+                ... on CheckRun { name status conclusion detailsUrl }
+                ... on StatusContext { context state }
+              }
+            } } } } }
+            reviewThreads(first: 100) {
+              totalCount
+              nodes { id isResolved comments(first: 30) { totalCount nodes {
+                databaseId url path line author { login } body
+              } } }
+            }
+          }
+        }
+      }
+    }' --jq "[.data.repository.pullRequests.nodes[]
+      | select((.isCrossRepository | not) and (.headRefName | startswith(\"$prefix\")))]"
+}
+# The stack, from the pull request into main upwards. A loop pull request off
+# the stack is the owner's.
+stack_of() {
+  jq -c 'def chain($base): . as $prs | ($prs | map(select(.baseRefName == $base)) | first) as $pr
+    | if $pr == null then [] else [$pr] + ($prs | chain($pr.headRefName)) end;
+    chain("main")' <<<"$1"
+}
+prs=$(pull_requests)
+stack=$(stack_of "$prs")
+jq -r --argjson stack "$stack" '.[] | select(.number as $n | $stack | map(.number) | index($n) | not)
+  | "github: #\(.number) is not stacked on main; the owner decides: \(.url)"' <<<"$prs"
+
+git fetch -q --no-tags --prune origin
 # The step never rewrites main, so commits that only GitHub's main has must be
-# pulled by hand, between rounds.
+# pulled by hand, between rounds. Commits on a loop branch that main lacks did
+# not pass the gate, and are the owner's to keep or drop.
 synced=true
 if ! git merge-base --is-ancestor origin/main main; then
   synced=false
   echo "github: GitHub's main has commits that main lacks; nothing is published or merged until main has them"
 fi
-# Commits on the loop branch that main lacks did not pass the gate, and are
-# the owner's to keep or drop.
-if git rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null &&
-  ! git merge-base --is-ancestor "origin/$branch" main; then
-  synced=false
-  echo "github: GitHub's $branch branch has commits that main lacks; nothing is published or merged until the owner resets it"
-fi
-
-# The open pull request from this repository's loop branch into main, with the
-# checks on its head and its review threads. Asking the branch itself leaves
-# out pull requests from forks' branches of the same name.
-pull_request() {
-  gh api graphql -f owner="${slug%/*}" -f name="${slug#*/}" -f ref="refs/heads/$branch" -f query='
-    query($owner: String!, $name: String!, $ref: String!) {
-      repository(owner: $owner, name: $name) {
-        ref(qualifiedName: $ref) {
-          associatedPullRequests(states: OPEN, first: 10) {
-            nodes {
-              number url baseRefName headRefOid isCrossRepository
-              commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
-                totalCount
-                nodes {
-                  __typename
-                  ... on CheckRun { name status conclusion detailsUrl }
-                  ... on StatusContext { context state }
-                }
-              } } } } }
-              reviewThreads(first: 100) {
-                totalCount
-                nodes { isResolved comments(first: 100) { totalCount nodes {
-                  databaseId url path line author { login } body
-                } } }
-              }
-            }
-          }
-        }
-      }
-    }' --jq '[.data.repository.ref.associatedPullRequests.nodes // [] | .[]
-      | select(.baseRefName == "main" and (.isCrossRepository | not))][0] // empty'
-}
-pr=$(pull_request)
-number=$(jq -r '.number // empty' <<<"${pr:-null}")
+while read -r head name; do
+  if ! git merge-base --is-ancestor "$head" main 2>/dev/null; then
+    synced=false
+    echo "github: GitHub's $name has commits that main lacks; nothing is published or merged until the owner resets it"
+  fi
+done < <(jq -r '.[] | "\(.headRefOid) \(.headRefName)"' <<<"$stack")
 
 # The agent's replies, to comments it was offered. A fix's reply waits until
 # GitHub has the kept commit; a dropped fix has none, so its comment comes back.
@@ -106,8 +115,9 @@ if [[ -f $state/replies.json ]]; then
     | unique_by(.comment)
     | map(select((.fixed | not) or $decision == "keep")
         | .comment as $id
-        | ($offered[0][] | select(.comment == $id) | .pr) as $pr
-        | {pr: $pr, comment: $id, after: (if .fixed then $sha else null end),
+        | ($offered[0][] | select(.comment == $id)) as $offer
+        | {pr: $offer.pr, thread: $offer.thread, comment: $id,
+           after: (if .fixed then $sha else null end),
            body: ($note + "\n\n" + (if .fixed then "Fixed in \($sha[0:7]). " else "" end)
              # A mention could reach other people or command CodeRabbit.
              + (.reply | gsub("@(?=[A-Za-z0-9])"; "@\u200b")))})' "$state/replies.json"); then
@@ -118,81 +128,118 @@ if [[ -f $state/replies.json ]]; then
   rm "$state/replies.json"
 fi
 
-# Posts each reply whose commit, if any, is on the loop branch of GitHub, and
-# takes it out of the outbox right after, so that a stopped run repeats at most
-# the reply it was posting.
+# Posts each reply whose commit, if any, GitHub has, and takes it out of the
+# outbox right after, so that a stopped run repeats at most the reply it was
+# posting. A fix lands in a later batch than its comment, where CodeRabbit
+# reviews it, so the step resolves the comment's thread itself.
 posted=0
 flush() {
-  local published entry after
-  published=$(git rev-parse -q --verify "refs/remotes/origin/$branch" || true)
+  local entry after
   while IFS= read -r entry; do
     after=$(jq -r '.after // empty' <<<"$entry")
-    if [[ -n $after ]] && ! { [[ -n $published ]] && git merge-base --is-ancestor "$after" "$published"; }; then
+    if [[ -n $after && -z $(git for-each-ref --contains "$after" \
+      refs/remotes/origin/main "refs/remotes/origin/${prefix%/}" 2>/dev/null) ]]; then
       continue
     fi
     jq -r .body <<<"$entry" >"$body"
-    if gh api "repos/$slug/pulls/$(jq .pr <<<"$entry")/comments/$(jq .comment <<<"$entry")/replies" \
+    if ! gh api "repos/$slug/pulls/$(jq .pr <<<"$entry")/comments/$(jq .comment <<<"$entry")/replies" \
       -F body=@"$body" </dev/null >/dev/null; then
-      outbox --argjson entry "$entry" 'map(select(. != $entry))'
-      posted=$((posted + 1))
-    else
       echo "github: a reply could not be posted; it is tried again next round"
+      continue
+    fi
+    outbox --argjson entry "$entry" 'map(select(. != $entry))'
+    posted=$((posted + 1))
+    if [[ -n $after ]] && ! gh api graphql -f thread="$(jq -r .thread <<<"$entry")" -f query='
+      mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } } }' \
+      </dev/null >/dev/null; then
+      echo "github: a fixed comment's thread could not be resolved"
     fi
   done < <(jq -c '.[]' "$state/outbox.json")
 }
 flush
 
-# Merge before publishing, so that the reviewed head goes in rather than one
-# that has grown since.
-if [[ -n $number ]] && $synced; then
-  head=$(jq -r .headRefOid <<<"$pr")
-  waiting=$(jq -r '
-    (.commits.nodes[0].commit.statusCheckRollup.contexts // {}) as $contexts
-    | ($contexts.nodes // []) as $checks
-    | ($checks | map(select(.name != "CodeRabbit"))) as $ci
-    | ($checks | map(select(.name == "CodeRabbit")) | last) as $rabbit
-    | if ($ci | length) == 0 or $contexts.totalCount != ($checks | length) or ($ci | any(
+# Merge the stack from the bottom, as far as CodeRabbit has reviewed every
+# pull request with all threads resolved, up to the highest head whose checks
+# pass: a later batch may hold the fix for a failed check below it. Merge
+# before publishing, so that a new batch goes onto what remains.
+if $synced && [[ $stack != "[]" ]]; then
+  plan=$(jq -c '
+    def checks: .commits.nodes[0].commit.statusCheckRollup.contexts // {};
+    def green: checks as $contexts | ($contexts.nodes // []) as $all
+      | ($all | map(select(.name != "CodeRabbit"))) as $ci
+      | ($ci | length) > 0 and $contexts.totalCount == ($all | length) and ($ci | all(
           if .__typename == "CheckRun"
           # A run in progress has no conclusion yet.
-          then .conclusion | IN("SUCCESS", "NEUTRAL", "SKIPPED") | not
-          else .state != "SUCCESS" end))
-      then "checks"
-      elif $rabbit.conclusion != "SUCCESS" then "CodeRabbit"
-      elif .reviewThreads.totalCount != (.reviewThreads.nodes | length)
-        or (.reviewThreads.nodes | any(.isResolved | not))
-      then "review threads"
-      else empty end' <<<"$pr")
-  if [[ -z $waiting ]] && git merge-base --is-ancestor "$head" main &&
-    git merge-base --is-ancestor origin/main "$head"; then
+          then .conclusion | IN("SUCCESS", "NEUTRAL", "SKIPPED")
+          else .state == "SUCCESS" end));
+    def reviewed: ([checks.nodes // [] | .[] | select(.name == "CodeRabbit")] | last | .conclusion) == "SUCCESS";
+    def resolved: .reviewThreads.totalCount == (.reviewThreads.nodes | length)
+      and (.reviewThreads.nodes | all(.isResolved));
+    . as $stack
+    | [range(length) | select(. as $i | $stack[:$i + 1] | all(reviewed and resolved))] as $settled
+    | ([$settled[] | select($stack[.] | green)] | last) as $top
+    | if $top != null then {merge: $top}
+      else (first($stack[] | select((reviewed and resolved) | not)) // ($stack | last)) as $pr
+      | {number: $pr.number, waits: (if ($pr | reviewed) | not then "CodeRabbit"
+          elif ($pr | resolved) | not then "review threads" else "checks" end)}
+      end' <<<"$stack")
+  top=$(jq -r '.merge // empty' <<<"$plan")
+  if [[ -z $top ]]; then
+    jq -r '"github: #\(.number) waits for \(.waits)"' <<<"$plan"
+  elif head=$(jq -r --argjson top "$top" '.[$top].headRefOid' <<<"$stack") &&
+    ! git merge-base --is-ancestor origin/main "$head"; then
+    # GitHub's main moved and main took it in after these batches went up.
+    echo "github: #$(jq -r '.[0].number' <<<"$stack") is behind GitHub's main; the owner decides"
+  else
+    # Each merged pull request and the one above them must target main first:
+    # GitHub then counts them merged, and the one above keeps its base when the
+    # merged branches go.
+    while read -r number; do
+      gh api -X PATCH "repos/$slug/pulls/$number" -f base=main </dev/null >/dev/null
+    done < <(jq -r --argjson top "$top" '.[1:$top + 2][] | .number' <<<"$stack")
     git push -q origin "$head:refs/heads/main"
-    echo "github: merged #$number into GitHub's main"
-    number=
-  elif [[ -n $waiting ]]; then
-    echo "github: #$number waits for $waiting"
+    mapfile -t merged < <(jq -r --argjson top "$top" '.[:$top + 1][] | .headRefName' <<<"$stack")
+    git push -q origin --delete "${merged[@]}"
+    echo "github: merged $(jq -r --argjson top "$top" '[.[:$top + 1][] | "#\(.number)"] | join(", ")' <<<"$stack") into GitHub's main"
+    stack=$(jq -c --argjson top "$top" '.[$top + 1:]' <<<"$stack")
   fi
 fi
 
-# Publish main to the loop branch: at once when no pull request is open, and
-# otherwise at most every interval, so that reviews see batches of commits.
-pushed=false
-if $synced && [[ -n $(git rev-list origin/main..main) ]]; then
+# CodeRabbit reviews this repository only on request.
+ask() {
+  gh api "repos/$slug/issues/$1/comments" -f body="@$bot review" </dev/null >/dev/null
+  date +%s >"$state/requested.$1"
+  echo "github: asked CodeRabbit to review #$1"
+}
+
+# Publish what main has beyond the stack as a new batch on top of it: at once
+# when no pull request is open, and otherwise at most every interval, so that
+# reviews see batches of commits.
+published=
+if $synced; then
+  top=$(jq -r 'last | .headRefOid // empty' <<<"$stack")
+  top=${top:-$(git rev-parse origin/main)}
   last=$(cat "$state/published" 2>/dev/null || echo 0)
-  if [[ -z $number ]] || {
-    [[ $(jq -r .headRefOid <<<"$pr") != "$(git rev-parse main)" ]] &&
-      (($(date +%s) - last >= interval))
-  }; then
-    git push -q origin "main:refs/heads/$branch"
+  if [[ -n $(git rev-list "$top..main") ]] &&
+    { [[ $stack == "[]" ]] || (($(date +%s) - last >= interval)); }; then
+    name=$prefix$(date -u +%Y%m%dT%H%M%S.%3NZ)
+    base=$(jq -r 'last | .headRefName // "main"' <<<"$stack")
+    below=$(jq -r 'last | .number // empty' <<<"$stack")
+    git push -q origin "main:refs/heads/$name"
     date +%s >"$state/published"
-    pushed=true
-    models=$(git rev-list origin/main..main |
+    models=$(git rev-list "$top..main" |
       awk 'NR == FNR { commits[$1]; next } $1 in commits { sub(/^[^ ]+ /, ""); print }' - "$state/models" |
       sort -u | paste -sd, - | sed 's/,/, /g')
     {
-      echo "Commits that the research loop's gate kept on main. The round script publishes them here and merges them by fast-forward once the checks pass and CodeRabbit has reviewed them with every thread resolved."
+      echo "Commits that the research loop's gate kept on main. The round script publishes each batch as a pull request on the one before it, and merges the stack from the bottom by fast-forward once CodeRabbit has reviewed it with every thread resolved and the checks pass."
+      if [[ -n $below ]]; then
+        echo
+        echo "Stacked on #$below."
+      fi
       echo
       echo "## Change"
       echo
-      git log --reverse --format='- %h %s' origin/main..main
+      git log --reverse --format='- %h %s' "$top..main"
       echo
       echo "## Verification"
       echo
@@ -201,13 +248,11 @@ if $synced && [[ -n $(git rev-list origin/main..main) ]]; then
       echo "> [!NOTE]"
       echo "> 🤖 **Agent assistance: ${models:-Claude} via Claude Code** — implementation; replies to review comments."
     } >"$body"
-    if [[ -z $number ]]; then
-      number=$(gh api "repos/$slug/pulls" -f head="$branch" -f base=main \
-        -f title="feat(transpiler): rules from the research loop" -F body=@"$body" --jq .number)
-    else
-      gh api -X PATCH "repos/$slug/pulls/$number" -F body=@"$body" >/dev/null
-    fi
-    echo "github: published $(git rev-list --count origin/main..main) commits to #$number"
+    published=$(gh api "repos/$slug/pulls" -f head="$name" -f base="$base" \
+      -f title="feat(transpiler): research loop rules until $(date -u '+%Y-%m-%d %H:%M') UTC" \
+      -F body=@"$body" --jq .number)
+    echo "github: published $(git rev-list --count "$top..main") commits as #$published"
+    ask "$published"
   fi
 fi
 flush
@@ -215,58 +260,46 @@ if ((posted)); then
   echo "github: posted $posted replies"
 fi
 
-# CodeRabbit reviews this repository only on request, so ask after each push,
-# and again at most every interval for a head it has not reviewed, as when it
-# was rate limited.
-if [[ -n $number ]]; then
-  ask=$pushed
-  if ! $pushed; then
-    rabbit=$(jq -r '[.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
-      | select(.name == "CodeRabbit")] | last | if . == null then "none" else "\(.status) \(.conclusion)" end' <<<"$pr")
-    last=$(cat "$state/requested" 2>/dev/null || echo 0)
-    if [[ $rabbit != "COMPLETED SUCCESS" && ($rabbit == none || $rabbit == COMPLETED*) ]] &&
-      (($(date +%s) - last >= interval)); then
-      ask=true
-    fi
-  fi
-  if $ask; then
-    gh api "repos/$slug/issues/$number/comments" -f body="@$bot review" </dev/null >/dev/null
-    date +%s >"$state/requested"
-    echo "github: asked CodeRabbit to review #$number"
-  fi
+# Ask again for the lowest pull request that CodeRabbit has not reviewed, as
+# when it was rate limited, at most every interval: it holds up the merge.
+lowest=$(jq -r '[.[] | select(([.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
+    | select(.name == "CodeRabbit")] | last) as $rabbit
+    | $rabbit == null or ($rabbit.status == "COMPLETED" and $rabbit.conclusion != "SUCCESS"))]
+  | first | .number // empty' <<<"$stack")
+if [[ -n $lowest ]] &&
+  (($(date +%s) - $(cat "$state/requested.$lowest" 2>/dev/null || echo 0) >= interval)); then
+  ask "$lowest"
 fi
 
 # What the next session should handle: comments from CodeRabbit or the owner
-# in threads that a third party did not start, and failed checks. A thread
-# whose reply waits in the outbox is answered.
-pr=$(pull_request)
-items='[]'
-if [[ -n $pr ]]; then
-  items=$(jq -c --arg viewer "$viewer" --arg bot "$bot" --argjson disputes "$disputes" \
-    --slurpfile outbox "$state/outbox.json" '
-    def reply: .author.login == $viewer and (.body | startswith("> [!NOTE]\n> 🤖 **"));
-    .number as $pr
-    | [.reviewThreads.nodes[]
-      | select((.isResolved | not) and (.comments.nodes[0].author.login | IN($viewer, $bot)))
-      | [.comments.nodes[] | select(.author.login | IN($viewer, $bot))] as $comments
-      | $comments[0].databaseId as $id
-      | select([$outbox[0][].comment] | index($id) | not)
-      | (.comments.totalCount > (.comments.nodes | length)) as $long
-      | [range($comments | length) | select($comments[.] | reply)] as $replies
-      | ($replies | last) as $replied
-      | {pr: $pr, comment: $id, url: $comments[0].url, path: $comments[0].path,
-         line: $comments[0].line, comments: $comments,
-         state: (if $long then "owner"
-           elif $replied == null then "open"
-           elif any($comments[$replied + 1:][]; .author.login == $viewer) then "open"
-           elif ($comments | length) == $replied + 1 then "waiting"
-           # CodeRabbit answered the reply without resolving the thread.
-           elif ($replies | length) < $disputes then "open"
-           else "owner" end),
-         why: (if $long then "the thread has more comments than the step reads"
-           else "CodeRabbit still disagrees after \($disputes) replies" end)}]' <<<"$pr")
-fi
-jq -c '[.[] | select(.state == "open") | {comment, pr}]' <<<"$items" >"$state/offered.json"
+# in threads that a third party did not start, on any batch, and the failed
+# checks of the top batch, which holds every commit. A thread whose reply waits
+# in the outbox is answered.
+stack=$(stack_of "$(pull_requests)")
+items=$(jq -c --arg viewer "$viewer" --arg bot "$bot" --argjson disputes "$disputes" \
+  --slurpfile outbox "$state/outbox.json" '
+  def reply: .author.login == $viewer and (.body | startswith("> [!NOTE]\n> 🤖 **"));
+  [.[] | .number as $pr | .reviewThreads.nodes[]
+    | select((.isResolved | not) and (.comments.nodes[0].author.login | IN($viewer, $bot)))
+    | [.comments.nodes[] | select(.author.login | IN($viewer, $bot))] as $comments
+    | $comments[0].databaseId as $id
+    | select([$outbox[0][].comment] | index($id) | not)
+    | (.comments.totalCount > (.comments.nodes | length)) as $long
+    | [range($comments | length) | select($comments[.] | reply)] as $replies
+    | ($replies | last) as $replied
+    | {pr: $pr, thread: .id, comment: $id, url: $comments[0].url, path: $comments[0].path,
+       line: $comments[0].line, comments: $comments,
+       state: (if $long then "owner"
+         elif $replied == null then "open"
+         elif any($comments[$replied + 1:][]; .author.login == $viewer) then "open"
+         elif ($comments | length) == $replied + 1 then "waiting"
+         # CodeRabbit answered the reply without resolving the thread.
+         elif ($replies | length) < $disputes then "open"
+         else "owner" end),
+       why: (if $long then "the thread has more comments than the step reads"
+         else "CodeRabbit still disagrees after \($disputes) replies" end)}]' <<<"$stack")
+jq -c '[.[] | select(.state == "open") | {comment, pr, thread}]' <<<"$items" >"$state/offered.json"
+top=$(jq -c 'last // {}' <<<"$stack")
 {
   jq -r --arg viewer "$viewer" --arg bot "$bot" '
     def reply: .author.login == $viewer and (.body | startswith("> [!NOTE]\n> 🤖 **"));
@@ -277,41 +310,37 @@ jq -c '[.[] | select(.state == "open") | {comment, pr}]' <<<"$items" >"$state/of
             elif reply then "Your earlier reply"
             else "The owner" end):**\n",
           (.body | gsub("<!--[\\s\\S]*?-->"; "") | gsub("\\A\\s+|\\s+\\z"; "")) + "\n")' <<<"$items"
-  if [[ -n $pr ]]; then
-    # Checks that failed on the agent's code. Other ends that block the merge,
-    # such as a cancelled run, go to the owner below.
-    jq -r '.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
-      | select((.__typename == "CheckRun" and .name != "CodeRabbit"
-            and (.conclusion | IN("FAILURE", "TIMED_OUT")))
-          or (.__typename == "StatusContext" and (.state | IN("FAILURE", "ERROR"))))
-      | [.name // .context, ((.detailsUrl // "" | capture("/job/(?<job>[0-9]+)").job) // "")] | @tsv' <<<"$pr" |
-      while IFS=$'\t' read -r name job; do
-        echo "## Failed check: $name"
-        echo
-        echo '```text'
-        if [[ -n $job ]]; then
-          gh run view --repo "$slug" --job "$job" --log-failed </dev/null 2>/dev/null |
-            sed 's/\x1b\[[0-9;]*m//g' | tail -n 150 || true
-        fi
-        echo '```'
-        echo
-      done
-  fi
+  # Checks that failed on the agent's code. Other ends that block the merge,
+  # such as a cancelled run, go to the owner below.
+  jq -r '.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
+    | select((.__typename == "CheckRun" and .name != "CodeRabbit"
+          and (.conclusion | IN("FAILURE", "TIMED_OUT")))
+        or (.__typename == "StatusContext" and (.state | IN("FAILURE", "ERROR"))))
+    | [.name // .context, ((.detailsUrl // "" | capture("/job/(?<job>[0-9]+)").job) // "")] | @tsv' <<<"$top" |
+    while IFS=$'\t' read -r name job; do
+      echo "## Failed check: $name"
+      echo
+      echo '```text'
+      if [[ -n $job ]]; then
+        gh run view --repo "$slug" --job "$job" --log-failed </dev/null 2>/dev/null |
+          sed 's/\x1b\[[0-9;]*m//g' | tail -n 150 || true
+      fi
+      echo '```'
+      echo
+    done
 } >"$body"
 if [[ -s $body ]]; then
   {
     echo "# Reviews"
     echo
-    echo "Open review comments and failed checks on the loop's pull request, for commits that the gate kept. loop/program.md says how to handle them."
+    echo "Open review comments and failed checks on the loop's pull requests, for commits that the gate kept. loop/program.md says how to handle them."
     echo
     cat "$body"
   } >"$loop/REVIEWS.md"
 fi
 jq -r '"github: \([.[] | select(.state == "open")] | length) comments for the loop agent, \([.[] | select(.state == "waiting")] | length) waiting for CodeRabbit",
   (.[] | select(.state == "owner") | "github: \(.why); the owner decides: \(.url)")' <<<"$items"
-if [[ -n $pr ]]; then
-  jq -r '.number as $number | .commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
-    | select(.__typename == "CheckRun" and .name != "CodeRabbit" and .conclusion != null
-        and (.conclusion | IN("SUCCESS", "NEUTRAL", "SKIPPED", "FAILURE", "TIMED_OUT") | not))
-    | "github: the check \(.name) on #\($number) ended \(.conclusion); the owner decides"' <<<"$pr"
-fi
+jq -r '.number as $number | .commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [] | .[]
+  | select(.__typename == "CheckRun" and .name != "CodeRabbit" and .conclusion != null
+      and (.conclusion | IN("SUCCESS", "NEUTRAL", "SKIPPED", "FAILURE", "TIMED_OUT") | not))
+  | "github: the check \(.name) on #\($number) ended \(.conclusion); the owner decides"' <<<"$top"

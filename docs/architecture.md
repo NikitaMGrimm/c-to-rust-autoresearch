@@ -119,27 +119,37 @@ through `gh` and `git` from the main checkout:
   GitHub has it. Only comments that the last `REVIEWS.md` offered get a reply,
   and its mentions are broken, so that no reply notifies anyone or commands
   CodeRabbit.
-- It merges the open pull request from the `loop` branch by pushing its head
-  to GitHub's main, once every check on the head passed, CodeRabbit's check
-  succeeded and every review thread is resolved. CodeRabbit resolves its own
-  threads when it accepts a reply.
-- It publishes main to the `loop` branch, at once when no pull request is
-  open and otherwise at most every two hours. CodeRabbit reviews this
-  repository only on request, so the step asks after each push, and again at
-  most every two hours for a head it has not reviewed, as when it was rate
-  limited.
+- It keeps the published commits as a stack of batches: each batch is a
+  branch `loop/TIME` with a pull request into the batch below it, or into
+  main for the bottom one. A review comment's fix therefore lands in a later
+  batch than the comment, so the step resolves the thread when it posts the
+  fix's reply; CodeRabbit reviews the fix in its own batch, and resolves
+  threads itself when it accepts an answer.
+- It merges the stack from the bottom, by pushing a head to GitHub's main, as
+  far as CodeRabbit's check succeeded on every batch and every thread is
+  resolved, up to the highest of those heads whose checks all passed: a
+  failed check below may be fixed above. The merged batches and the one above
+  them first target main, so that GitHub counts them merged and the rest of
+  the stack keeps its base when their branches are deleted.
+- It publishes what main has beyond the stack as a new batch on top, at once
+  when the stack is empty and otherwise at most every two hours. CodeRabbit
+  reviews this repository only on request, so the step asks for each new
+  batch, and again at most every two hours for the lowest batch it has not
+  reviewed, as when it was rate limited.
 - It writes `REVIEWS.md` into the new clone: the unresolved threads that
-  CodeRabbit or the owner started, with only their comments, and the log tail
-  of each failed check. A thread where CodeRabbit answered the agent's reply
+  CodeRabbit or the owner started on any batch, with only their comments, and
+  the log tail of each failed check on the top batch, which holds every
+  commit. A thread where CodeRabbit answered the agent's reply
   without resolving it goes back to the agent. The step prints for the owner
   instead a thread where CodeRabbit disputed two replies, a thread with more
   comments than it reads, and a check that ended otherwise without passing,
   such as a cancelled run.
 
-The step overwrites neither main nor the `loop` branch, so it publishes and
-merges nothing while either has commits on GitHub that main lacks. Commits
-on `loop` that main lacks did not pass the gate. Its failures only print a
-warning.
+The step overwrites neither main nor a `loop/` branch, so it publishes and
+merges nothing while any of them has commits on GitHub that main lacks.
+Commits on a `loop/` branch that main lacks did not pass the gate. A stack
+that GitHub's main moved past, and a loop pull request off the stack, also
+wait for the owner. The step's failures only print a warning.
 
 ## Keeping the loop agent out
 
