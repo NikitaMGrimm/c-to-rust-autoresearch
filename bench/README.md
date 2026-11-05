@@ -29,7 +29,6 @@ of an optimised build.
 |---|---:|---|
 | Library test cases | 169 | They are called through a Rust FFI runner, not run as programs |
 | Several source files | 14 | The transpiler reads one file |
-| Extra compiler flags | 3 | `-fno-strict-aliasing` |
 | No usable input left | 3 | |
 | Inputs marked as undefined behaviour | 25 | Dropped; the rest of the program stays |
 | Inputs with undefined behaviour the sanitizers miss | 2 | `atoi` beyond `int`; listed in the intake tool |
@@ -59,19 +58,22 @@ each group, families go to the development, validation and held-out sets in
 the ratio 2:1:1, ordered by a secret seed. Families listed in
 [inspected.txt](inspected.txt) always go to the development set, because
 agents named or read them during earlier feasibility probes. Assignments are
-stored and never change; later runs only assign new families.
+stored and never change; later runs only assign new families. Three families
+build their program with `-fno-strict-aliasing` but otherwise repeat another
+family's program; each was assigned by hand to that family's set, so the twins
+share a set.
 
 | Group | Dev | Validation | Held-out |
 |---|---:|---:|---:|
 | G1 | 7 | 3 | 3 |
 | G2 | 7 | 4 | 3 |
-| G3 | 8 | 4 | 4 |
+| G3 | 8 | 5 | 6 |
 | G4 | 1 | 1 | 0 |
 | G5 | 1 | 1 | 1 |
-| Total | 24 | 13 | 11 |
+| Total | 24 | 14 | 13 |
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`29a085c159855033bff960f741aecd2d4d4ec6d005acd3522a7665b420f639d4`.
+`b7af4d493d0e2ccb4cc89a5dea651b3b0419f7b18f3a1c9c7c80c75ac40480a2`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -98,8 +100,8 @@ them either.
 | Set | Variants | No valid constants change | No numbers in inputs |
 |---|---:|---:|---:|
 | Dev | 60 | 5 | 7 |
-| Validation | 34 | 2 | 3 |
-| Held-out | 24 | 5 | 4 |
+| Validation | 37 | 2 | 3 |
+| Held-out | 28 | 7 | 4 |
 
 Renamed variants kept every input of their original.
 
