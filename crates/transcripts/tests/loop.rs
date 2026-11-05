@@ -201,7 +201,8 @@ esac
     if [[ $arg == body=@* && -f ${arg#body=@} ]]; then cat "${arg#body=@}"; echo; fi
   done
 } >>"$GH/calls"
-[[ ! -e $GH/fail ]] || exit 1
+# $GH/fail holds the part of a call that fails, or nothing for every call.
+if [[ -e $GH/fail && $* == *$(cat "$GH/fail")* ]]; then exit 1; fi
 if [[ $1 == run ]]; then
   cat "$GH/log"
   exit
@@ -214,8 +215,11 @@ done
 case "$1 $2" in
   "repo view") echo '{"nameWithOwner": "o/r"}' ;;
   "api user") echo '{"login": "owner"}' ;;
-  "api graphql") cat "$GH/graphql.json" ;;
-  "api repos/o/r/pulls") echo '{"number": 7}' ;;
+  "api graphql")
+    if [[ $* == *mutation* ]]; then echo '{"data": {}}'; else cat "$GH/graphql.json"; fi ;;
+  # Pull requests are numbered from 7, in the order they are opened.
+  "api repos/o/r/pulls")
+    echo "{\"number\": $((6 + $(grep -c '^gh api repos/o/r/pulls -f head' "$GH/calls")))}" ;;
   *) echo '{}' ;;
 esac | jq -r "$filter"
 "#,
@@ -226,7 +230,7 @@ esac | jq -r "$filter"
                 .unwrap();
         }
         std::fs::create_dir(dir.join("gh")).unwrap();
-        let none = json!({"data": {"repository": {"ref": null}}});
+        let none = json!({"data": {"repository": {"pullRequests": {"nodes": []}}}});
         std::fs::write(dir.join("gh/graphql.json"), none.to_string()).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
         git(&repo, &["add", "."]);
@@ -323,6 +327,28 @@ esac | jq -r "$filter"
             .output()
             .unwrap();
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// The loop branches on fake GitHub, oldest first, with their heads.
+    fn loop_branches(&self) -> Vec<(String, String)> {
+        let output = Command::new("git")
+            .args([
+                "for-each-ref",
+                "--format=%(refname:short) %(objectname)",
+                "refs/heads/loop/",
+            ])
+            .current_dir(self.dir.join("origin.git"))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let pairs = text.lines().map(|line| line.split_once(' ').unwrap());
+        let pairs = pairs.map(|(name, head)| (name.to_owned(), head.to_owned()));
+        pairs.collect()
+    }
+
+    /// How many times the step asked CodeRabbit for a review.
+    fn requests(&self) -> usize {
+        self.gh_calls().matches("body=@coderabbitai review").count()
     }
 
     /// The round's state directory for the loop checkout.
@@ -538,37 +564,39 @@ fn a_round_fails_with_2_and_runs_alone() {
     assert_eq!(fixture.run("round", 0, 0), Some(0));
 }
 
-/// A GraphQL answer with pull request #7 open from the loop branch at `head`
-/// into main.
+/// An open pull request from a loop branch, as fake GitHub lists it.
 fn pull_request(
+    number: u64,
+    base: &str,
+    branch: &str,
     head: &str,
-    checks: serde_json::Value,
-    threads: serde_json::Value,
+    checks: &serde_json::Value,
+    threads: &serde_json::Value,
 ) -> serde_json::Value {
-    let (checks_count, threads_count) = (
-        checks.as_array().unwrap().len(),
-        threads.as_array().unwrap().len(),
-    );
-    let contexts = json!({"totalCount": checks_count, "nodes": checks});
-    json!({"data": {"repository": {"ref": {"associatedPullRequests": {"nodes": [
-        // Neither a fork's pull request nor one into another branch is the loop's.
-        {"number": 8, "baseRefName": "main", "headRefOid": head, "isCrossRepository": true},
-        {"number": 9, "baseRefName": "other", "headRefOid": head, "isCrossRepository": false},
-        {
-            "number": 7,
-            "url": "https://github.com/o/r/pull/7",
-            "baseRefName": "main",
-            "headRefOid": head,
-            "isCrossRepository": false,
-            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": contexts}}}]},
-            "reviewThreads": {"totalCount": threads_count, "nodes": threads},
-        },
-    ]}}}}})
+    let contexts = json!({"totalCount": checks.as_array().unwrap().len(), "nodes": checks});
+    json!({
+        "number": number,
+        "url": format!("https://github.com/o/r/pull/{number}"),
+        "baseRefName": base,
+        "headRefName": branch,
+        "headRefOid": head,
+        "isCrossRepository": false,
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": contexts}}}]},
+        "reviewThreads": {"totalCount": threads.as_array().unwrap().len(), "nodes": threads},
+    })
 }
 
-/// The pull request in an answer from `pull_request`.
-fn ours(answer: &mut serde_json::Value) -> &mut serde_json::Value {
-    &mut answer["data"]["repository"]["ref"]["associatedPullRequests"]["nodes"][2]
+/// Fake GitHub's list of open pull requests: `prs` after two that are not the
+/// loop's, from a fork's loop branch and from the owner's own branch.
+fn listing(prs: &[serde_json::Value]) -> serde_json::Value {
+    let mut nodes = vec![
+        json!({"number": 3, "baseRefName": "main", "headRefName": "loop/fork",
+            "headRefOid": "f".repeat(40), "isCrossRepository": true}),
+        json!({"number": 4, "baseRefName": "main", "headRefName": "feat/other",
+            "headRefOid": "e".repeat(40), "isCrossRepository": false}),
+    ];
+    nodes.extend_from_slice(prs);
+    json!({"data": {"repository": {"pullRequests": {"nodes": nodes}}}})
 }
 
 fn check(name: &str, conclusion: &str) -> serde_json::Value {
@@ -596,152 +624,328 @@ fn thread(resolved: bool, comments: &[(u64, &str, &str)]) -> serde_json::Value {
             })
         })
         .collect();
-    let count = comments.len();
-    json!({"isResolved": resolved, "comments": {"totalCount": count, "nodes": comments}})
+    let (id, count) = (format!("T{}", comments[0]["databaseId"]), comments.len());
+    json!({"id": id, "isResolved": resolved, "comments": {"totalCount": count, "nodes": comments}})
 }
 
 const REPLY: &str = "> [!NOTE]\n> 🤖 **Opus 5.5 replied on behalf of owner**\n\nNot changed.";
 
+/// Two published batches: #7 into main and #8 on #7, each with its branch and
+/// head.
+fn two_batches(fixture: &Fixture) -> [(String, String); 2] {
+    assert_eq!(fixture.run("setup", 0, 0), Some(0));
+    commit(&fixture.loop_dir, "kept");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    commit(&fixture.loop_dir, "later");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 2, "{branches:?}");
+    [branches[0].clone(), branches[1].clone()]
+}
+
 #[test]
-fn a_github_round_publishes_kept_commits_and_merges_reviewed_ones() {
+fn a_github_round_publishes_batches_on_a_stack() {
     let fixture = Fixture::new();
     assert_eq!(fixture.run("setup", 0, 0), Some(0));
     let start = fixture.origin("main");
     let kept = commit(&fixture.loop_dir, "kept");
     let (code, output) = fixture.github_round(0);
     assert_eq!(code, Some(0), "{output}");
-    assert_eq!(fixture.origin("loop"), kept);
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 1, "{branches:?}");
+    let (first, head) = &branches[0];
+    assert_eq!(head, &kept);
     assert_eq!(fixture.origin("main"), start);
     let calls = fixture.gh_calls();
-    assert!(
-        calls.contains("gh api repos/o/r/pulls -f head=loop -f base=main"),
-        "{calls}"
-    );
+    let opened = format!("gh api repos/o/r/pulls -f head={first} -f base=main");
+    assert!(calls.contains(&opened), "{calls}");
     assert!(calls.contains("feat(transpiler): kept"), "{calls}");
     assert!(
         calls.contains("Agent assistance: Opus 5.5 via Claude Code"),
         "{calls}"
     );
+    // CodeRabbit reviews this repository only on request.
+    assert!(calls.contains("issues/7/comments -f body=@coderabbitai review"));
 
-    // CodeRabbit is asked to review each push.
-    let requests = || {
-        fixture
-            .gh_calls()
-            .matches("body=@coderabbitai review")
-            .count()
-    };
-    assert_eq!(requests(), 1, "{calls}");
-
-    // Unreviewed, it waits, and CodeRabbit is asked again only after the
-    // interval.
+    // Unreviewed, the batch waits, and CodeRabbit is asked again only after
+    // the interval. Newer commits wait for the interval too.
     let skipped = json!([check("Rust", "SUCCESS"), check("CodeRabbit", "SKIPPED")]);
-    fixture.answer(pull_request(&kept, skipped.clone(), json!([])));
-    std::fs::write(fixture.state().join("published"), "0").unwrap();
-    let later = commit(&fixture.loop_dir, "later");
+    let bottom = pull_request(7, "main", first, &kept, &skipped, &json!([]));
+    fixture.answer(listing(std::slice::from_ref(&bottom)));
+    commit(&fixture.loop_dir, "later");
     let (code, output) = fixture.github_round(0);
     assert_eq!(code, Some(0), "{output}");
     assert!(output.contains("#7 waits for CodeRabbit"), "{output}");
-    assert_eq!(fixture.origin("loop"), later);
-    assert_eq!(requests(), 2, "{}", fixture.gh_calls());
-    fixture.answer(pull_request(&later, skipped, json!([])));
+    assert_eq!(fixture.loop_branches().len(), 1);
+    assert_eq!(fixture.requests(), 1);
+    std::fs::write(fixture.state().join("requested.7"), "0").unwrap();
     commit(&fixture.loop_dir, "again");
     fixture.github_round(1);
-    assert_eq!(requests(), 2, "{}", fixture.gh_calls());
-    std::fs::write(fixture.state().join("requested"), "0").unwrap();
-    commit(&fixture.loop_dir, "once more");
-    fixture.github_round(1);
-    assert_eq!(requests(), 3, "{}", fixture.gh_calls());
-    assert_eq!(fixture.origin("main"), start);
-    assert_eq!(fixture.origin("loop"), later);
+    assert_eq!(fixture.requests(), 2, "{}", fixture.gh_calls());
 
-    // Missing or pending checks, a review in progress and open or unfetched
-    // threads hold it too. A reviewed head or one in review is not asked for.
-    std::fs::write(fixture.state().join("requested"), "0").unwrap();
-    let reviewing =
-        json!({"__typename": "CheckRun", "name": "CodeRabbit", "status": "IN_PROGRESS"});
-    let rabbit = check("CodeRabbit", "SUCCESS");
-    let passed = json!([check("Rust", "SUCCESS"), rabbit]);
-    let pending = json!({"__typename": "StatusContext", "context": "ci", "state": "PENDING"});
-    let resolved = json!([thread(true, &[(11, "coderabbitai", "Nit.")])]);
-    let mut unfetched = pull_request(&kept, passed.clone(), resolved.clone());
-    ours(&mut unfetched)["reviewThreads"]["totalCount"] = json!(101);
-    let mut more_checks = pull_request(&kept, passed.clone(), json!([]));
-    ours(&mut more_checks)["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] =
-        json!(101);
-    let open = json!([thread(false, &[(11, "coderabbitai", "Nit.")])]);
-    for (answer, waits) in [
-        (pull_request(&kept, json!([rabbit]), json!([])), "checks"),
-        (
-            pull_request(&kept, json!([pending, rabbit]), json!([])),
-            "checks",
-        ),
-        (
-            pull_request(
-                &kept,
-                json!([check("Rust", "SUCCESS"), reviewing]),
-                json!([]),
-            ),
-            "CodeRabbit",
-        ),
-        (pull_request(&kept, passed.clone(), open), "review threads"),
-        (unfetched, "review threads"),
-        (more_checks, "checks"),
-    ] {
-        fixture.answer(answer);
-        commit(&fixture.loop_dir, "more");
-        let (_, output) = fixture.github_round(1);
-        assert!(
-            output.contains(&format!("#7 waits for {waits}")),
-            "{output}"
-        );
-        assert_eq!(fixture.origin("main"), start);
-    }
-    assert_eq!(requests(), 3, "{}", fixture.gh_calls());
-
-    // Reviewed, resolved and passed: GitHub's main moves to the head, and the
-    // commits kept since go to a new pull request at once.
-    fixture.answer(pull_request(&kept, passed.clone(), resolved));
-    commit(&fixture.loop_dir, "last");
+    // After the interval, the newer commits go on top as a batch of their own.
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    commit(&fixture.loop_dir, "second batch");
     let (code, output) = fixture.github_round(0);
     assert_eq!(code, Some(0), "{output}");
-    assert_eq!(fixture.origin("main"), kept);
-    let main = git(&fixture.repo, &["rev-parse", "main"]);
-    assert_eq!(fixture.origin("loop"), main);
-    let created = fixture.gh_calls().matches("-f head=loop").count();
-    assert_eq!(created, 2, "{}", fixture.gh_calls());
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 2, "{branches:?}");
+    let (second, head) = &branches[1];
+    assert_eq!(head, &git(&fixture.repo, &["rev-parse", "main"]));
+    let calls = fixture.gh_calls();
+    let stacked = format!("gh api repos/o/r/pulls -f head={second} -f base={first}");
+    assert!(calls.contains(&stacked), "{calls}");
+    assert!(calls.contains("Stacked on #7."), "{calls}");
+    assert!(calls.contains("issues/8/comments -f body=@coderabbitai review"));
+    assert_eq!(fixture.origin("main"), start);
 
-    // Only a head that main has and that GitHub's main can fast-forward to.
+    // Reviewed with every thread resolved and passed, the whole stack goes in.
+    let passed = json!([check("Rust", "SUCCESS"), check("CodeRabbit", "SUCCESS")]);
+    fixture.answer(listing(&[
+        pull_request(7, "main", first, &kept, &passed, &json!([])),
+        pull_request(8, first, second, head, &passed, &json!([])),
+    ]));
+    commit(&fixture.loop_dir, "rejected");
+    let (code, output) = fixture.github_round(1);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("merged #7, #8 into GitHub's main"),
+        "{output}"
+    );
+    assert_eq!(&fixture.origin("main"), head);
+    assert!(fixture.loop_branches().is_empty());
+}
+
+#[test]
+fn a_github_round_merges_the_stack_as_far_as_it_is_settled() {
+    let fixture = Fixture::new();
+    let start = fixture.origin("main");
+    let [(first, kept), (second, later)] = two_batches(&fixture);
+    let rabbit = check("CodeRabbit", "SUCCESS");
+    let passed = json!([check("Rust", "SUCCESS"), rabbit]);
+    let failed = json!([check("Rust", "FAILURE"), rabbit]);
+    let reviewing =
+        json!({"__typename": "CheckRun", "name": "CodeRabbit", "status": "IN_PROGRESS"});
+    let pending = json!({"__typename": "StatusContext", "context": "ci", "state": "PENDING"});
+    let none = json!([]);
+    let open = json!([thread(false, &[(11, "coderabbitai", "Nit.")])]);
+    let resolved = json!([thread(true, &[(11, "coderabbitai", "Nit.")])]);
+    let bottom = |checks: &serde_json::Value, threads: &serde_json::Value| {
+        pull_request(7, "main", &first, &kept, checks, threads)
+    };
+    let upper = |checks: &serde_json::Value, threads: &serde_json::Value| {
+        pull_request(8, &first, &second, &later, checks, threads)
+    };
+    let mut unfetched = bottom(&passed, &resolved);
+    unfetched["reviewThreads"]["totalCount"] = json!(101);
+    let mut uncounted = upper(&passed, &none);
+    uncounted["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] =
+        json!(101);
+
+    // Nothing goes in while a batch is unreviewed or has an open thread, or
+    // before a head passes its checks.
+    for number in [7, 8] {
+        std::fs::write(fixture.state().join(format!("requested.{number}")), "0").unwrap();
+    }
+    for (prs, waits) in [
+        (
+            [bottom(&passed, &open), upper(&passed, &none)],
+            "#7 waits for review threads",
+        ),
+        (
+            [unfetched, upper(&passed, &none)],
+            "#7 waits for review threads",
+        ),
+        (
+            [
+                bottom(&json!([check("Rust", "SUCCESS"), reviewing]), &none),
+                upper(&passed, &none),
+            ],
+            "#7 waits for CodeRabbit",
+        ),
+        (
+            [bottom(&failed, &none), upper(&failed, &none)],
+            "#8 waits for checks",
+        ),
+        (
+            [
+                bottom(&json!([rabbit]), &none),
+                upper(&json!([rabbit]), &none),
+            ],
+            "#8 waits for checks",
+        ),
+        (
+            [
+                bottom(&json!([pending, rabbit]), &none),
+                upper(&json!([pending, rabbit]), &none),
+            ],
+            "#8 waits for checks",
+        ),
+        ([bottom(&failed, &none), uncounted], "#8 waits for checks"),
+    ] {
+        fixture.answer(listing(&prs));
+        commit(&fixture.loop_dir, "more");
+        let (code, output) = fixture.github_round(1);
+        assert_eq!(code, Some(0), "{output}");
+        assert!(output.contains(waits), "{waits} not in {output}");
+        assert_eq!(fixture.origin("main"), start);
+        assert_eq!(fixture.loop_branches().len(), 2);
+    }
+    // Reviewing a batch that holds the merge is asked for, not a reviewed one.
+    assert_eq!(fixture.requests(), 2, "{}", fixture.gh_calls());
+
+    // The settled bottom goes in by itself; the batch above then targets main.
+    fixture.answer(listing(&[
+        bottom(&passed, &resolved),
+        upper(&passed, &open),
+    ]));
+    commit(&fixture.loop_dir, "more");
+    let (code, output) = fixture.github_round(1);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("merged #7 into GitHub's main"), "{output}");
+    assert_eq!(fixture.origin("main"), kept);
+    assert_eq!(fixture.origin(&first), "");
+    assert_eq!(fixture.origin(&second), later);
+    let calls = fixture.gh_calls();
+    assert!(
+        calls.contains("gh api -X PATCH repos/o/r/pulls/8 -f base=main"),
+        "{calls}"
+    );
+
+    // A batch may fix a check that failed below it: the stack goes in up to
+    // the highest head that passes. What main has beyond goes up at once.
+    let (first, kept) = (second.clone(), later.clone());
+    let rest = pull_request(8, "main", &first, &kept, &passed, &open);
+    fixture.answer(listing(&[rest]));
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    let fixed = commit(&fixture.loop_dir, "fixed");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    let third = fixture.loop_branches()[1].clone();
+    assert_eq!(third.1, fixed);
+    let bottom = pull_request(8, "main", &first, &kept, &failed, &resolved);
+    let upper = pull_request(9, &first, &third.0, &fixed, &passed, &none);
+    fixture.answer(listing(&[bottom, upper]));
+    let last = commit(&fixture.loop_dir, "last");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("merged #8, #9 into GitHub's main"),
+        "{output}"
+    );
+    assert_eq!(fixture.origin("main"), fixed);
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 1, "{branches:?}");
+    assert_eq!(branches[0].1, last);
+    let calls = fixture.gh_calls();
+    let opened = format!(
+        "gh api repos/o/r/pulls -f head={} -f base=main",
+        branches[0].0
+    );
+    assert!(calls.contains(&opened), "{calls}");
+
+    // A stack that GitHub's main moved past, after main took the move in,
+    // waits for the owner.
     let origin = fixture.dir.join("origin.git");
     git(
         &fixture.dir,
         &["clone", "-q", origin.to_str().unwrap(), "other"],
     );
     let other = fixture.dir.join("other");
-    let elsewhere = commit(&other, "elsewhere");
-    git(
-        &other,
-        &["push", "-q", "origin", "HEAD:refs/heads/elsewhere"],
+    let moved = commit(&other, "moved");
+    git(&other, &["push", "-q", "origin", "main"]);
+    git(&fixture.repo, &["fetch", "-q", "origin"]);
+    git(&fixture.repo, &["merge", "-q", "--no-edit", "origin/main"]);
+    let behind = pull_request(10, "main", &branches[0].0, &last, &passed, &none);
+    fixture.answer(listing(&[behind]));
+    commit(&fixture.loop_dir, "after the move");
+    let (code, output) = fixture.github_round(1);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("#10 is behind GitHub's main; the owner decides"),
+        "{output}"
     );
-    for head in [&elsewhere, &start] {
-        fixture.answer(pull_request(head, passed.clone(), json!([])));
-        commit(&fixture.loop_dir, "more");
-        let (code, output) = fixture.github_round(1);
-        assert_eq!(code, Some(0), "{output}");
-        assert!(!output.contains("failed"), "{output}");
-        assert_eq!(fixture.origin("main"), kept);
-    }
+    assert!(!output.contains("failed"), "{output}");
+    assert_eq!(fixture.origin("main"), moved);
+}
 
-    // Commits on the loop branch that main lacks are not overwritten.
+#[test]
+fn a_github_round_leaves_foreign_commits_and_strays_to_the_owner() {
+    let fixture = Fixture::new();
+    let start = fixture.origin("main");
+    let [(first, kept), (second, later)] = two_batches(&fixture);
+    let passed = json!([check("Rust", "SUCCESS"), check("CodeRabbit", "SUCCESS")]);
+    let none = json!([]);
+    // A commit on a loop branch that main lacks did not pass the gate.
+    let origin = fixture.dir.join("origin.git");
     git(
-        &other,
-        &["push", "-q", "-f", "origin", "HEAD:refs/heads/loop"],
+        &fixture.dir,
+        &["clone", "-q", origin.to_str().unwrap(), "other"],
     );
+    let other = fixture.dir.join("other");
+    git(&other, &["checkout", "-q", &second]);
+    let foreign = commit(&other, "foreign");
+    git(&other, &["push", "-q", "origin", &format!("HEAD:{second}")]);
+    let stray = json!({"number": 5, "url": "https://github.com/o/r/pull/5",
+        "baseRefName": "loop/gone", "headRefName": "loop/stray", "headRefOid": kept,
+        "isCrossRepository": false});
+    fixture.answer(listing(&[
+        pull_request(7, "main", &first, &kept, &passed, &none),
+        pull_request(8, &first, &second, &foreign, &passed, &none),
+        stray,
+    ]));
     std::fs::write(fixture.state().join("published"), "0").unwrap();
     commit(&fixture.loop_dir, "kept again");
     let (code, output) = fixture.github_round(0);
     assert_eq!(code, Some(0), "{output}");
-    assert!(output.contains("loop branch has commits"), "{output}");
-    assert_eq!(fixture.origin("loop"), elsewhere);
+    let message = format!("GitHub's {second} has commits that main lacks");
+    assert!(output.contains(&message), "{output}");
+    assert!(
+        output.contains("#5 is not stacked on main; the owner decides"),
+        "{output}"
+    );
+    // Nothing merged, nothing published, nothing overwritten.
+    assert_eq!(fixture.origin("main"), start);
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 2, "{branches:?}");
+    assert_eq!(fixture.origin(&second), foreign);
+    assert_ne!(later, foreign);
+
+    // A batch that lacks the one below it would drop that one when it goes in.
+    fixture.answer(listing(&[
+        pull_request(7, "main", &first, &kept, &passed, &none),
+        pull_request(8, &first, &second, &start, &passed, &none),
+    ]));
+    commit(&fixture.loop_dir, "kept once more");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    let message = format!("GitHub's {second} lacks the batch below it");
+    assert!(output.contains(&message), "{output}");
+    assert_eq!(fixture.origin("main"), start);
+    assert_eq!(fixture.loop_branches().len(), 2);
+
+    // A merged branch that moved after the listing keeps its new commits.
+    fixture.answer(listing(&[
+        pull_request(7, "main", &first, &kept, &passed, &none),
+        pull_request(8, &first, &second, &later, &passed, &none),
+    ]));
+    commit(&fixture.loop_dir, "kept at last");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("merged #7, #8 into GitHub's main"),
+        "{output}"
+    );
+    assert!(
+        output.contains("a merged branch moved on GitHub"),
+        "{output}"
+    );
+    assert_eq!(fixture.origin("main"), later);
+    assert_eq!(fixture.origin(&first), "");
+    assert_eq!(fixture.origin(&second), foreign);
 }
 
 #[test]
@@ -750,6 +954,7 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
     assert_eq!(fixture.run("setup", 0, 0), Some(0));
     let kept = commit(&fixture.loop_dir, "kept");
     fixture.github_round(0);
+    let first = fixture.loop_branches()[0].0.clone();
     let status = json!({"__typename": "StatusContext", "context": "external", "state": "ERROR"});
     let checks = json!([
         check("Rust", "FAILURE"),
@@ -777,6 +982,15 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         (72, "owner", REPLY),
         (73, "owner", "Please change it anyway."),
     ];
+    // The owner's word after the disputes sends the thread back to the agent.
+    let settled = [
+        (101, "coderabbitai", "Rename it."),
+        (102, "owner", REPLY),
+        (103, "coderabbitai", "Still wrong."),
+        (104, "owner", REPLY),
+        (105, "coderabbitai", "Still wrong."),
+        (106, "owner", "Rename it as it asks."),
+    ];
     let threads = json!([
         thread(
             false,
@@ -796,14 +1010,16 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         thread(false, &followed),
         long,
         thread(false, &stuck),
+        thread(false, &settled),
     ]);
-    fixture.answer(pull_request(&kept, checks, threads));
+    let reviewed = pull_request(7, "main", &first, &kept, &checks, &threads);
+    fixture.answer(listing(std::slice::from_ref(&reviewed)));
     std::fs::write(fixture.dir.join("gh/log"), "error: a test failed\n").unwrap();
     commit(&fixture.loop_dir, "second");
     let (code, output) = fixture.github_round(0);
     assert_eq!(code, Some(0), "{output}");
     assert!(
-        output.contains("4 comments for the loop agent, 1 waiting for CodeRabbit"),
+        output.contains("5 comments for the loop agent, 1 waiting for CodeRabbit"),
         "{output}"
     );
     for text in [
@@ -827,6 +1043,8 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         "Comment 71",
         "**Your earlier reply:**",
         "Please change it anyway.",
+        "Comment 101",
+        "Rename it as it asks.",
     ] {
         assert!(reviews.contains(text), "{text} not in {reviews}");
     }
@@ -871,6 +1089,8 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         !calls.contains("Not offered.") && !calls.contains("Twice."),
         "{calls}"
     );
+    // CodeRabbit resolves a thread itself when it accepts an answer.
+    assert!(!calls.contains("resolveReviewThread"), "{calls}");
     let reviews = std::fs::read_to_string(fixture.loop_dir.join("REVIEWS.md")).unwrap();
     assert!(!reviews.contains("Comment 11"), "{reviews}");
 
@@ -896,7 +1116,8 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         "{calls}"
     );
 
-    // Published, the fix gets its reply, which mentions no one.
+    // Published in a later batch, the fix gets its reply, which mentions no
+    // one, and its thread is resolved.
     std::fs::write(fixture.state().join("published"), "0").unwrap();
     commit(&fixture.loop_dir, "published");
     fixture.github_round(0);
@@ -908,6 +1129,66 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
     assert!(calls.contains("comments/11/replies"), "{calls}");
     assert!(calls.contains(&reply), "{calls}");
     assert_eq!(calls.matches("/replies").count(), 2, "{calls}");
+    assert_eq!(calls.matches("resolveReviewThread").count(), 1, "{calls}");
+    assert!(calls.contains("-f thread=T11"), "{calls}");
+
+    // Only the top batch's checks count: a batch above may have fixed those
+    // below.
+    let second = fixture.loop_branches()[1].clone();
+    let passed = json!([check("Rust", "SUCCESS"), check("CodeRabbit", "SUCCESS")]);
+    let upper = pull_request(8, &first, &second.0, &second.1, &passed, &json!([]));
+    fixture.answer(listing(&[reviewed, upper]));
+    commit(&fixture.loop_dir, "top");
+    let (_, output) = fixture.github_round(1);
+    let reviews = std::fs::read_to_string(fixture.loop_dir.join("REVIEWS.md")).unwrap();
+    assert!(!reviews.contains("Failed check"), "{reviews}");
+    assert!(!output.contains("CANCELLED"), "{output}");
+}
+
+#[test]
+fn a_github_round_takes_back_a_batch_it_could_not_open_and_stops_short_of_a_partial_listing() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run("setup", 0, 0), Some(0));
+    // A branch without its pull request goes, and its commits go up again.
+    std::fs::write(fixture.dir.join("gh/fail"), "repos/o/r/pulls -f head").unwrap();
+    commit(&fixture.loop_dir, "kept");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("the GitHub step failed"), "{output}");
+    assert!(fixture.loop_branches().is_empty());
+    assert!(!fixture.state().join("published").exists());
+    std::fs::remove_file(fixture.dir.join("gh/fail")).unwrap();
+    let later = commit(&fixture.loop_dir, "later");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    let branches = fixture.loop_branches();
+    assert_eq!(branches.len(), 1, "{branches:?}");
+    assert_eq!(branches[0].1, later);
+    assert!(fixture.state().join("published").exists());
+
+    // Without the listing, the stack is unknown.
+    std::fs::write(fixture.dir.join("gh/fail"), "pullRequests(states").unwrap();
+    std::fs::write(fixture.state().join("published"), "0").unwrap();
+    commit(&fixture.loop_dir, "unlisted");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(output.contains("the GitHub step failed"), "{output}");
+    assert_eq!(fixture.loop_branches().len(), 1);
+    std::fs::remove_file(fixture.dir.join("gh/fail")).unwrap();
+
+    // Beyond the pull requests the step reads, the stack may lack a batch.
+    let mut many = listing(&[]);
+    many["data"]["repository"]["pullRequests"]["totalCount"] = json!(51);
+    fixture.answer(many);
+    commit(&fixture.loop_dir, "more");
+    let (code, output) = fixture.github_round(0);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        output.contains("more than 50 pull requests are open"),
+        "{output}"
+    );
+    assert!(output.contains("the GitHub step failed"), "{output}");
+    assert_eq!(fixture.loop_branches().len(), 1);
 }
 
 #[test]
@@ -931,7 +1212,7 @@ fn a_github_round_leaves_github_alone_when_its_main_moved_or_github_fails() {
     assert_eq!(code, Some(0), "{output}");
     assert!(output.contains("GitHub's main has commits"), "{output}");
     assert_eq!(fixture.origin("main"), moved);
-    assert_eq!(fixture.origin("loop"), "");
+    assert!(fixture.loop_branches().is_empty());
 
     // A failed GitHub step still leaves a fresh checkout for the next session.
     std::fs::write(fixture.dir.join("gh/fail"), "").unwrap();
