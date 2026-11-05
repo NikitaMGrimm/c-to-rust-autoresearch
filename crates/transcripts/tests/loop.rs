@@ -764,6 +764,14 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         (52, "owner", REPLY),
         (53, "coderabbitai", "Still wrong."),
     ];
+    // After two replies that CodeRabbit disputed, the owner decides.
+    let stuck = [
+        (91, "coderabbitai", "Rename it."),
+        (92, "owner", REPLY),
+        (93, "coderabbitai", "Still wrong."),
+        (94, "owner", REPLY),
+        (95, "coderabbitai", "Still wrong."),
+    ];
     let followed = [
         (71, "coderabbitai", "Why?"),
         (72, "owner", REPLY),
@@ -787,6 +795,7 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         thread(true, &[(61, "coderabbitai", "Done before.")]),
         thread(false, &followed),
         long,
+        thread(false, &stuck),
     ]);
     fixture.answer(pull_request(&kept, checks, threads));
     std::fs::write(fixture.dir.join("gh/log"), "error: a test failed\n").unwrap();
@@ -794,11 +803,11 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
     let (code, output) = fixture.github_round(0);
     assert_eq!(code, Some(0), "{output}");
     assert!(
-        output.contains("3 comments for the loop agent, 1 waiting for CodeRabbit"),
+        output.contains("4 comments for the loop agent, 1 waiting for CodeRabbit"),
         "{output}"
     );
     for text in [
-        "answered the loop agent and left the thread open; the owner decides: https://github.com/o/r/pull/7#discussion_r51",
+        "CodeRabbit still disagrees after 2 replies; the owner decides: https://github.com/o/r/pull/7#discussion_r91",
         "more comments than the step reads; the owner decides: https://github.com/o/r/pull/7#discussion_r81",
         "the check Fuzz on #7 ended CANCELLED; the owner decides",
     ] {
@@ -809,6 +818,8 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         "Comment 11 on `crates/transpiler/src/lib.rs` line 3",
         "Use a match.",
         "Comment 21",
+        "Comment 51",
+        "Still wrong.",
         "**The owner:**\n\nWhy this name?",
         "## Failed check: Rust",
         "error: a test failed",
@@ -824,8 +835,8 @@ fn a_github_round_brings_reviews_back_and_posts_the_replies() {
         "ignore",
         "Ignore",
         "Comment 41",
-        "Comment 51",
         "Comment 61",
+        "Comment 91",
         "Comment 81",
         "Fuzz",
     ] {

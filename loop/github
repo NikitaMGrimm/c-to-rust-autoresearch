@@ -36,6 +36,9 @@ outbox() {
 branch=loop
 interval=$((2 * 60 * 60))
 bot=coderabbitai
+# How many times CodeRabbit may answer the agent's replies in a thread before
+# the owner decides, so that the two cannot argue forever.
+disputes=2
 slug=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 viewer=$(gh api user --jq .login)
 note="> [!NOTE]
@@ -239,7 +242,8 @@ fi
 pr=$(pull_request)
 items='[]'
 if [[ -n $pr ]]; then
-  items=$(jq -c --arg viewer "$viewer" --arg bot "$bot" --slurpfile outbox "$state/outbox.json" '
+  items=$(jq -c --arg viewer "$viewer" --arg bot "$bot" --argjson disputes "$disputes" \
+    --slurpfile outbox "$state/outbox.json" '
     def reply: .author.login == $viewer and (.body | startswith("> [!NOTE]\n> 🤖 **"));
     .number as $pr
     | [.reviewThreads.nodes[]
@@ -248,16 +252,19 @@ if [[ -n $pr ]]; then
       | $comments[0].databaseId as $id
       | select([$outbox[0][].comment] | index($id) | not)
       | (.comments.totalCount > (.comments.nodes | length)) as $long
-      | ([range($comments | length) | select($comments[.] | reply)] | last) as $replied
+      | [range($comments | length) | select($comments[.] | reply)] as $replies
+      | ($replies | last) as $replied
       | {pr: $pr, comment: $id, url: $comments[0].url, path: $comments[0].path,
          line: $comments[0].line, comments: $comments,
          state: (if $long then "owner"
            elif $replied == null then "open"
            elif any($comments[$replied + 1:][]; .author.login == $viewer) then "open"
-           elif ($comments | length) > $replied + 1 then "owner"
-           else "waiting" end),
+           elif ($comments | length) == $replied + 1 then "waiting"
+           # CodeRabbit answered the reply without resolving the thread.
+           elif ($replies | length) < $disputes then "open"
+           else "owner" end),
          why: (if $long then "the thread has more comments than the step reads"
-           else "CodeRabbit answered the loop agent and left the thread open" end)}]' <<<"$pr")
+           else "CodeRabbit still disagrees after \($disputes) replies" end)}]' <<<"$pr")
 fi
 jq -c '[.[] | select(.state == "open") | {comment, pr}]' <<<"$items" >"$state/offered.json"
 {

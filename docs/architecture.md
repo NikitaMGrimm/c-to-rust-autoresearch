@@ -130,10 +130,11 @@ through `gh` and `git` from the main checkout:
   limited.
 - It writes `REVIEWS.md` into the new clone: the unresolved threads that
   CodeRabbit or the owner started, with only their comments, and the log tail
-  of each failed check. It prints for the owner instead a thread where
-  CodeRabbit answered the agent's reply without resolving it, a thread with
-  more comments than it reads, and a check that ended otherwise without
-  passing, such as a cancelled run.
+  of each failed check. A thread where CodeRabbit answered the agent's reply
+  without resolving it goes back to the agent. The step prints for the owner
+  instead a thread where CodeRabbit disputed two replies, a thread with more
+  comments than it reads, and a check that ended otherwise without passing,
+  such as a cancelled run.
 
 The step overwrites neither main nor the `loop` branch, so it publishes and
 merges nothing while either has commits on GitHub that main lacks. Commits

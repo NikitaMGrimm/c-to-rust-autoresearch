@@ -66,6 +66,9 @@ them and the owner may comment. A round writes what is open there into
   `fixed: false` when a comment needs no change or asks for one outside the
   transpiler, and say why. Replies are posted publicly as written, so write
   plain sentences without mentions.
+- A comment comes back with CodeRabbit's answer when it disputes your reply.
+  Fix it after all, or answer again with better reasons; after its second
+  dispute the owner decides.
 
 Answers alone do not end an iteration: a round without a commit posts
 nothing, so every iteration still ends with a fix or a new rule.
