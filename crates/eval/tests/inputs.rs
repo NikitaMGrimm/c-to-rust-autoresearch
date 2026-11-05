@@ -38,10 +38,10 @@ fn setup(test: &str, c: &str, inputs: Option<&str>, rust: &str) -> (PathBuf, Pat
     }
     std::fs::write(dir.join("prepared.rs"), rust).unwrap();
     let transpiler = dir.join("transpiler");
+    // The sandbox hides everything next to the transpiler, so it carries the translation.
     std::fs::write(
         &transpiler,
-        // Relative to the script, so the path needs no quoting.
-        "#!/bin/sh\ncp \"$(dirname \"$0\")/prepared.rs\" \"$3\"\n",
+        format!("#!/bin/sh\ncat > \"$3\" <<'RUST'\n{rust}RUST\n"),
     )
     .unwrap();
     std::fs::set_permissions(&transpiler, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -201,4 +201,59 @@ fn only_known_c_flags_are_accepted() {
     let other = evaluate("flags-bad", ECHO_C, Some(&with(r#"["-O3"]"#)), ECHO_RS);
     assert_eq!(other.stage, "c_invalid");
     assert!(other.detail.contains("c_flags"), "{}", other.detail);
+}
+
+/// Only a scratch directory under $HOME, the usual case, is hidden from agent code.
+fn scratch_is_hidden() -> bool {
+    std::env::var_os("HOME")
+        .is_some_and(|home| Path::new(env!("CARGO_TARGET_TMPDIR")).starts_with(home))
+}
+
+#[test]
+fn agent_code_cannot_read_home_keep_files_or_connect() {
+    let rust = r#"fn main() {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.ancestors().nth(3).unwrap();
+    let _ = std::fs::write(dir.join("escaped-translation"), "");
+    let read = std::fs::read(dir.join("g1_program.c")).is_ok();
+    let address = std::net::SocketAddr::from(([1, 1, 1, 1], 53));
+    let timeout = std::time::Duration::from_secs(2);
+    let connected = std::net::TcpStream::connect_timeout(&address, timeout).is_ok();
+    println!("{read} {connected}");
+}
+"#;
+    let hidden = scratch_is_hidden();
+    let c = format!(
+        "#include <stdio.h>\nint main(void) {{ puts(\"{} false\"); return 0; }}\n",
+        !hidden
+    );
+    let (dir, transpiler) = setup("sandbox", &c, None, rust);
+    let script = std::fs::read_to_string(&transpiler).unwrap();
+    let script = script.replacen(
+        "\n",
+        "\ntouch \"$(dirname \"$0\")/escaped-transpiler\"\n",
+        1,
+    );
+    std::fs::write(&transpiler, script).unwrap();
+    let record = eval::evaluate(
+        &dir.join("g1_program.c"),
+        &eval::Translator::Transpiler(transpiler),
+        &dir.join("work"),
+    );
+    let escaped = ["escaped-translation", "escaped-transpiler"].map(|name| dir.join(name).exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(record.stage, "pass", "{}", record.detail);
+    assert_eq!(escaped, [false, false]);
+}
+
+#[test]
+fn translations_cannot_include_hidden_files_when_compiled() {
+    let c = "#include <stdio.h>\nint main(void) { puts(\"0\"); return 0; }\n";
+    // The translation lies in work/rust; the C source two levels up.
+    let rust =
+        "fn main() {\n    println!(\"{}\", include_str!(\"../../g1_program.c\").len());\n}\n";
+    let record = evaluate("sandbox-include", c, None, rust);
+    if scratch_is_hidden() {
+        assert_eq!(record.stage, "compile_fail", "{}", record.detail);
+    }
 }
