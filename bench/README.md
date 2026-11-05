@@ -73,7 +73,7 @@ share a set.
 | Total | 24 | 14 | 13 |
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`a03d8f01cf81045cd8ba4496d4c00518138bb9256ab18993305217e063d3a44a`.
+`a583af90a875b1a65819edaa455750ad8ecffa3aa33262edcb2307e680ea3d89`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -89,7 +89,9 @@ them:
 - `__k`: the renamed program with about half of its decimal constants of 2 or
   more changed by a small amount.
 - `__i`: the original program on inputs whose numbers are partly replaced by
-  others with as many digits.
+  others with as many digits. For a program that calls `atoi`, `atol`,
+  `atoll` or the `scanf` family, inputs with a number beyond `int` are left
+  out, as with fuzzed inputs.
 
 A variant keeps the inputs on which it passes the same C checks as the
 benchmarks. Because the evaluator compares the Rust program with the C

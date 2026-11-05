@@ -166,23 +166,14 @@ fn variants(c_file: &Path, seed: u64, work: &Path) -> Vec<(&'static str, Variant
         validate(&changed, &spec, &work.join(format!("k{attempt}"))).ok()
     });
     result.push(("k", changed.ok_or("no_valid_constants")));
-    let mut inputs = rng("i");
-    let mutated = eval::Spec {
-        inputs: spec
-            .inputs
-            .iter()
-            .filter_map(|input| mutate_input(input, &mut inputs))
-            .collect(),
-        c_flags: spec.c_flags.clone(),
-    };
-    result.push((
-        "i",
-        if mutated.inputs.is_empty() {
-            Err("no_numbers_in_inputs")
-        } else {
-            validate(&source, &mutated, &work.join("i"))
-        },
-    ));
+    let inputs = mutated_inputs(&source, &spec.inputs, &mut rng("i")).and_then(|inputs| {
+        let spec = eval::Spec {
+            inputs,
+            c_flags: spec.c_flags.clone(),
+        };
+        validate(&source, &spec, &work.join("i"))
+    });
+    result.push(("i", inputs));
     result
 }
 
@@ -360,6 +351,33 @@ fn change_constants(source: &str, rng: &mut Rng) -> Option<String> {
 
 /// The same input with about half of its numbers replaced by other numbers
 /// of as many digits, or `None` if no number changed.
+/// New numbers in every input that has any. Programs that read numbers with
+/// atoi or scanf get none beyond int: that is undefined behaviour the
+/// reference checks miss. Such inputs are dropped rather than drawn again, so
+/// every other variant stays the same.
+fn mutated_inputs(
+    source: &str,
+    inputs: &[eval::Input],
+    rng: &mut Rng,
+) -> Result<Vec<eval::Input>, &'static str> {
+    let mutated: Vec<eval::Input> = inputs
+        .iter()
+        .filter_map(|input| mutate_input(input, rng))
+        .collect();
+    if mutated.is_empty() {
+        return Err("no_numbers_in_inputs");
+    }
+    let bounded = bench::parses_numbers_unchecked(source);
+    let kept: Vec<eval::Input> = mutated
+        .into_iter()
+        .filter(|input| !bounded || bench::numbers_fit_int(input))
+        .collect();
+    if kept.is_empty() {
+        return Err("no_inputs_within_int");
+    }
+    Ok(kept)
+}
+
 fn mutate_input(input: &eval::Input, rng: &mut Rng) -> Option<eval::Input> {
     let mut changed = false;
     let mut mutate = |text: &str| {
@@ -617,6 +635,29 @@ int main(void) {
             ..eval::Input::default()
         };
         assert!(mutate_input(&no_numbers, &mut Rng(0)).is_none());
+    }
+
+    #[test]
+    fn mutated_numbers_stay_within_int_for_atoi() {
+        let input = |args: &[&str]| eval::Input {
+            name: "t".to_owned(),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            stdin: Vec::new(),
+        };
+        let inputs = [input(&["1000000000"]), input(&["5"])];
+        let (mut beyond, mut kept) = (0, 0);
+        for seed in 0..50 {
+            let unbounded = mutated_inputs("strtol(", &inputs, &mut Rng(seed)).unwrap_or_default();
+            beyond += unbounded
+                .iter()
+                .filter(|i| !bench::numbers_fit_int(i))
+                .count();
+            if let Ok(bounded) = mutated_inputs("atoi(", &inputs, &mut Rng(seed)) {
+                assert!(bounded.iter().all(bench::numbers_fit_int), "{bounded:?}");
+                kept += bounded.len();
+            }
+        }
+        assert!(beyond > 0 && kept > 0);
     }
 
     #[test]
