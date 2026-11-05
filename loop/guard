@@ -2,8 +2,9 @@
 # Claude Code PreToolUse hook for the loop agent, installed by loop/setup.
 # Claude Code's deny rules cover its own file tools but not the shell, so this
 # blocks any tool call that names a denied place, the TRACTOR corpus or Claude
-# Code's own files. Usage: guard OWN_DIR MARKER..., where OWN_DIR is the loop
-# agent's transcript directory, whose saved tool output it may read back.
+# Code's own files, and any MCP tool or skill from outside loop/skills.
+# Usage: guard OWN_DIR MARKER..., where OWN_DIR is the loop agent's transcript
+# directory, whose saved tool output it may read back.
 # Exit code 2 blocks the call; on unreadable input it blocks too.
 
 block() {
@@ -29,20 +30,30 @@ tool=$(jq -r '.tool_name // ""' <<<"$input") || block "the hook could not read t
 text=$(jq -r '[.tool_input | .. | strings] | join("\n")' <<<"$input") || block "the hook could not read the tool call"
 [[ -n $tool ]] || block "the hook got no tool name"
 
+# MCP servers, such as T3 Code's, give tools that reach past this checkout:
+# other threads, a browser, agents in other directories.
+if [[ $tool == mcp__* ]]; then
+  block "the loop agent uses no MCP tools"
+fi
+# Only the loop's own skills, from this checkout, which the agent cannot edit.
+if [[ $tool == Skill ]]; then
+  skill=$(jq -r '.tool_input.skill // ""' <<<"$input")
+  if [[ ! $skill =~ ^[A-Za-z0-9_-]+$ || ! -f $(dirname "$0")/skills/$skill/SKILL.md ]]; then
+    block "the loop agent uses only the skills in loop/skills"
+  fi
+fi
+
 for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus; do
   if names "$text" "$marker"; then
     block "the call names $marker"
   fi
 done
-# Settings, transcripts and memory are off limits; skills and plugins are the
-# owner's tools. A path with .. could climb out of either exception.
+# Settings, transcripts, memory and the owner's skills are off limits. The
+# agent may read back the tool output that Claude Code saved for it, but a
+# path with .. could climb out of that directory.
 rest=$text
-if [[ $rest != *..* ]]; then
-  rest=${rest//.claude\/skills\//}
-  rest=${rest//.claude\/plugins\//}
-  if [[ $tool == Read ]]; then
-    rest=${rest//"$own"/}
-  fi
+if [[ $tool == Read && $rest != *..* ]]; then
+  rest=${rest//"$own"/}
 fi
 if names "$rest" .claude; then
   block "the call touches Claude Code's files"

@@ -22,12 +22,14 @@ web and no network except cargo fetching crates. One look at a private program
 invalidates the experiment and cannot be undone. Your settings block these,
 and every session is audited afterwards. When a construct needs more examples
 than the development programs give, write small C programs of your own as
-tests.
+tests. Use Claude Code's own tools and subagents; MCP tools, such as T3
+Code's, are blocked, and the only skills are those in `loop/skills`.
 
 ## One iteration
 
-1. Run `cargo run -p eval -- --quiet` and pick one failing development program,
-   or several that fail for the same reason.
+1. Read `ROUNDS.md`, if there is one: the earlier iterations, with the gate's
+   results for each. Run `cargo run -p eval -- --quiet` and pick one failing
+   development program, or several that fail for the same reason.
 2. Study it with `scripts/inspect bench/dev/NAME.c` and the evaluator's
    details (`cargo run -p eval -- --only NAME`).
 3. Add or generalise one rule in `crates/transpiler/src/`. Translate C
@@ -44,9 +46,11 @@ tests.
 ## The gate
 
 After each iteration the gate, run outside your session, builds the
-transpiler from your commit and evaluates it on the development set, a private validation set and private
-variants of the development programs with renamed identifiers, changed
-constants and new inputs. It keeps the commit when the development score rises
-and the validation score does not drop, and otherwise reverts it. You see the
-development results and the decision. Do not run the gate or the benchmark
-tools yourself. Overfitting the development programs fails on the rest.
+transpiler from your commit and evaluates it on the development set, a private
+validation set and private variants of the development programs with renamed
+identifiers, changed constants and new inputs. It keeps the commit when the
+development score rises and the validation score does not drop, and otherwise
+drops it. The next iteration starts in a fresh checkout of main, whose
+`ROUNDS.md` adds the commit, the development results and the decision. Do not
+run the gate or the benchmark tools yourself. Overfitting the development
+programs fails on the rest.

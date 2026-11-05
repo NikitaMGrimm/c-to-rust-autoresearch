@@ -77,15 +77,24 @@ development results and the decision. Run it from this checkout, which the
 loop agent cannot write, at a clean main.
 
 The loop agent works in its own clone, which keeps it away from the private
-programs, and its transcripts are audited after each session:
+programs. After each of its sessions, `loop/round` audits the session's
+transcripts, runs the gate on its commit, keeps the commit on main or drops
+it, and makes a fresh clone for the next session:
 
 ```sh
 loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
-cargo run -p transcripts --bin audit -- PRIVATE_DIR ~/.claude/projects/LOOP_PROJECT
+~/src/c-to-rust-autoresearch/loop/round PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 ```
 
+Run `loop/round` by this checkout's absolute path, never the clone's copy. In
+T3 Code, the clone is a project whose threads run in the clone itself, not in
+worktrees, on Claude only, with `loop/round` as a project script.
 [docs/architecture.md](docs/architecture.md#keeping-the-loop-agent-out) says
-what both do.
+what the scripts do; the audit runs on its own too:
+
+```sh
+cargo run -p transcripts --bin audit -- PRIVATE_DIR ~/.claude/projects/LOOP_PROJECT
+```
 
 ## Model usage
 

@@ -19,8 +19,6 @@ const CORPUS: [&str; 3] = [
     "PUBLIC-Test-Corpus",
     ".cache/c-to-rust-autoresearch",
 ];
-/// Claude Code's files that are no finding: the owner's skills and plugins.
-const TOOLS: [&str; 2] = [".claude/skills/", ".claude/plugins/"];
 
 struct Patterns {
     /// Names of the private programs and their variants.
@@ -175,13 +173,11 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
             {
                 add(format!("{tool} looks for TRACTOR"));
             }
-            let own = patterns.own.iter().filter(|_| tool == "Read");
-            let exempt: Vec<&str> = TOOLS.into_iter().chain(own.map(String::as_str)).collect();
             let touches = input.iter().any(|text| {
                 let mut rest = text.to_string();
-                // A path with .. could climb out of an exception.
-                if !text.contains("..") {
-                    for dir in &exempt {
+                // A path with .. could climb out of the agent's own directory.
+                if tool == "Read" && !text.contains("..") {
+                    for dir in &patterns.own {
                         rest = rest.replace(dir, "");
                     }
                 }
@@ -298,7 +294,11 @@ mod tests {
             ),
             tool_use(
                 "Read",
-                serde_json::json!({"file_path": "/h/.claude/skills/../settings.json"}),
+                serde_json::json!({"file_path": "/h/.claude/projects/-loop/../settings.json"}),
+            ),
+            tool_use(
+                "Read",
+                serde_json::json!({"file_path": "/h/.claude/skills/x/SKILL.md"}),
             ),
             "{\"type\": \"user\", \"message\": ".to_owned(),
         ];
@@ -313,7 +313,8 @@ mod tests {
             (6, "Read touches Claude Code's files"),
             (7, "Bash touches Claude Code's files"),
             (8, "Read touches Claude Code's files"),
-            (9, "unreadable record"),
+            (9, "Read touches Claude Code's files"),
+            (10, "unreadable record"),
         ]);
         assert_eq!(found(&lines), want);
     }
@@ -334,10 +335,6 @@ mod tests {
             tool_use(
                 "Read",
                 serde_json::json!({"file_path": "/h/.claude/projects/-loop/s/tool-results/a.txt"}),
-            ),
-            tool_use(
-                "Skill",
-                serde_json::json!({"path": "/h/.claude/skills/x/SKILL.md"}),
             ),
             tool_use(
                 "Bash",
