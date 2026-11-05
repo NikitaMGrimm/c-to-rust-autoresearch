@@ -67,6 +67,7 @@ struct Program {
     file_name: String,
     c_file: PathBuf,
     licence: Option<PathBuf>,
+    c_flags: Vec<String>,
     group: u8,
     signals: Vec<&'static str>,
     inputs: Vec<eval::Input>,
@@ -272,24 +273,61 @@ fn program(
     if test_case.join("configurations.json").exists() {
         return Err("build_settings".to_owned());
     }
+    let mut c_flags = Vec::new();
     for (command, args) in cmake_commands(&read(&test_case.join("CMakeLists.txt"))?) {
-        let allowed = matches!(
-            command.as_str(),
-            "cmake_minimum_required" | "project" | "add_executable"
-        )
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let allowed = match command.as_str() {
+            "cmake_minimum_required" | "project" | "add_executable" => true,
             // The evaluator always links the maths library.
-            || command == "target_link_libraries" && args.split_whitespace().nth(1) == Some("m");
+            "target_link_libraries" => words.get(1..) == Some(&["m"]),
+            "target_compile_options" => {
+                let flags = words
+                    .iter()
+                    .skip(1)
+                    .filter(|word| !matches!(**word, "PRIVATE" | "PUBLIC" | "INTERFACE"));
+                c_flags.extend(flags.map(|flag| flag.to_string()));
+                c_flags
+                    .iter()
+                    .all(|flag| eval::C_FLAGS.contains(&flag.as_str()))
+            }
+            _ => false,
+        };
         if !allowed {
             return Err(format!("build_settings: {command}"));
         }
     }
 
     let work = scratch.join(&case.name);
-    std::fs::create_dir(&work).map_err(|err| format!("cannot create scratch: {err}"))?;
-    let c_program = work.join("c_program");
-    if eval::build_c(c_file, &c_program).exit != Some(0) {
-        return Err("c_build".to_owned());
+    // Optimised builds without sanitizers often expose undefined behaviour
+    // that the sanitizers miss, by printing something else.
+    let builds = [
+        ("sanitized", None),
+        ("clang_O2", Some("clang-18")),
+        ("gcc_O2", Some("gcc")),
+    ];
+    let mut programs = Vec::new();
+    for (name, compiler) in builds {
+        let program = work.join(name).join("program");
+        std::fs::create_dir_all(work.join(name))
+            .map_err(|err| format!("cannot create scratch: {err}"))?;
+        let built = match compiler {
+            None => eval::build_c(c_file, &program, &c_flags).exit == Some(0),
+            Some(compiler) => Command::new(compiler)
+                .args(["-O2", "-w"])
+                .args(&c_flags)
+                .arg("-o")
+                .arg(&program)
+                .arg(c_file)
+                .arg("-lm")
+                .output()
+                .is_ok_and(|output| output.status.success()),
+        };
+        if !built {
+            return Err(format!("c_build: {name}"));
+        }
+        programs.push(program);
     }
+    let (c_program, optimised) = programs.split_first().unwrap();
     let mut inputs = Vec::new();
     for vector in sorted_dir(&case.dir.join("test_vectors"))? {
         if !file_name(&vector).ends_with(".json") {
@@ -302,7 +340,7 @@ fn program(
             *dropped.entry("known_undefined_behaviour").or_default() += 1;
             continue;
         }
-        match input(&json, &name, &c_program) {
+        match input(&json, &name, c_program, optimised) {
             Ok(input) => inputs.push(input),
             Err(reason) => *dropped.entry(reason).or_default() += 1,
         }
@@ -318,6 +356,7 @@ fn program(
         file_name: format!("g{group}_{}", case.name),
         c_file: c_file.clone(),
         licence: licence.exists().then_some(licence),
+        c_flags,
         group,
         signals,
         inputs,
@@ -341,11 +380,13 @@ fn cmake_commands(text: &str) -> Vec<(String, String)> {
 }
 
 /// Turns a test vector into an input after checking that the sanitized C
-/// program gives TRACTOR's expected result, twice.
+/// program gives TRACTOR's expected result, twice, and that the optimised
+/// builds print the same and exit alike.
 fn input(
     vector: &serde_json::Value,
     name: &str,
     c_program: &Path,
+    optimised: &[PathBuf],
 ) -> Result<eval::Input, &'static str> {
     let known = [
         "argv", "stdin", "stdout", "stderr", "rc", "note", "has_ub", "env",
@@ -399,6 +440,12 @@ fn input(
         || expected_stdout.is_some_and(|out| out.as_bytes() != first.stdout)
     {
         return Err("c_differs_from_expected");
+    }
+    for program in optimised {
+        let other = eval::run_program(program, &input);
+        if (&other.stdout, other.exit) != (&first.stdout, first.exit) {
+            return Err("c_builds_disagree");
+        }
     }
     Ok(input)
 }
@@ -599,11 +646,14 @@ fn write_program(program: &Program, dir: &Path) -> Result<(), String> {
             })
         })
         .collect();
-    let json = serde_json::json!({
+    let mut json = serde_json::json!({
         "source": format!("TRACTOR {CORPUS_REVISION} {}", program.source),
         "signals": program.signals,
         "inputs": inputs,
     });
+    if !program.c_flags.is_empty() {
+        json["c_flags"] = serde_json::json!(program.c_flags);
+    }
     write(&base.with_extension("json"), &format!("{json:#}\n"))
 }
 
@@ -671,6 +721,7 @@ mod tests {
             file_name: String::new(),
             c_file: PathBuf::new(),
             licence: None,
+            c_flags: Vec::new(),
             group,
             signals: Vec::new(),
             inputs: Vec::new(),

@@ -20,7 +20,10 @@ B01 and B02, from both the public tests and the formerly hidden tests:
 
 The evaluator runs the C and the Rust program on every input. An input is kept
 only if the sanitized C build gives TRACTOR's expected exit code, and its
-expected standard output where the vector gives one, twice in a row.
+expected standard output where the vector gives one, twice in a row. Builds
+with `clang-18 -O2` and `gcc -O2` must then print the same and exit alike,
+since undefined behaviour that the sanitizers miss often changes the output
+of an optimised build.
 
 | Not used | Count | Why |
 |---|---:|---|

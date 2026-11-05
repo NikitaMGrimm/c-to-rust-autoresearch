@@ -50,7 +50,11 @@ fn setup(test: &str, c: &str, inputs: Option<&str>, rust: &str) -> (PathBuf, Pat
 
 fn evaluate(test: &str, c: &str, inputs: Option<&str>, rust: &str) -> eval::Record {
     let (dir, transpiler) = setup(test, c, inputs, rust);
-    let record = eval::evaluate(&dir.join("g1_program.c"), &transpiler, &dir.join("work"));
+    let record = eval::evaluate(
+        &dir.join("g1_program.c"),
+        &eval::Translator::Transpiler(transpiler),
+        &dir.join("work"),
+    );
     std::fs::remove_dir_all(&dir).unwrap();
     record
 }
@@ -131,4 +135,70 @@ fn rust_panic_fails_even_when_c_exits_with_101() {
         "fn main() {\n    panic!(\"boom\");\n}\n",
     );
     assert_eq!(record.stage, "panic", "{}", record.detail);
+}
+
+#[test]
+fn c_and_rust_programs_see_the_same_argv0() {
+    let c = "#include <stdio.h>\nint main(int argc, char **argv) { (void)argc; puts(argv[0]); return 0; }\n";
+    let rust = "fn main() {\n    println!(\"{}\", std::env::args().next().unwrap());\n}\n";
+    let record = evaluate("argv0", c, None, rust);
+    assert_eq!(record.stage, "pass", "{}", record.detail);
+}
+
+#[test]
+fn c_output_beyond_the_limit_is_invalid() {
+    let c = "#include <stdio.h>\nint main(void) { for (int i = 0; i < (9 << 20) / 64; i++) printf(\"%063d\\n\", i); return 0; }\n";
+    let record = evaluate("output-limit", c, None, ECHO_RS);
+    assert_eq!(record.stage, "c_invalid");
+    assert!(
+        record.detail.contains("output exceeds"),
+        "{}",
+        record.detail
+    );
+}
+
+#[test]
+fn translation_beyond_the_memory_limit_fails() {
+    let c = "#include <stdio.h>\nint main(void) { puts(\"0\"); return 0; }\n";
+    // Zeroed pages are never touched, so this cannot exhaust memory if the limit is missing.
+    let rust = "fn main() {\n    let big = vec![0u8; 8 << 30];\n    println!(\"{}\", big[big.len() - 1]);\n}\n";
+    let record = evaluate("memory-limit", c, None, rust);
+    assert_ne!(record.stage, "pass", "{}", record.detail);
+}
+
+#[test]
+fn existing_translations_are_evaluated_without_the_transpiler() {
+    let (dir, _) = setup("existing", ECHO_C, Some(INPUTS), ECHO_RS);
+    let existing = dir.join("translations");
+    std::fs::create_dir(&existing).unwrap();
+    std::fs::copy(dir.join("prepared.rs"), existing.join("g1_program.rs")).unwrap();
+    let c_file = dir.join("g1_program.c");
+    let found = eval::evaluate(
+        &c_file,
+        &eval::Translator::Existing(existing),
+        &dir.join("work"),
+    );
+    let missing = eval::evaluate(
+        &c_file,
+        &eval::Translator::Existing(dir.join("none")),
+        &dir.join("work2"),
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(found.stage, "pass", "{}", found.detail);
+    assert_eq!(missing.stage, "transpile_fail");
+}
+
+#[test]
+fn only_known_c_flags_are_accepted() {
+    let with = |flags: &str| format!(r#"{{"c_flags": {flags}, "inputs": [{{"name": "plain"}}]}}"#);
+    let allowed = evaluate(
+        "flags-ok",
+        ECHO_C,
+        Some(&with(r#"["-fno-strict-aliasing"]"#)),
+        ECHO_RS,
+    );
+    assert_eq!(allowed.stage, "pass", "{}", allowed.detail);
+    let other = evaluate("flags-bad", ECHO_C, Some(&with(r#"["-O3"]"#)), ECHO_RS);
+    assert_eq!(other.stage, "c_invalid");
+    assert!(other.detail.contains("c_flags"), "{}", other.detail);
 }
