@@ -73,14 +73,25 @@ cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]
 
 It keeps a candidate that changes only the transpiler when the development
 score rises and the validation score does not drop, and prints only the
-development results and the decision; see
-[docs/architecture.md](docs/architecture.md#the-gate).
+development results and the decision. Run it from this checkout, which the
+loop agent cannot write, at a clean main.
+
+The loop agent works in its own clone, which keeps it away from the private
+programs, and its transcripts are audited after each session:
+
+```sh
+loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+cargo run -p transcripts --bin audit -- PRIVATE_DIR ~/.claude/projects/LOOP_PROJECT
+```
+
+[docs/architecture.md](docs/architecture.md#keeping-the-loop-agent-out) says
+what both do.
 
 ## Model usage
 
 ```sh
-cargo run -p usage -- ~/.claude/projects/-home-$USER-src-c-to-rust-autoresearch
-cargo run -p usage -- --since 2026-11-04T20:00:00Z --until 2026-11-05T00:00:00Z DIR
+cargo run -p transcripts --bin usage -- ~/.claude/projects/-home-$USER-src-c-to-rust-autoresearch
+cargo run -p transcripts --bin usage -- --since 2026-11-04T20:00:00Z --until 2026-11-05T00:00:00Z DIR
 ```
 
 `usage` sums the tokens that Claude Code records in its session transcripts,

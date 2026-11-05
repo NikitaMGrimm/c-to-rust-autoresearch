@@ -1,3 +1,4 @@
 /target
 # Benchmarks and outputs that are not published yet.
 /local
+.claude/settings.local.json

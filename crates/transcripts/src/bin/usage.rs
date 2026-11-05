@@ -2,8 +2,8 @@
 //! per session and model, optionally within a time window. T3 Code runs Claude
 //! through Claude Code, so this also covers T3 chats.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: usage [--since TIME] [--until TIME] PATH...\n\
@@ -33,16 +33,13 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let (mut files, mut visited) = (Vec::new(), BTreeSet::new());
-    for path in &paths {
-        if let Err(err) = transcripts(path, &mut files, &mut visited) {
-            eprintln!("cannot read {}: {err}", path.display());
+    let files = match transcripts::find(&paths) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("{err}");
             return ExitCode::FAILURE;
         }
-    }
-    // A transcript reached twice, through a repeated path or a link, counts once.
-    let mut seen = BTreeSet::new();
-    files.retain(|file| seen.insert(file.canonicalize().unwrap_or_else(|_| file.clone())));
+    };
     let mut sessions: BTreeMap<String, Session> = BTreeMap::new();
     for file in &files {
         let text = match std::fs::read_to_string(file) {
@@ -226,34 +223,6 @@ fn normalise(time: &str) -> Option<String> {
     valid.then(|| format!("{seconds}.{:0<3.3}", fraction))
 }
 
-/// Collects transcripts under `path`, entering each directory once so that a
-/// link back to an ancestor cannot repeat or loop.
-fn transcripts(
-    path: &Path,
-    files: &mut Vec<PathBuf>,
-    visited: &mut BTreeSet<PathBuf>,
-) -> std::io::Result<()> {
-    if path.is_file() {
-        files.push(path.to_owned());
-        return Ok(());
-    }
-    if !visited.insert(path.canonicalize()?) {
-        return Ok(());
-    }
-    let mut entries = std::fs::read_dir(path)?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort();
-    for entry in entries {
-        if entry.is_dir() {
-            transcripts(&entry, files, visited)?;
-        } else if entry.extension().is_some_and(|ext| ext == "jsonl") {
-            files.push(entry);
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,19 +277,6 @@ mod tests {
         assert_eq!(normalise("2026-11-04X10:00:00Z"), None);
         assert_eq!(bound("2026-11-04T10:00:02.1235Z"), None);
         assert!(bound("2026-11-04T10:00:02.123Z").is_some());
-    }
-
-    #[test]
-    fn linked_directories_and_repeated_paths_are_read_once() {
-        let dir = std::env::temp_dir().join(format!("usage-links-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("project")).unwrap();
-        std::fs::write(dir.join("project/s1.jsonl"), TRANSCRIPT).unwrap();
-        std::os::unix::fs::symlink(&dir, dir.join("project/loop")).unwrap();
-        let (mut files, mut visited) = (Vec::new(), BTreeSet::new());
-        transcripts(&dir, &mut files, &mut visited).unwrap();
-        transcripts(&dir.join("project"), &mut files, &mut visited).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(files.len(), 1, "{files:?}");
     }
 
     #[test]

@@ -1,8 +1,9 @@
-//! Decides whether the research loop keeps a candidate commit. Run it from a
-//! trusted checkout: it evaluates the base and the candidate transpiler on the
+//! Decides whether the research loop keeps a candidate commit. It trusts its
+//! own code, so it runs only from a clean checkout of main outside the loop
+//! agent's clone. It evaluates the base and the candidate transpiler on the
 //! development set, the private validation set and the private variants of the
-//! development set, appends everything to a private log and prints only what the
-//! loop agent may see.
+//! development set, appends everything to a private log and prints only what
+//! the loop agent may see.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -13,7 +14,8 @@ use eval::Stage;
 
 const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage FILE]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
-     --usage adds a usage report (from the usage tool) to the private log.";
+     --usage adds a report of the transcripts usage tool to the private log.\n\
+     Run it from a clean checkout of main, not from the loop agent's checkout.";
 
 /// The only paths a loop change may touch; the evaluator and the benchmarks
 /// are fixed.
@@ -74,6 +76,9 @@ fn main() -> ExitCode {
 }
 
 fn gate(args: &Args) -> Result<bool, String> {
+    if let Some(problem) = untrusted(Path::new(eval::REPO))? {
+        return Err(problem);
+    }
     let usage = match &args.usage {
         Some(path) => std::fs::read_to_string(path)
             .map_err(|err| err.to_string())
@@ -225,6 +230,26 @@ fn rejection(before: &Results, after: &Results) -> Option<String> {
     }
 }
 
+/// Why the checkout at `dir` cannot be trusted to run the gate, if so. The
+/// gate is built from it, so a checkout off main, with changes or untracked
+/// files such as a build script, or the loop agent's own clone could run the
+/// agent's code. The check runs after that build, so it catches a mistaken
+/// checkout, not a hostile one.
+fn untrusted(dir: &Path) -> Result<Option<String>, String> {
+    let git = |args: &[&str]| git_in(dir, args);
+    // loop/setup marks the loop agent's clone, whose main the agent can move.
+    let problem = if git(&["config", "--bool", "--default", "false", "c2r.loop"])? == "true" {
+        "the gate's checkout is the loop agent's; run it from the main checkout"
+    } else if git(&["rev-parse", "HEAD"])? != git(&["rev-parse", "--verify", "main^{commit}"])? {
+        "the gate's checkout is not at main; run it from a checkout of main"
+    } else if !git(&["status", "--porcelain", "--untracked-files=all"])?.is_empty() {
+        "the gate's checkout has uncommitted changes or untracked files"
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(problem.to_owned()))
+}
+
 /// Why the change from `base` to `candidate` may not be evaluated, if so.
 fn change_problem(base: &str, candidate: &str) -> Result<Option<String>, String> {
     let descends = Command::new("git")
@@ -299,9 +324,13 @@ fn results(
 }
 
 fn git(args: &[&str]) -> Result<String, String> {
+    git_in(Path::new(eval::REPO), args)
+}
+
+fn git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
-        .current_dir(eval::REPO)
+        .current_dir(dir)
         .output()
         .map_err(|err| format!("cannot run git: {err}"))?;
     if !output.status.success() {
@@ -348,6 +377,30 @@ mod tests {
         assert_eq!(rejection(&before, &gain), None);
         assert!(rejection(&before, &trade).unwrap().contains("development"));
         assert!(rejection(&before, &overfit).unwrap().contains("validation"));
+    }
+
+    #[test]
+    fn only_a_clean_checkout_of_main_outside_the_loop_is_trusted() {
+        let dir = eval::Scratch::new("test").unwrap();
+        let git = |args: &[&str]| git_in(&dir, args).unwrap();
+        let commit = || {
+            let author = ["-c", "user.name=t", "-c", "user.email=t@t"];
+            let unsigned = ["-c", "commit.gpgsign=false", "commit", "-q", "--no-verify"];
+            git(&[&author[..], &unsigned, &["--allow-empty", "-m", "c"]].concat());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        commit();
+        let problem = || untrusted(&dir).unwrap().unwrap_or_default();
+        assert_eq!(untrusted(&dir), Ok(None));
+        std::fs::write(dir.join("build.rs"), "").unwrap();
+        assert!(problem().contains("untracked"));
+        std::fs::remove_file(dir.join("build.rs")).unwrap();
+        git(&["checkout", "-q", "-b", "candidate"]);
+        commit();
+        assert!(problem().contains("not at main"));
+        git(&["checkout", "-q", "main"]);
+        git(&["config", "c2r.loop", "true"]);
+        assert!(problem().contains("loop agent's"));
     }
 
     #[test]

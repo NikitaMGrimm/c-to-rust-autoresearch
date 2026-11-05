@@ -69,9 +69,9 @@ deleting code is welcome. A new dependency needs a reason.
 | `crates/eval/src/` | Evaluator library: `spec`, `reference`, `translate`, `run`, `sandbox`, `evaluate`, `idioms`, `files` |
 | `crates/eval/src/main.rs`, `src/bin/gate.rs` | The `eval` command and the loop's gate |
 | `crates/bench/` | Builds the sets: `intake`, `variants`, `fuzz`, `near-copies` |
-| `crates/usage/` | Sums model usage from Claude Code transcripts |
+| `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |
-| `loop/program.md` | Instructions for the loop agent |
+| `loop/` | Instructions for the loop agent, and the setup of its checkout |
 | `scripts/inspect` | A C or Rust file's warnings, lints and run result |
 | `docs/architecture.md` | How a program is evaluated and a commit judged |
 
