@@ -36,7 +36,8 @@ only if the sanitized C build gives TRACTOR's expected exit code, and its
 expected standard output where the vector gives one, twice in a row. Builds
 with `clang-18 -O2` and `gcc -O2` must then print the same and exit alike,
 since undefined behaviour that the sanitizers miss often changes the output
-of an optimised build.
+of an optimised build. A MemorySanitizer build must also find no read of
+uninitialised memory, which an optimised build shows only now and then.
 
 | Not used | Count | Why |
 |---|---:|---|
@@ -92,7 +93,7 @@ unions and function pointers, and a program's group is the highest feature
 anywhere in its file, although its test calls one function.
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`b439f13a3f01b57fbd67bc1a3ba85fb4ebe5c67a22611fec5002149d6b813925`.
+`b436ec41ffb2a9aefda0bceabdedf6a00a342c4bf5c14b219fde676f87f2e384`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
