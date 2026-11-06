@@ -21,7 +21,7 @@ round's exit code or 2.
 EOF
   exit 2
 }
-# The transpiler before the loop's first rule, 63a770c.
+# The parent of 63a770c, the loop's first rule: a transpiler without rules.
 start=f5046cf47ee43cb4e08bcae901bcd3f72d68cdd1
 round=()
 claude=()
@@ -87,9 +87,10 @@ for ((session = 1; session <= sessions; session++)); do
   echo "run $run: session $session of $sessions"
   failed=false
   # Permission prompts cannot be answered here. The deny rules and the hook
-  # that loop/setup wrote still apply.
+  # that loop/setup wrote still apply. claude -p would add piped input to the
+  # prompt.
   (cd "$loop" && claude -p "Do one iteration of the research loop, as loop/program.md says." \
-    --permission-mode bypassPermissions "${claude[@]}") || failed=true
+    --permission-mode bypassPermissions "${claude[@]}" </dev/null) || failed=true
   status=0
   "$repo/loop/round" --run "$run" "${round[@]}" "$private" "$loop" "$@" || status=$?
   if ((status == 3)); then
