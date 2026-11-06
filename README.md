@@ -74,13 +74,14 @@ per commit, each listed in the
 commit stays:
 
 ```sh
-cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]
+cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev-only] [--run ID]
 ```
 
 It keeps a candidate that changes only the transpiler when the development
 score rises, or for a candidate of `fix(transpiler)` commits does not drop,
 and the validation score does not drop, and prints only the development
-results and the decision. Run it from this checkout, which the
+results and the decision. With `--dev-only` the development score alone
+decides. It also evaluates the held-out set, for the private log only. Run it from this checkout, which the
 loop agent cannot write, at a clean main.
 
 The loop agent works in its own clone, which keeps it away from the private
