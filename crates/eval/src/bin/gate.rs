@@ -82,10 +82,10 @@ fn log_dir(args: &Args) -> PathBuf {
 }
 
 /// Whether `id` can name a run's log directory: letters, digits, `.`, `-`
-/// and `_`, not starting with a dot.
+/// and `_`, starting with a letter or digit, so that it is neither hidden nor
+/// taken for an option.
 fn run_id(id: &str) -> bool {
-    !id.is_empty()
-        && !id.starts_with('.')
+    id.starts_with(|c: char| c.is_ascii_alphanumeric())
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
@@ -479,12 +479,25 @@ mod tests {
 
     #[test]
     fn a_run_id_that_could_leave_its_directory_is_a_usage_error() {
-        for id in ["", ".", "..", ".hidden", "a/b", "../loop", "a b"] {
+        for id in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "-baseline",
+            "_a",
+            "a/b",
+            "../loop",
+            "a b",
+        ] {
             assert!(
                 parsed(&["private", "base", "candidate", "--run", id]).is_none(),
                 "{id}"
             );
         }
+        // Refused for itself too, as loop/round and loop/run refuse it, not
+        // only because the parser takes it for an option.
+        assert!(!run_id("-baseline"));
     }
 
     #[test]

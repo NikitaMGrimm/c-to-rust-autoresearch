@@ -1,0 +1,68 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "5",
+        "10",
+        "2",
+        "1",
+        "0"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "3",
+        "7",
+        "4",
+        "2",
+        "0"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1",
+        "2",
+        "100",
+        "3",
+        "0"
+      ],
+      "name": "4",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "8",
+        "15",
+        "6",
+        "5",
+        "0"
+      ],
+      "name": "5",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "address_of",
+    "array",
+    "pointer",
+    "string",
+    "string_function",
+    "struct_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_synthetic/maxnmin_lib"
+}

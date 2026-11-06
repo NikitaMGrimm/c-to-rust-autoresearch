@@ -15,6 +15,11 @@ pub fn sets(private: &Path) -> [(&'static str, PathBuf); 3] {
     ]
 }
 
+/// The comment that starts the `main` intake writes for a library test case.
+/// The rest of the file is that `main`, which is not TRACTOR's code.
+pub const GENERATED_MAIN: &str =
+    "/* Added by the benchmark intake in place of TRACTOR's test runner. */";
+
 /// The secret seed in the private directory, from which every assignment and
 /// variant is derived.
 pub fn seed(private: &Path) -> Result<u64, String> {

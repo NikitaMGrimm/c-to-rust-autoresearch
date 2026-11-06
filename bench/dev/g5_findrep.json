@@ -1,0 +1,55 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "10",
+        "20",
+        "30",
+        "40",
+        "0"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "5",
+        "10",
+        "15",
+        "0",
+        "0"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "100",
+        "200",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "4",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "array",
+    "function_pointer",
+    "string",
+    "string_function"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_synthetic/findrep_lib"
+}

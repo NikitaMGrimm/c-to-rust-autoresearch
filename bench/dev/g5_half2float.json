@@ -1,0 +1,49 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "11122",
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "26915",
+        "0"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "44129",
+        "0"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "27299",
+        "0"
+      ],
+      "name": "4",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1494",
+        "-1.3916693e-10"
+      ],
+      "name": "5",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "array",
+    "union"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B01_organic/half2float_lib"
+}

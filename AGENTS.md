@@ -57,8 +57,9 @@ deleting code is welcome. A new dependency needs a reason.
    the same files from the same seed, and a change to the private sets needs
    a new manifest hash in `bench/README.md`.
 5. **Trusting C behaviour the sanitizers miss.** The bench tools keep an
-   input only when the sanitized C program runs the same twice and agrees with
-   `clang -O2` and `gcc -O2`. Generated inputs also avoid undefined behaviour
+   input only when the sanitized C program runs the same twice, reads no
+   uninitialised memory under MemorySanitizer and agrees with `clang -O2` and
+   `gcc -O2`. Generated inputs also avoid undefined behaviour
    these checks miss, such as numbers beyond `int` for `atoi`.
 
 ## Layout
@@ -71,7 +72,7 @@ deleting code is welcome. A new dependency needs a reason.
 | `crates/bench/` | Builds the sets: `intake`, `variants`, `fuzz`, `near-copies` |
 | `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |
-| `loop/` | Instructions for the loop agent, the setup of its checkout, the end of each round and its GitHub step |
+| `loop/` | Instructions for the loop agent, the setup of its checkout, the end of each round, its GitHub step and unattended runs |
 | `scripts/inspect` | A C or Rust file's warnings, lints and run result |
 | `docs/architecture.md` | How a program is evaluated and a commit judged |
 

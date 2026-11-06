@@ -1,0 +1,57 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "10",
+        "20",
+        "5",
+        "8",
+        "0"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "100",
+        "50",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "7",
+        "13",
+        "3",
+        "0",
+        "0"
+      ],
+      "name": "4",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "address_of",
+    "array",
+    "pointer",
+    "string",
+    "string_function",
+    "struct_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_synthetic/envy_lib"
+}

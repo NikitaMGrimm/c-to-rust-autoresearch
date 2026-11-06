@@ -77,7 +77,13 @@ fn shingled(dir: &Path) -> Result<BTreeMap<String, Shingles>, String> {
         .collect()
 }
 
+/// The shingles of a program's own code: the `main` intake generates for a
+/// library test case is the same in every such program, so it is left out.
 fn shingles(source: &str) -> Shingles {
+    let source = source
+        .split(bench::GENERATED_MAIN)
+        .next()
+        .unwrap_or_default();
     tokens(source)
         .windows(SHINGLE)
         .map(<[String]>::to_vec)
@@ -143,5 +149,16 @@ mod tests {
         assert_eq!(similarity(&program, &same_with_comment), 1.0);
         assert_eq!(similarity(&program, &other), 0.0);
         assert!(similarity(&shingles("a"), &shingles("a")) == 0.0);
+    }
+
+    #[test]
+    fn a_generated_main_does_not_count() {
+        let main = format!(
+            "\n{}\nint main(int argc, char *argv[]) {{ return f(argc); }}\n",
+            bench::GENERATED_MAIN
+        );
+        let one = shingles(&format!("int f(int x) {{ return x + 1; }}{main}"));
+        let other = shingles(&format!("while (y < z) y--;{main}"));
+        assert_eq!(similarity(&one, &other), 0.0);
     }
 }

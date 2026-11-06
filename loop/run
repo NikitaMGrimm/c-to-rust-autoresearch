@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Runs the research loop unattended for a fixed number of sessions: each is a
+# headless Claude Code session in a fresh loop checkout, followed by
+# loop/round --run. The run keeps its commits on its own branch run/RUN, which
+# starts from main with the transpiler before the loop's first rule. Run it by
+# this checkout's path, at a clean main. See docs/architecture.md.
+set -euo pipefail
+trap 'exit 2' ERR
+
+usage() {
+  cat >&2 <<'EOF'
+usage: loop/run [--dev-only] [--start COMMIT] [--model MODEL] [--effort LEVEL]
+                RUN SESSIONS PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+Makes the branch run/RUN unless it exists: main with crates/transpiler from
+COMMIT, by default the transpiler before the loop's first rule. Then, SESSIONS
+times, makes LOOP_DIR with loop/setup, runs one headless session in it with
+MODEL and LEVEL, and ends it with loop/round --run RUN, which gets --dev-only.
+LOOP_DIR must not exist. Stops after a session that failed, a round that
+failed, or an audit that found contact with the private sets, with that
+round's exit code or 2.
+EOF
+  exit 2
+}
+# The parent of 63a770c, the loop's first rule: a transpiler without rules.
+start=f5046cf47ee43cb4e08bcae901bcd3f72d68cdd1
+round=()
+claude=()
+while [[ ${1-} == --* ]]; do
+  if [[ $1 == --dev-only ]]; then
+    round+=(--dev-only)
+    shift
+    continue
+  fi
+  if (($# < 2)) || [[ -z $2 ]]; then
+    usage
+  fi
+  case $1 in
+    --start) start=$2 ;;
+    --model | --effort) claude+=("$1" "$2") ;;
+    *) usage ;;
+  esac
+  shift 2
+done
+if (($# < 4)) || [[ ! $2 =~ ^[1-9][0-9]*$ ]]; then
+  usage
+fi
+run=$1
+sessions=$2
+private=$3
+shift 3
+# Like loop/round, which checks it again.
+if [[ ! $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+  ! git check-ref-format "refs/heads/run/$run"; then
+  usage
+fi
+if [[ -e $1 ]]; then
+  echo "$1 already exists" >&2
+  exit 2
+fi
+loop=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")
+shift
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
+branch=run/$run
+
+if ! git -C "$repo" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
+  # Built in a separate index, so that this checkout stays as it is.
+  index=$(mktemp -d)
+  trap 'rm -rf "$index"' EXIT
+  export GIT_INDEX_FILE=$index/index
+  git -C "$repo" read-tree main
+  git -C "$repo" rm -rq --cached --ignore-unmatch crates/transpiler
+  git -C "$repo" read-tree --prefix=crates/transpiler/ "$start:crates/transpiler"
+  tree=$(git -C "$repo" write-tree)
+  unset GIT_INDEX_FILE
+  commit=$(git -C "$repo" commit-tree "$tree" -p main \
+    -m "chore(transpiler): start run $run from the transpiler of ${start:0:7}")
+  git -C "$repo" update-ref "refs/heads/$branch" "$commit" ""
+  # The first round's model usage counts from here, not from earlier sessions
+  # in a loop checkout at the same path.
+  mkdir -p "$repo/local/runs/$run"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$repo/local/runs/$run/since"
+  echo "run $run starts at $(git -C "$repo" log -1 --format='%h %s' "$branch")"
+fi
+
+"$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
+for ((session = 1; session <= sessions; session++)); do
+  echo "run $run: session $session of $sessions"
+  failed=false
+  # Permission prompts cannot be answered here. The deny rules and the hook
+  # that loop/setup wrote still apply. claude -p would add piped input to the
+  # prompt.
+  (cd "$loop" && claude -p "Do one iteration of the research loop, as loop/program.md says." \
+    --permission-mode bypassPermissions "${claude[@]}" </dev/null) || failed=true
+  status=0
+  "$repo/loop/round" --run "$run" "${round[@]}" "$private" "$loop" "$@" || status=$?
+  if ((status == 3)); then
+    # Without a commit, the round leaves the checkout as it was; the next
+    # session starts afresh all the same.
+    rm -rf -- "$loop"
+    "$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
+  elif ((status)); then
+    echo "run $run stopped after session $session: the round failed" >&2
+    exit "$status"
+  fi
+  if $failed; then
+    echo "run $run stopped after session $session: the session failed" >&2
+    exit 2
+  fi
+done
+echo "run $run: $sessions sessions done at $(git -C "$repo" log -1 --format='%h %s' "$branch")"
