@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: eval [BENCH_DIR] [--only TEXT] [--json FILE] [--jobs N] [--quiet]\n\
@@ -70,9 +70,17 @@ fn main() -> ExitCode {
         eprintln!("no .c programs in {}", args.bench.display());
         return ExitCode::FAILURE;
     }
+    // Holds the transpiler's build until the evaluation ends.
+    let scratch = match eval::Scratch::new("eval") {
+        Ok(scratch) => scratch,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let translator = match &args.translations {
         Some(dir) => eval::Translator::Existing(dir.clone()),
-        None => match eval::build_transpiler() {
+        None => match transpiler(&scratch) {
             Ok(path) => eval::Translator::Transpiler(path),
             Err(err) => {
                 eprintln!("{err}");
@@ -107,6 +115,13 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Builds this checkout's transpiler in the sandbox, in `scratch`.
+fn transpiler(scratch: &Path) -> Result<PathBuf, String> {
+    let workspace = scratch.join("workspace");
+    std::fs::create_dir(&workspace).map_err(|err| err.to_string())?;
+    eval::build_transpiler(Path::new(eval::REPO), &workspace)
 }
 
 fn report(records: &[eval::Record], quiet: bool) {

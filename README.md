@@ -33,6 +33,11 @@ scripts/inspect output.rs    # rustc and Clippy warnings, unsafe code, rustfmt, 
 `scripts/inspect` passes further arguments to the program and exits 1 when a
 tool reports an error.
 
+The loop agent writes the transpiler, so plain `cargo` commands such as
+`cargo test` leave it out, and `cargo run -p eval` builds and runs it in the
+sandbox. On a machine with the private sets, build, test or run it directly
+only in the sandbox; CI checks it with `--workspace`.
+
 ## Evaluation
 
 ```sh
@@ -41,7 +46,8 @@ cargo run -p eval -- --only g1 --json results.json
 cargo run -p eval -- --translations DIR   # existing translations DIR/NAME.rs
 ```
 
-The evaluator builds the transpiler and compares every `.c` program in the
+The evaluator builds the transpiler in the sandbox, from a copy of the
+checkout without its ignored files, and compares every `.c` program in the
 benchmark directory with its translation. A translation passes when it
 compiles as safe Rust and, with overflow checks on, prints the same standard
 output and exits with the same code as the C program on every input. Program
@@ -125,3 +131,12 @@ runs Claude through Claude Code, so its Claude chats are included; Codex runs
 are not. Claude Code names the transcript directory after the working
 directory, so a worktree has its own directory. `--since` and `--until` limit
 the sums to one loop iteration or another time window.
+
+## Acknowledgements
+
+For project work performed on bwUniCluster, the following acknowledgement applies:
+
+> This work was performed on the computational resource bwUniCluster funded
+> by the Ministry of Science, Research and the Arts Baden-Württemberg and the
+> Universities of the State of Baden-Württemberg, Germany, within the framework
+> program bwHPC.
