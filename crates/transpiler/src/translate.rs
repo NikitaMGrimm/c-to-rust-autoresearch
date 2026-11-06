@@ -3,9 +3,10 @@
 //! construct without a rule becomes a `compile_error!`, so the translation
 //! fails to build where it would otherwise behave differently.
 
+use crate::control::{self, CLoop, Label, Scope};
 use crate::stdio;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn kind(node: &Value) -> &str {
     node["kind"].as_str().unwrap_or("")
@@ -46,7 +47,7 @@ pub(crate) fn unsupported(what: &str) -> String {
 }
 
 /// Identifiers that Rust reserves, as a raw identifier where Rust allows one.
-fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     const KEYWORDS: &[&str] = &[
         "as", "async", "await", "box", "break", "const", "continue", "dyn", "else", "enum",
         "extern", "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "macro", "match",
@@ -79,6 +80,14 @@ pub(crate) struct Translator {
     /// Ids of the variables that are assigned or whose address is taken.
     mutated: HashSet<String>,
     pub(crate) uses_scanf: bool,
+    /// Rust loops and labelled blocks around the current statement.
+    pub(crate) scopes: Vec<Scope>,
+    /// The C loops around the current statement, innermost last.
+    pub(crate) loops: Vec<CLoop>,
+    /// The labels that a `goto` in the current statement can reach, by id.
+    pub(crate) labels: HashMap<String, Label>,
+    /// Numbers the labels and variables the translation introduces.
+    pub(crate) fresh: usize,
 }
 
 pub(crate) fn program(ast: &Value) -> String {
@@ -97,6 +106,10 @@ pub(crate) fn program(ast: &Value) -> String {
             .collect(),
         mutated: HashSet::new(),
         uses_scanf: false,
+        scopes: Vec::new(),
+        loops: Vec::new(),
+        labels: HashMap::new(),
+        fresh: 0,
     };
     let mut out = String::new();
     for decl in inner(ast) {
@@ -161,9 +174,7 @@ impl Translator {
             }
             _ => (None, stmts),
         };
-        for stmt in init {
-            self.stmt(stmt, 1, &mut out);
-        }
+        self.items(init, 1, &mut out);
         // The last `return` is the tail expression, and `main` returns 0 when
         // it runs off its end.
         match last {
@@ -176,7 +187,7 @@ impl Translator {
     }
 
     /// `name: Type` for a parameter, with `mut` if the function assigns it.
-    fn binding(&self, var: &Value) -> String {
+    pub(crate) fn binding(&self, var: &Value) -> String {
         let ty = c_type(var);
         let ty = rust_type(ty).map_or_else(|| unsupported(&format!("type {ty}")), String::from);
         format!(
@@ -197,14 +208,15 @@ impl Translator {
         }
     }
 
-    fn stmt(&mut self, stmt: &Value, depth: usize, out: &mut String) {
+    pub(crate) fn stmt(&mut self, stmt: &Value, depth: usize, out: &mut String) {
         let pad = "    ".repeat(depth);
+        if self.control(stmt, depth, out) {
+            return;
+        }
         match kind(stmt) {
             "CompoundStmt" => {
                 out.push_str(&format!("{pad}{{\n"));
-                for s in inner(stmt) {
-                    self.stmt(s, depth + 1, out);
-                }
+                self.items(inner(stmt), depth + 1, out);
                 out.push_str(&format!("{pad}}}\n"));
             }
             "DeclStmt" => {
@@ -240,7 +252,7 @@ impl Translator {
 
     /// An expression whose value C discards, where assignments and output
     /// calls have their Rust statement forms.
-    fn expr_stmt(&mut self, expr: &Value) -> String {
+    pub(crate) fn expr_stmt(&mut self, expr: &Value) -> String {
         let args = inner(expr);
         match (kind(expr), expr["opcode"].as_str()) {
             ("BinaryOperator", Some("=")) => {
@@ -252,6 +264,22 @@ impl Translator {
                     return unsupported(&format!("{op} on {ty}"));
                 }
                 format!("{} {op} {}", self.place(&args[0]), self.expr(&args[1]))
+            }
+            ("UnaryOperator", Some(op @ ("++" | "--"))) => {
+                let place = self.place(&args[0]);
+                let (assign, method) = if op == "++" {
+                    ("+=", "wrapping_add")
+                } else {
+                    ("-=", "wrapping_sub")
+                };
+                match c_type(&args[0]) {
+                    // Overflow is undefined for these, so Rust may check it.
+                    "int" | "long" | "long long" => format!("{place} {assign} 1"),
+                    // Unsigned types wrap, and narrower ones convert back
+                    // from `int`, which wraps on x86-64 too.
+                    ty if rust_type(ty).is_some() => format!("{place} = {place}.{method}(1)"),
+                    ty => unsupported(&format!("{op} on {ty}")),
+                }
             }
             ("CallExpr", _) => match callee(expr) {
                 Some("printf") => stdio::printf(self, &args[1..]),
@@ -285,6 +313,7 @@ impl Translator {
             "DeclRefExpr" => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
             "ParenExpr" => self.expr(&args[0]),
             "ImplicitCastExpr" | "CStyleCastExpr" => self.cast(expr),
+            _ if control::boolean(expr) => format!("i32::from({})", self.cond(expr)),
             "UnaryOperator" => match expr["opcode"].as_str() {
                 Some("-") if signed(c_type(expr)) => format!("-{}", self.operand(&args[0])),
                 Some("+") => self.expr(&args[0]),
@@ -323,7 +352,7 @@ impl Translator {
 
     /// An operand of an operator, in parentheses unless it is atomic, so the
     /// tree's grouping survives Rust's precedence rules.
-    fn operand(&mut self, expr: &Value) -> String {
+    pub(crate) fn operand(&mut self, expr: &Value) -> String {
         let text = self.expr(expr);
         if atomic(expr) {
             text

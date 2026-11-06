@@ -128,3 +128,117 @@ fn reports_unsupported_constructs_as_compile_errors() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_control_flow_and_goto() {
+    let c = r#"
+#include <stdio.h>
+
+int seen(int v) {
+    printf("seen %d\n", v);
+    return v;
+}
+
+int loops(int n) {
+    int sum = 0;
+    for (int i = 0; i < n; i++) {
+        if (i % 3 == 0)
+            continue;
+        for (int j = 0;; j++) {
+            if (j >= i)
+                break;
+            sum += j;
+        }
+        if (sum > 40)
+            break;
+    }
+    int k = n;
+    do {
+        k--;
+        if (k % 2)
+            continue;
+        sum += k;
+    } while (k > 0);
+    while (1) {
+        if (!(sum < 100) || n == 0)
+            break;
+        sum += n;
+    }
+    return sum;
+}
+
+int jumps(int x, int y) {
+    unsigned char wrap = 250;
+    while (x > 0 || y > 0) {
+        printf("x %d y %d\n", x, y);
+        if (x == 1 && y == 4) {
+            goto skip;
+        }
+    again:
+        if (x > 0) {
+            x--;
+        }
+    skip:
+        wrap++;
+        if (y == 0) {
+            continue;
+        }
+        y--;
+        for (int i = 0; i < 3; i++) {
+            if (i == x)
+                goto again;
+        }
+    }
+    if (x == 0) goto out;
+    printf("unreachable\n");
+out:
+    return wrap;
+}
+
+int main(void) {
+    int n = 0, m = 0;
+    scanf("%d %d", &n, &m);
+    int t = (n < m) + (n == m) * 2 - !n;
+    if (n > 5) {
+        printf("big\n");
+    } else if (seen(n) && seen(m) || seen(-1)) {
+        printf("both\n");
+    } else {
+        printf("neither\n");
+    }
+    printf("%d %d %d\n", t, loops(n), jumps(n, m));
+    return 0;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_control_flow_and_goto",
+        c,
+        &["0 0", "1 4", "2 5", "4 1", "7 3", "3 3", "0 9"],
+    );
+    assert!(rust.contains("__goto"), "{rust}");
+}
+
+#[test]
+fn rejects_jumps_it_cannot_translate() {
+    let dir = scratch("rejects_jumps_it_cannot_translate");
+    let rust = translate(
+        &dir,
+        "int main(void) { int x = 1; goto in; if (x) { in: x = 2; } return x; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: goto into a block")"#),
+        "{rust}"
+    );
+    // Declaring the inner x before the block would hide the outer one that
+    // the block assigns first.
+    let rust = translate(
+        &dir,
+        "int main(void) { int x = 1; { again: x = x + 1; int x = 5;\n\
+         if (x < 0) goto again; } return x; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: declaration in a block with labels")"#),
+        "{rust}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
