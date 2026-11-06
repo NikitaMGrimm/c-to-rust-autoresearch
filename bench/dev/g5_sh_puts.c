@@ -1,6 +1,5 @@
 void sh_puts(int num);
 
-
 #define STBDS_ASSERT assert
 
 #define _CRT_SECURE_NO_WARNINGS

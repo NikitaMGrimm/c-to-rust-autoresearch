@@ -3,7 +3,6 @@
 
 void siphash(int init);
 
-
 static size_t stbds_siphash_bytes(void *p, size_t len, size_t seed) {
   unsigned char *d = (unsigned char *)p;
   size_t i, j;

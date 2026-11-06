@@ -1,6 +1,5 @@
 void hm_geti(int num);
 
-
 #define STBDS_ASSERT assert
 
 #define _CRT_SECURE_NO_WARNINGS

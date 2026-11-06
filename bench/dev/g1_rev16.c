@@ -2,7 +2,6 @@
 
 uint32_t rev16(uint32_t a);
 
-
 uint32_t rev16(uint32_t a) {
     a = ((a & 0xAAAA) >> 1) | ((a & 0x5555) << 1);
     a = ((a & 0xCCCC) >> 2) | ((a & 0x3333) << 2);

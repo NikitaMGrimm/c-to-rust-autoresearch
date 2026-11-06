@@ -1,6 +1,5 @@
 int get_predict_func(int pfcn);
 
-
 typedef unsigned short btac1c_u16;
 typedef signed short btac1c_s16;
 typedef unsigned char btac1c_byte;

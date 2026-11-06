@@ -90,7 +90,7 @@ unions and function pointers, and a program's group is the highest feature
 anywhere in its file, although its test calls one function.
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`86265c43267922eec64502932aa0b6f13ef8693e2bdf5c4cc633ddba14de39e3`.
+`a51c42d4741cf4fddc08477d82c8a75e15b4d3bd72f34638f8e8abca900bc7e4`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.

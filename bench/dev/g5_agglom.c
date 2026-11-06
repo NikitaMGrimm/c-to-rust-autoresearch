@@ -20,7 +20,6 @@ double agglom(
         float f13_2, float f13_3, float f13_4
         );
 
-
 typedef enum {
     C2_TYPE_CIRCLE,
     C2_TYPE_AABB,

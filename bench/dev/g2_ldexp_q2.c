@@ -1,6 +1,5 @@
 float ldexp_q2(float y, int exp_q2);
 
-
 float ldexp_q2(float y, int exp_q2) {
     static const float g_expfrac[4] = {9.31322575e-10f, 7.83145814e-10f,
                                        6.58544508e-10f, 5.53767716e-10f};

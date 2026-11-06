@@ -631,7 +631,8 @@ fn tokens(text: &str) -> Vec<String> {
 }
 
 /// The library's source with each of its own headers in place of the
-/// `#include` that names it, so that the program is a single file.
+/// `#include` that names it, so that the program is a single file. Lines end
+/// in `\n`, also where a file of the library ends them in `\r\n`.
 fn inline_headers(c_file: &Path, include: &Path) -> Result<String, String> {
     let headers = if include.exists() {
         eval::entries(include)?
@@ -648,15 +649,19 @@ fn inline_headers(c_file: &Path, include: &Path) -> Result<String, String> {
                     .iter()
                     .find(|header| header.file_name() == Some(name))
                     .ok_or("multiple_files")?;
-                let text = read(header)?;
-                if text.lines().any(|line| line.contains("#include \"")) {
-                    return Err("multiple_files".to_owned());
+                for line in read(header)?.lines() {
+                    if line.contains("#include \"") {
+                        return Err("multiple_files".to_owned());
+                    }
+                    source += line;
+                    source.push('\n');
                 }
-                source += &text;
             }
-            None => source += line,
+            None => {
+                source += line;
+                source.push('\n');
+            }
         }
-        source.push('\n');
     }
     Ok(source)
 }
@@ -1263,7 +1268,7 @@ harness! {
             ),
             (
                 "test_case/include/scale.h",
-                "#ifndef SCALE_H\n#define SCALE_H\ndouble scale(int factor, double value);\n#endif\n",
+                "#ifndef SCALE_H\r\n#define SCALE_H\r\ndouble scale(int factor, double value);\r\n#endif\r\n",
             ),
             (
                 "test_case/src/scale.c",
@@ -1323,6 +1328,7 @@ harness! {
         let source = source.unwrap();
         assert!(source.contains("#define SCALE_H\n"));
         assert!(!source.contains("#include \"scale.h\""));
+        assert!(!source.contains('\r'));
         assert!(source.ends_with(&main_for(&parse_runner(SCALE_RUNNER, "scale").unwrap())));
     }
 

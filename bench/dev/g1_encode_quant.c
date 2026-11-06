@@ -1,6 +1,5 @@
 int encode_quant(int uni, int step, int pred, int tgt, int tgt2, int lsbit);
 
-
 int encode_quant(int uni, int step, int pred, int tgt, int tgt2, int lsbit) {
     int uni1, uni2;
     int diff, p0, p1, p2, p3, d0, d1, d2, d3;

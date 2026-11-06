@@ -1,6 +1,5 @@
 int div_euclid(int v1, int v2);
 
-
 int div_euclid(int v1, int v2) {
     if (v2 == 0) {
         return 0;
