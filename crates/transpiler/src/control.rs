@@ -3,7 +3,9 @@
 //! segment to run next, so a `goto` to one of its labels sets the segment and
 //! continues that loop.
 
-use crate::translate::{Translator, c_type, ident, inner, kind, rust_type, unsupported};
+use crate::translate::{
+    Translator, c_type, ident, inner, kind, null_pointer, rust_type, unsupported, value_type, zero,
+};
 use serde_json::Value;
 
 /// A Rust loop or labelled block around the statement being translated.
@@ -86,6 +88,17 @@ impl Translator {
         let expr = strip_parens(expr);
         let args = inner(expr);
         match (kind(expr), expr["opcode"].as_str()) {
+            // A pointer equals only null, whatever the integer constant.
+            ("BinaryOperator", Some(op @ ("==" | "!=")))
+                if null_pointer(&args[0]) || null_pointer(&args[1]) =>
+            {
+                let pointer = if null_pointer(&args[1]) {
+                    &args[0]
+                } else {
+                    &args[1]
+                };
+                self.nonzero(pointer, op)
+            }
             ("BinaryOperator", Some(op)) if comparison(op) => {
                 match (rust_type(c_type(&args[0])), rust_type(c_type(&args[1]))) {
                     (Some(a), Some(b)) if a == b => {
@@ -124,8 +137,12 @@ impl Translator {
         }
     }
 
-    /// Compares an integer to zero.
+    /// Compares an integer to zero, or a pointer to null, with `==` or `!=`.
     fn nonzero(&mut self, expr: &Value, op: &str) -> String {
+        if c_type(expr) == "char *" {
+            let test = if op == "==" { "is_none" } else { "is_some" };
+            return format!("{}.{test}()", self.operand(expr));
+        }
         if rust_type(c_type(expr)).is_none() {
             return unsupported(&format!("condition of type {}", c_type(expr)));
         }
@@ -431,14 +448,14 @@ impl Translator {
         ));
     }
 
-    /// The declaration before a block's segments of an integer variable
+    /// The declaration before a block's segments of a variable
     /// declared in it, and the assignment of its initialiser where it was
     /// declared. None if declaring it earlier would hide another variable
     /// of the same name that the block uses.
     fn hoist(&mut self, var: &Value, block: &[Value]) -> Option<(String, Option<String>)> {
         if kind(var) != "VarDecl"
             || !var["storageClass"].is_null()
-            || rust_type(c_type(var)).is_none()
+            || value_type(c_type(var)).is_none()
         {
             return None;
         }
@@ -447,13 +464,14 @@ impl Translator {
             return None;
         }
         let binding = self.binding(var);
+        let zero = zero(c_type(var));
         match inner(var).first() {
             Some(init) if var["init"].is_string() => {
                 let binding = binding.strip_prefix("mut ").unwrap_or(&binding);
                 let assign = format!("{} = {}", ident(name), self.expr(init));
-                Some((format!("let mut {binding} = 0;"), Some(assign)))
+                Some((format!("let mut {binding} = {zero};"), Some(assign)))
             }
-            _ => Some((format!("let {binding} = 0;"), None)),
+            _ => Some((format!("let {binding} = {zero};"), None)),
         }
     }
 }

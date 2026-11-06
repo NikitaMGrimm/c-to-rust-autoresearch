@@ -42,6 +42,35 @@ pub(crate) fn rust_type(c: &str) -> Option<&'static str> {
     })
 }
 
+/// The Rust type of a C type that the translation can hold in a variable: an
+/// integer, or a `char *` into a string literal, which the program can only
+/// read. Such a pointer is `None` for null and otherwise the literal's bytes
+/// from where it points, through the zero that ends the array.
+pub(crate) fn value_type(c: &str) -> Option<&'static str> {
+    match c {
+        "char *" => Some("Option<&'static [u8]>"),
+        c => rust_type(c),
+    }
+}
+
+/// The value of an uninitialised variable of a C type that `value_type`
+/// translates, as C gives the program no value to read.
+pub(crate) fn zero(c: &str) -> &'static str {
+    if c == "char *" { "None" } else { "0" }
+}
+
+/// Whether `expr` is a null pointer constant converted to a pointer, such as
+/// `NULL`. Clang converts only null pointer constants with `NullToPointer`.
+pub(crate) fn null_pointer(expr: &Value) -> bool {
+    match (kind(expr), expr["castKind"].as_str()) {
+        ("ImplicitCastExpr" | "CStyleCastExpr", Some("NullToPointer")) => true,
+        ("ParenExpr", _) | ("ImplicitCastExpr" | "CStyleCastExpr", Some("NoOp" | "BitCast")) => {
+            inner(expr).first().is_some_and(null_pointer)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn unsupported(what: &str) -> String {
     format!("compile_error!({:?})", format!("unsupported C: {what}"))
 }
@@ -86,7 +115,8 @@ pub(crate) struct Translator {
     functions: HashSet<String>,
     /// Ids of the variables that are assigned or whose address is taken.
     mutated: HashSet<String>,
-    pub(crate) uses_scanf: bool,
+    /// The parts of the `crt` runtime the translation calls, in first use.
+    runtime: Vec<&'static str>,
     /// Rust loops and labelled blocks around the current statement.
     pub(crate) scopes: Vec<Scope>,
     /// The C loops around the current statement, innermost last.
@@ -112,7 +142,7 @@ pub(crate) fn program(ast: &Value) -> String {
             .filter_map(|f| f["name"].as_str().map(String::from))
             .collect(),
         mutated: HashSet::new(),
-        uses_scanf: false,
+        runtime: Vec::new(),
         scopes: Vec::new(),
         loops: Vec::new(),
         labels: HashMap::new(),
@@ -137,18 +167,29 @@ pub(crate) fn program(ast: &Value) -> String {
             ident("main")
         ));
     }
-    if translator.uses_scanf {
-        out.push('\n');
-        out.push_str(stdio::SCANF_RUNTIME);
+    if !translator.runtime.is_empty() {
+        out.push_str(
+            "\n/// C library functions that Rust's standard library does not match.\nmod crt {\n",
+        );
+        out.push_str(&translator.runtime.join("\n"));
+        out.push_str("}\n");
     }
     out
 }
 
 impl Translator {
+    /// Emits `part` of the runtime into the translation.
+    pub(crate) fn require(&mut self, part: &'static str) {
+        if !self.runtime.contains(&part) {
+            self.runtime.push(part);
+        }
+    }
+
     fn function(&mut self, function: &Value) -> String {
         let name = function["name"].as_str().unwrap_or("");
         let fn_type = function["type"]["qualType"].as_str().unwrap_or("");
         let ret = fn_type.split('(').next().unwrap_or("").trim();
+        let ret = ret.trim_start_matches("const ");
         let params: Vec<&Value> = inner(function)
             .iter()
             .filter(|n| kind(n) == "ParmVarDecl")
@@ -172,7 +213,7 @@ impl Translator {
         out.push(')');
         match ret {
             "void" => {}
-            ret => match rust_type(ret) {
+            ret => match value_type(ret) {
                 Some(ty) => out.push_str(&format!(" -> {ty}")),
                 None => out.push_str(&format!(" -> {}", unsupported(&format!("type {ret}")))),
             },
@@ -200,7 +241,7 @@ impl Translator {
     /// `name: Type` for a parameter, with `mut` if the function assigns it.
     pub(crate) fn binding(&self, var: &Value) -> String {
         let ty = c_type(var);
-        let ty = rust_type(ty).map_or_else(|| unsupported(&format!("type {ty}")), String::from);
+        let ty = value_type(ty).map_or_else(|| unsupported(&format!("type {ty}")), String::from);
         format!(
             "{}{}: {ty}",
             self.mut_(var),
@@ -259,7 +300,7 @@ impl Translator {
         // An uninitialised C variable has no value to read, so any value will do.
         let init = match inner(var).first() {
             Some(init) if var["init"].is_string() => self.expr(init),
-            _ => "0".to_string(),
+            _ => zero(c_type(var)).to_string(),
         };
         format!("let {} = {init};", self.binding(var))
     }
@@ -365,6 +406,17 @@ impl Translator {
         let operand = &inner(expr)[0];
         match expr["castKind"].as_str().unwrap_or("") {
             "LValueToRValue" | "NoOp" | "FunctionToPointerDecay" => self.expr(operand),
+            "NullToPointer" | "BitCast" if null_pointer(expr) && c_type(expr) == "char *" => {
+                "None".to_string()
+            }
+            "ArrayToPointerDecay" => match stdio::string_array(operand) {
+                Some(bytes) if std::str::from_utf8(&bytes).is_ok() => {
+                    format!("Some({}.as_slice())", stdio::byte_string(&bytes))
+                }
+                // `%s` prints the bytes as Rust text.
+                Some(_) => unsupported("string literal that is not UTF-8"),
+                None => unsupported("cast ArrayToPointerDecay"),
+            },
             "IntegralCast" => match (rust_type(c_type(operand)), rust_type(c_type(expr))) {
                 (Some(from), Some(to)) if from == to => self.expr(operand),
                 (Some(_), Some(to)) => format!("{} as {to}", self.operand(operand)),

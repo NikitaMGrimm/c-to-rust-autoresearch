@@ -336,3 +336,83 @@ int main(void) {
     );
     assert!(rust.contains("as u32"), "{rust}");
 }
+
+#[test]
+fn translates_pointers_to_string_literals() {
+    let c = r#"
+#include <stdio.h>
+
+void show(const char *line) {
+    if (line != NULL && !(line == 0)) {
+        printf("[%s] %s\n", line, "lit");
+    } else if (!line) {
+        printf("null %d\n", line == NULL);
+    }
+}
+
+const char *pick(int n) {
+    if (n > 2)
+        return "big, 100%";
+    if (n)
+        return ("h\303\251llo {}");
+    return (char *)0;
+}
+
+int main(void) {
+    int n = 0;
+    scanf("%d", &n);
+    char *p;
+    char *none = 0;
+    p = "a\0b";
+    show(p);
+    show(none);
+    show(pick(n));
+    if (n < 0) {
+        goto skip;
+    }
+    show("not skipped");
+skip:;
+    const char *late = pick(n + 1);
+    if (late)
+        show(late);
+    return (p != NULL) + (pick(n) == NULL);
+}
+"#;
+    let rust = same_behaviour(
+        "translates_pointers_to_string_literals",
+        c,
+        &["0", "1", "5", "-1", ""],
+    );
+    assert!(rust.contains("Option<&'static [u8]>"), "{rust}");
+}
+
+#[test]
+fn rejects_string_pointer_uses_it_cannot_translate() {
+    let dir = scratch("rejects_string_pointer_uses_it_cannot_translate");
+    // C pads to a width in bytes, Rust in characters.
+    let rust = translate(
+        &dir,
+        "#include <stdio.h>\nint main(void) { printf(\"%5s\\n\", \"\\303\\251\"); return 0; }\n",
+    );
+    assert!(
+        rust.contains(
+            r#"compile_error!("unsupported C: printf conversion %s with flags or a width")"#
+        ),
+        "{rust}"
+    );
+    let rust = translate(&dir, "int main(void) { char *p = \"\\xff\"; return 0; }\n");
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: string literal that is not UTF-8")"#),
+        "{rust}"
+    );
+    // Equal literals may or may not share an address in C.
+    let rust = translate(
+        &dir,
+        "int main(void) { char *p = \"a\", *q = \"a\"; return p == q; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: comparison of char *")"#),
+        "{rust}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

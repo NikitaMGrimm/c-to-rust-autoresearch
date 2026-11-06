@@ -83,3 +83,26 @@ Entry format, newest last:
 - Motivation: `g1_010_integer_overflow` reads a character with
   `fscanf(stdin, "%c", ...)`, starts from `' '` and prints with `%02x`
 - Changes: extends R1's `printf` and `scanf`
+
+## R4: pointers to string literals
+
+- C: `char *` and `const char *` variables, parameters and return values
+  whose values are string literals or null pointer constants such as `NULL`,
+  `0` or `(char *)0`, uninitialised ones as null; `==` and `!=` against a
+  null pointer constant and a pointer as a condition; `printf`'s `%s`
+  without flags or a width
+- Rust: `Option<&'static [u8]>`, `None` for null and otherwise the bytes of
+  the literal's array through its final zero, `Some(b"...\x00".as_slice())`;
+  the tests are `is_none()` and `is_some()`; `%s` is `{}` of
+  `crt::c_str(...)`, a runtime part that takes the bytes before the first
+  zero and panics on null, for which C has no string. The `crt` runtime now
+  holds only the parts a translation calls. Literals that are not UTF-8,
+  `%s` with flags or a width, which C counts in bytes and Rust in
+  characters, and any other comparison of pointers stay unsupported; so does
+  every write through a pointer, which leaves the literals read-only
+- Motivation: `g2_011_uninit_char_ptr` and
+  `g2_019_integer_overflow_char_max_multiply` print through a
+  `printLine(const char *)` that tests its argument against `NULL`, and the
+  first assigns a literal to an uninitialised `char *`
+- Changes: extends R1's types and `printf`, and R2's conditions and the
+  variables declared before a block with labels

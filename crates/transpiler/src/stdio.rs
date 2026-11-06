@@ -22,6 +22,10 @@ pub(crate) fn printf(t: &mut Translator, args: &[Value]) -> String {
     for (value, ty) in values.iter().zip(types) {
         call.push_str(", ");
         match (c_type(value), ty) {
+            ("char *", "char *") => {
+                t.require(C_STR_RUNTIME);
+                call.push_str(&format!("crt::c_str({})", t.expr(value)));
+            }
             (arg, ty) if arg == ty => call.push_str(&t.expr(value)),
             // glibc reads the bits of an int as unsigned, as Rust's `as` does.
             ("int", "unsigned int") => call.push_str(&format!("{} as u32", t.operand(value))),
@@ -67,6 +71,12 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                 }
                 match chars.next() {
                     Some('%') if !(left || plus || zero) && width.is_empty() => out.push('%'),
+                    // A width counts bytes in C but characters in Rust.
+                    Some('s') if !(left || plus || zero) && width.is_empty() => {
+                        out.push_str("{}");
+                        types.push("char *");
+                    }
+                    Some('s') => return Err("printf conversion %s with flags or a width".into()),
                     Some(conversion @ ('d' | 'i' | 'u' | 'o' | 'x' | 'X')) => {
                         let (ty, radix) = match conversion {
                             'd' | 'i' => ("int", ""),
@@ -132,7 +142,7 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
         let rust = rust_type(ty).unwrap_or_default();
         arms.push_str(&format!("{i} => {} = __value as {rust}, ", t.place(place)));
     }
-    t.uses_scanf = true;
+    t.require(SCANF_RUNTIME);
     format!(
         "crt::scanf({}, |__arg, __value| match __arg {{ {arms}_ => {{}} }})",
         byte_string(&format),
@@ -177,16 +187,28 @@ pub(crate) fn is_stdin(expr: &Value) -> bool {
 /// library functions stop reading it, as with the format `"a\0b"`.
 fn string_literal(expr: &Value) -> Option<Vec<u8>> {
     let mut expr = expr;
-    while matches!(kind(expr), "ImplicitCastExpr" | "ParenExpr") {
+    while kind(expr) == "ImplicitCastExpr" {
         expr = inner(expr).first()?;
     }
-    if kind(expr) != "StringLiteral" {
-        return None;
-    }
-    let mut bytes = unescape(expr["value"].as_str()?)?;
+    let mut bytes = string_array(expr)?;
     if let Some(end) = bytes.iter().position(|&byte| byte == 0) {
         bytes.truncate(end);
     }
+    Some(bytes)
+}
+
+/// The bytes of the array that a narrow string literal makes, through the
+/// zero that C adds at its end.
+pub(crate) fn string_array(expr: &Value) -> Option<Vec<u8>> {
+    let mut expr = expr;
+    while kind(expr) == "ParenExpr" {
+        expr = inner(expr).first()?;
+    }
+    if kind(expr) != "StringLiteral" || !c_type(expr).starts_with("char[") {
+        return None;
+    }
+    let mut bytes = unescape(expr["value"].as_str()?)?;
+    bytes.push(0);
     Some(bytes)
 }
 
@@ -241,7 +263,7 @@ fn unescape(literal: &str) -> Option<Vec<u8>> {
 }
 
 /// A Rust byte string literal holding `bytes`.
-fn byte_string(bytes: &[u8]) -> String {
+pub(crate) fn byte_string(bytes: &[u8]) -> String {
     let mut out = String::from("b\"");
     for &byte in bytes {
         out.extend(std::ascii::escape_default(byte).map(char::from));
@@ -250,10 +272,19 @@ fn byte_string(bytes: &[u8]) -> String {
     out
 }
 
-/// Emitted once into a translation that calls `scanf`.
-pub(crate) const SCANF_RUNTIME: &str = r#"/// C library functions that Rust's standard library does not match.
-mod crt {
-    use std::io::BufRead;
+/// The part of the `crt` module that `printf`'s `%s` calls. The strings come
+/// from literals, which the translation takes only when they are UTF-8.
+pub(crate) const C_STR_RUNTIME: &str = r#"    /// The text of a C string, its bytes before the zero that ends it. C
+    /// has no string at a null pointer.
+    pub fn c_str(s: Option<&[u8]>) -> &str {
+        let s = s.expect("null pointer as a C string");
+        let end = s.iter().position(|&byte| byte == 0).unwrap_or(s.len());
+        std::str::from_utf8(&s[..end]).expect("C string that is not UTF-8")
+    }
+"#;
+
+/// The part of the `crt` module that `scanf` calls.
+pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
 
     /// C's `isspace` in the C locale.
     fn is_space(byte: u8) -> bool {
@@ -345,5 +376,4 @@ mod crt {
         }
         stored
     }
-}
 "#;
