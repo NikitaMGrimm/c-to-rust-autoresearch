@@ -271,3 +271,48 @@ Entry format, newest last:
   cells, so a program can now write through a pointer and to the variable it
   points to; extends R1's local variables, assignments and `scanf`, R2's
   variables declared before a block with labels and R9's `sizeof`
+
+## R11: char arrays and the string functions that write them
+
+- C: local arrays of `char` of a fixed length, perhaps initialised with a
+  string literal or a list, or of a variable length that is a variable's
+  name; `a[i]` of such an array with an integer index, read and assigned,
+  and `p[i]` of a `char *`, read; such an array as a `char *` or `const char
+  *`, passed to the program's own functions, `printf`'s `%s`, `atoi`,
+  `strlen` or as a source; `fgets(a, n, stdin)`, `memset(a, c, n)`,
+  `strcpy(a, src)` and `strncpy(a, src, n)` into such an array, their
+  results discarded or, for `fgets`, compared with null; `atoi`, `atol`,
+  `atoll` and `strlen` of any `char *`
+- Rust: the array is `&mut [u8]` borrowing `[0; N]`, so a constant index out
+  of bounds panics when it runs; a literal copies its bytes in, without the
+  final zero when the array has no room for it, and a list sets the listed
+  elements; a variable length is `&mut vec![0; n as usize]`. An element reads
+  `a[i] as i8` and is assigned `a[i] = (v) as u8`, a `char *` element reads
+  `p.expect("null pointer dereference")[i] as i8`, and the array as a
+  pointer is `Some(&a[..])`. A `char *` variable is now `Option<&[u8]>`, so it
+  can borrow a local array, and the `char *` parameters and return value of a
+  function all borrow for one lifetime, `fn f<'a>(s: Option<&'a [u8]>) ->
+  Option<&'a [u8]>`, so a function may return a parameter or a literal, but
+  not its own array. The writing functions are `crt::fgets`, `crt::memset`,
+  `crt::strcpy` and `crt::strncpy` on `&mut a[..]`: `fgets` reads standard
+  input with `scanf`'s buffer, up to and including a newline and at most `n
+  - 1` bytes, stores a zero after them, and returns `None`, leaving the array
+  as it was, for `n` below 1 or input that ends before a byte, and otherwise
+  `Some(())`; `n` of 1 stores only the zero, as glibc does. `crt::atoi` is
+  `crt::strtol` in base 10 converted `as i32`, as glibc defines it, and
+  `atol` and `atoll` are `crt::strtol`; R7's runtime now takes a string of any
+  lifetime. Reading or writing past an array panics. Writing to the array
+  while a `char *` borrows it fails to compile; so does using the result of
+  `fgets` as a pointer. Writing through a `char *`, compound assignments and
+  `++`/`--` on a `char` element, `char` arrays that are static, global or in
+  a block with labels, other streams, and `memset` or `strcpy` into arrays of
+  other types stay unsupported
+- Motivation: `g2_009_stack_buffer_overflow` and
+  `g2_017_signed_length_confusion` read a number with `fgets` into a
+  `char[14]` initialised with `""` and `atoi`; the second also fills a
+  `char[100]` with `memset`, terminates it by assigning `'\0'` to an
+  element, copies it with `strncpy` and passes the array to a `const char *`
+  parameter
+- Changes: extends R4's `char *`, which held only literals and arguments with
+  the `'static` lifetime, R7's `strtol` runtime and R10's local arrays, whose
+  variable-length form is now borrowed as a slice too

@@ -395,7 +395,7 @@ skip:;
         c,
         &["0", "1", "5", "-1", ""],
     );
-    assert!(rust.contains("Option<&'static [u8]>"), "{rust}");
+    assert!(rust.contains("Option<&'a [u8]>"), "{rust}");
 }
 
 #[test]
@@ -991,7 +991,113 @@ int main(void) {
         c,
         &["", "0", "1 5", "3 1 2 3", "7 -1 -2", "50"],
     );
-    assert!(rust.contains("Vec<std::cell::Cell<i32>>"), "{rust}");
+    assert!(rust.contains("&vec![std::cell::Cell::new(0); "), "{rust}");
+}
+
+#[test]
+fn translates_char_arrays_and_the_string_functions_that_write_them() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void show(const char *line) {
+    if (line != NULL) {
+        printf("[%s] %d\n", line, (int)strlen(line));
+    }
+}
+
+/* Returns one of its arguments, so both borrow the same arrays. */
+const char *longer(const char *a, const char *b) {
+    return strlen(a) >= strlen(b) ? a : b;
+}
+
+int main(void) {
+    char line[8] = "";
+    char word[6] = "ab";
+    char full[2] = "xy";
+    char list[5] = {'o', 'k', 0};
+    int n = 3;
+    char vla[n];
+    int total = 0;
+    show(word);
+    show(list);
+    printf("%d %d %d\n", full[0], full[1], word[5]);
+    while (fgets(line, sizeof(line), stdin) != NULL) {
+        total += atoi(line);
+        printf("%d %d <%s>\n", line[0], (int)atol(line), line);
+    }
+    printf("total %d\n", total);
+    if (fgets(line, 1, stdin) != NULL) {
+        printf("n=1 stores %d\n", line[0]);
+    }
+    if (fgets(line, 0, stdin) == NULL) {
+        printf("n=0 fails\n");
+    }
+    memset(word, 'z', 3);
+    word[1] = 'Y';
+    show(word);
+    strncpy(line, "abcdef", 3);
+    line[3] = '\0';
+    show(line);
+    strncpy(line, "q", 5);
+    printf("%d %d %d\n", line[0], line[1], line[4]);
+    strcpy(line, "copied");
+    show(longer(line, "lit"));
+    show(longer("a much longer literal", line));
+    vla[0] = 'v';
+    vla[1] = 0;
+    show(vla);
+    const char *p = line;
+    printf("%d %d\n", p[2], *p);
+    return line[0] - 'c';
+}
+"#;
+    let rust = same_behaviour(
+        "translates_char_arrays_and_the_string_functions_that_write_them",
+        c,
+        &[
+            "",
+            "12\n-3\n",
+            "  42 tail\nlonger than the buffer\n7",
+            "5\nx",
+        ],
+    );
+    // A literal copies into the array's bytes, which fgets fills in place.
+    assert!(rust.contains("copy_from_slice(b\"ab\")"), "{rust}");
+    assert!(rust.contains("crt::fgets(&mut line[..], "), "{rust}");
+    // Every `char *` of a function borrows for one lifetime.
+    assert!(
+        rust.contains(
+            "fn longer<'a>(a: Option<&'a [u8]>, b: Option<&'a [u8]>) -> Option<&'a [u8]>"
+        ),
+        "{rust}"
+    );
+}
+
+#[test]
+fn reads_with_fgets_and_scanf_from_one_input() {
+    let c = r#"
+#include <stdio.h>
+
+int main(void) {
+    char rest[16];
+    int x = 0;
+    scanf("%d", &x);
+    if (fgets(rest, 16, stdin) != NULL) {
+        printf("%d <%s>\n", x, rest);
+    }
+    if (fgets(rest, 16, stdin) != NULL) {
+        printf("<%s>\n", rest);
+    }
+    return 0;
+}
+"#;
+    same_behaviour(
+        "reads_with_fgets_and_scanf_from_one_input",
+        c,
+        &["7 after\nnext\n", "7\n", "9"],
+    );
 }
 
 #[test]
@@ -1007,8 +1113,19 @@ fn rejects_array_uses_it_cannot_translate() {
             "int main(void) { int a[2][3]; return 0; }",
             "type int[2][3]",
         ),
-        // A `char *` holds a string literal's bytes.
-        ("int main(void) { char s[4]; return 0; }", "type char[4]"),
+        // A `char *` only reads the bytes it points to.
+        (
+            "#include <stdio.h>\nvoid f(char *s) { fgets(s, 4, stdin); }",
+            "fgets into anything but a local char array",
+        ),
+        (
+            "#include <stdio.h>\n#include <string.h>\nint main(void) { char s[4]; char *p = s; strcpy(p, \"ab\"); return 0; }",
+            "strcpy into anything but a local char array",
+        ),
+        (
+            "#include <stdio.h>\nint main(void) { char s[4]; fgets(s, 4, stderr); return 0; }",
+            "fgets from a stream other than stdin",
+        ),
         (
             "int main(void) { int a[2]; if (a[0]) goto end; int b[2]; end: return 0; }",
             "declaration in a block with labels",

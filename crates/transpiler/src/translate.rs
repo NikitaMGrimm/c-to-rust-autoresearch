@@ -64,18 +64,18 @@ pub(crate) fn is_bool(c: &str) -> bool {
 }
 
 /// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, a `bool`, a `char *` into a string literal or a program
-/// argument, a `char **` into `main`'s `argv`, a pointer to an integer
-/// variable or array element, or the result of `div`. A pointer is `None`
-/// for null. A `char *` is otherwise the string's bytes from where it
-/// points, through the zero that ends the array, and a pointer to an integer
-/// is the cells from the one it points to through the end of its array, a
-/// variable being an array of one. A `char **` is the pointers from where it
-/// points through the null that ends `argv`.
+/// integer, a `bool`, a `char *` into a string literal, a program argument
+/// or a local `char` array, a `char **` into `main`'s `argv`, a pointer to
+/// an integer variable or array element, or the result of `div`. A pointer
+/// is `None` for null. A `char *` is otherwise the bytes from where it
+/// points through the end of its array, and a pointer to an integer is the
+/// cells from the one it points to through the end of its array, a variable
+/// being an array of one. A `char **` is the pointers from where it points
+/// through the null that ends `argv`.
 pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
         c if is_bool(c) => Some("bool".to_string()),
-        "char *" => Some("Option<&'static [u8]>".to_string()),
+        "char *" => Some("Option<&[u8]>".to_string()),
         "char **" => Some("&'static [Option<&'static [u8]>]".to_string()),
         c => match c.strip_suffix(" *") {
             Some(pointee) => cell_type(pointee).map(|ty| format!("Option<&[{CELL}<{ty}>]>")),
@@ -103,6 +103,21 @@ fn cell_type(c: &str) -> Option<&'static str> {
 fn array_type(c: &str) -> Option<(&str, &str)> {
     let (element, length) = c.strip_suffix(']')?.rsplit_once('[')?;
     Some((element.trim_end(), length))
+}
+
+/// Whether `c` is an array of `char`, which the translation holds as bytes.
+fn char_array(c: &str) -> bool {
+    array_type(c).is_some_and(|(element, _)| element == "char")
+}
+
+/// The Rust type of a parameter or return value of the C type `c`. Every
+/// `char *` of a function borrows for its lifetime `'a`, so one it returns
+/// may come from a parameter, a string literal or an argument.
+fn signature_type(c: &str) -> Option<String> {
+    match c {
+        "char *" => Some("Option<&'a [u8]>".to_string()),
+        c => value_type(c),
+    }
 }
 
 /// The Rust type of the members of `div_t`, `ldiv_t` or `lldiv_t`, which
@@ -292,7 +307,8 @@ impl Translator {
         self.cells.clear();
         collect_pointed_to(body, &mut self.cells);
 
-        let mut out = format!("fn {}(", ident(name));
+        let borrows = ret == "char *" || params.iter().any(|p| c_type(p) == "char *");
+        let mut out = format!("fn {}{}(", ident(name), if borrows { "<'a>" } else { "" });
         let argv = ["int", "char **"];
         if name == "main" && !params.is_empty() && !params.iter().map(|p| c_type(p)).eq(argv) {
             out.push_str(&format!(
@@ -310,7 +326,10 @@ impl Translator {
                 format!("    let {name} = {CELL}::new({name});\n")
             })
             .collect();
-        let params: Vec<String> = params.iter().map(|p| self.binding(p)).collect();
+        let params: Vec<String> = params
+            .iter()
+            .map(|p| self.typed_binding(p, signature_type(c_type(p))))
+            .collect();
         out.push_str(&params.join(", "));
         out.push(')');
         match ret {
@@ -322,7 +341,7 @@ impl Translator {
                     unsupported(&format!("return type {ret}"))
                 ));
             }
-            ret => match value_type(ret) {
+            ret => match signature_type(ret) {
                 Some(ty) => out.push_str(&format!(" -> {ty}")),
                 None => out.push_str(&format!(" -> {}", unsupported(&format!("type {ret}")))),
             },
@@ -350,8 +369,12 @@ impl Translator {
 
     /// `name: Type` for a parameter, with `mut` if the function assigns it.
     pub(crate) fn binding(&self, var: &Value) -> String {
-        let ty = c_type(var);
-        let ty = value_type(ty).unwrap_or_else(|| unsupported(&format!("type {ty}")));
+        self.typed_binding(var, value_type(c_type(var)))
+    }
+
+    /// `binding` with the Rust type `ty`, if the translation has one.
+    fn typed_binding(&self, var: &Value, ty: Option<String>) -> String {
+        let ty = ty.unwrap_or_else(|| unsupported(&format!("type {}", c_type(var))));
         format!(
             "{}{}: {ty}",
             self.mut_(var),
@@ -438,17 +461,42 @@ impl Translator {
     /// borrowed Rust array for a fixed length and a `Vec` for a variable
     /// one. Clang gives a variable length only as the text of its
     /// expression, so it must be a variable's name. Elements without an
-    /// initialiser are 0, as C gives no value to read.
+    /// initialiser are 0, as C gives no value to read. An array of `char`
+    /// is bytes borrowed mutably instead, which `char *` borrows to read.
     fn array(&mut self, var: &Value, element: &str, length: &str) -> String {
         let name = ident(var["name"].as_str().unwrap_or(""));
-        let Some(ty) = cell_type(element) else {
-            return format!("{};", unsupported(&format!("type {}", c_type(var))));
+        let bytes = element == "char";
+        let (slice, borrow, zero) = match cell_type(element) {
+            _ if bytes => ("&mut [u8]".to_string(), "&mut ", "0".to_string()),
+            Some(ty) => (format!("&[{CELL}<{ty}>]"), "&", format!("{CELL}::new(0)")),
+            None => return format!("{};", unsupported(&format!("type {}", c_type(var)))),
         };
         let init = inner(var).first().filter(|_| var["init"].is_string());
         if !length.is_empty() && length.bytes().all(|b| b.is_ascii_digit()) {
-            let array = format!("[const {{ {CELL}::new(0) }}; {length}]");
+            let array = if bytes {
+                format!("[0; {length}]")
+            } else {
+                format!("[const {{ {zero} }}; {length}]")
+            };
             let value = match init {
                 None => array,
+                // The literal's bytes, without the zero at its end when the
+                // array has no room for it, and zeros after them.
+                Some(literal) if bytes && let Some(mut text) = stdio::string_array(literal) => {
+                    text.truncate(length.parse().unwrap_or(usize::MAX));
+                    while text.last() == Some(&0) {
+                        text.pop();
+                    }
+                    if text.is_empty() {
+                        array
+                    } else {
+                        format!(
+                            "{{ let mut __array = {array}; __array[..{}].copy_from_slice({}); __array }}",
+                            text.len(),
+                            stdio::byte_string(&text)
+                        )
+                    }
+                }
                 Some(list) if kind(list) == "InitListExpr" => {
                     // With a filler for the elements it leaves out, Clang
                     // lists the filler and then the elements.
@@ -458,14 +506,21 @@ impl Translator {
                     };
                     let mut sets = String::new();
                     for (i, element) in elements.iter().enumerate() {
-                        if kind(element) != "ImplicitValueInitExpr" {
-                            sets.push_str(&format!(" __array[{i}].set({});", self.expr(element)));
+                        if kind(element) == "ImplicitValueInitExpr" {
+                            continue;
                         }
+                        let set = if bytes {
+                            format!(" __array[{i}] = {} as u8;", self.operand(element))
+                        } else {
+                            format!(" __array[{i}].set({});", self.expr(element))
+                        };
+                        sets.push_str(&set);
                     }
+                    let binding = if bytes { "let mut" } else { "let" };
                     if sets.is_empty() {
                         array
                     } else {
-                        format!("{{ let __array = {array};{sets} __array }}")
+                        format!("{{ {binding} __array = {array};{sets} __array }}")
                     }
                 }
                 Some(_) => return format!("{};", unsupported("array initialiser")),
@@ -473,7 +528,7 @@ impl Translator {
             // As a slice, so a constant index out of bounds panics when it
             // runs, as an array's would fail to compile even where it never
             // runs.
-            return format!("let {name}: &[{CELL}<{ty}>] = &{value};");
+            return format!("let {name}: {slice} = {borrow}{value};");
         }
         let mut chars = length.chars();
         let variable = chars
@@ -488,7 +543,7 @@ impl Translator {
         }
         // A negative length converts to one too large to allocate.
         format!(
-            "let {name}: Vec<{CELL}<{ty}>> = vec![{CELL}::new(0); {} as usize];",
+            "let {name}: {slice} = {borrow}vec![{zero}; {} as usize];",
             ident(length)
         )
     }
@@ -638,10 +693,47 @@ impl Translator {
 
     /// Writes the Rust value `value` to the C lvalue `target`.
     pub(crate) fn store(&mut self, target: &Value, value: &str) -> String {
+        if let Some(byte) = self.byte(target) {
+            return format!("{byte} = ({value}) as u8");
+        }
         match self.cell(target) {
             Some(cell) => format!("{cell}.set({value})"),
             None => format!("{} = {value}", self.place(target)),
         }
+    }
+
+    /// The Rust place of a C `char` that is an element of a local `char`
+    /// array, `a[i]` with an integer index, as one of the array's bytes.
+    fn byte(&mut self, expr: &Value) -> Option<String> {
+        let args = inner(expr);
+        match kind(expr) {
+            "ParenExpr" => self.byte(&args[0]),
+            "ArraySubscriptExpr"
+                if c_type(expr) == "char" && rust_type(c_type(&args[1])).is_some() =>
+            {
+                let array = self.buffer(&args[0])?;
+                Some(format!("{array}[{}]", self.index(&args[1])))
+            }
+            _ => None,
+        }
+    }
+
+    /// The local `char` array whose decay `pointer` is, perhaps converted to
+    /// `const char *` or `void *`, as its Rust name.
+    fn buffer(&mut self, pointer: &Value) -> Option<String> {
+        let mut expr = pointer;
+        while kind(expr) == "ParenExpr"
+            || (matches!(kind(expr), "ImplicitCastExpr" | "CStyleCastExpr")
+                && matches!(expr["castKind"].as_str(), Some("NoOp" | "BitCast")))
+        {
+            expr = &inner(expr)[0];
+        }
+        let array = inner(expr).first()?;
+        (kind(expr) == "ImplicitCastExpr"
+            && expr["castKind"] == "ArrayToPointerDecay"
+            && variable(array)
+            && char_array(c_type(array)))
+        .then(|| self.expr(array))
     }
 
     /// The Rust cell of a C lvalue that the translation holds in one: an
@@ -781,6 +873,18 @@ impl Translator {
             {
                 format!("{}[{}]", self.operand(&args[0]), self.index(&args[1]))
             }
+            "ArraySubscriptExpr" if let Some(byte) = self.byte(expr) => format!("{byte} as i8"),
+            // A byte that a `char *` points into; one past the end of its
+            // array panics.
+            "ArraySubscriptExpr"
+                if c_type(&args[0]) == "char *" && rust_type(c_type(&args[1])).is_some() =>
+            {
+                format!(
+                    "{}.expect(\"null pointer dereference\")[{}] as i8",
+                    self.operand(&args[0]),
+                    self.index(&args[1])
+                )
+            }
             "ArraySubscriptExpr" => match self.cell(expr) {
                 Some(cell) => format!("{cell}.get()"),
                 None => unsupported("ArraySubscriptExpr"),
@@ -863,6 +967,27 @@ impl Translator {
                 Some(name @ ("strtol" | "strtoll" | "strtoul" | "strtoull")) => {
                     self.strtol(name, &args[1..])
                 }
+                // glibc's `atoi` is `strtol` in base 10 converted to `int`,
+                // and its `atol` and `atoll` are `strtol` itself.
+                Some(name @ ("atoi" | "atol" | "atoll")) => {
+                    self.require(ERRNO_RUNTIME);
+                    self.require(STRTOL_RUNTIME);
+                    self.require(STRTOL_SIGNED_RUNTIME);
+                    let s = self.expr(&args[1]);
+                    if name == "atoi" {
+                        self.require(ATOI_RUNTIME);
+                        format!("crt::atoi({s})")
+                    } else {
+                        format!("crt::strtol({s}, None, 10)")
+                    }
+                }
+                Some("strlen") => {
+                    self.require(STRLEN_RUNTIME);
+                    format!("crt::strlen({})", self.expr(&args[1]))
+                }
+                Some(name @ ("fgets" | "memset" | "strcpy" | "strncpy")) => {
+                    self.write_bytes(name, &args[1..])
+                }
                 Some("rand") if args.len() == 1 => {
                     self.require(RAND_RUNTIME);
                     "crt::rand()".to_string()
@@ -921,6 +1046,31 @@ impl Translator {
         )
     }
 
+    /// `fgets` from `stdin`, `memset`, `strcpy` and `strncpy`, which write
+    /// the bytes of a local `char` array that their first argument decays
+    /// from, borrowing it mutably during the call. Their result, the array,
+    /// is not a `char *`: `fgets` returns whether it read, as `Some(())`.
+    fn write_bytes(&mut self, name: &str, args: &[Value]) -> String {
+        let Some(array) = self.buffer(&args[0]) else {
+            return unsupported(&format!("{name} into anything but a local char array"));
+        };
+        let rest: Vec<String> = match name {
+            "fgets" if args.get(2).and_then(stdio::stream) != Some("stdin") => {
+                return unsupported("fgets from a stream other than stdin");
+            }
+            "fgets" => vec![self.expr(&args[1])],
+            _ => args[1..].iter().map(|arg| self.expr(arg)).collect(),
+        };
+        let part = match name {
+            "fgets" => stdio::FGETS_RUNTIME,
+            "memset" => MEMSET_RUNTIME,
+            "strcpy" => STRCPY_RUNTIME,
+            _ => STRNCPY_RUNTIME,
+        };
+        self.require(part);
+        format!("crt::{name}(&mut {array}[..], {})", rest.join(", "))
+    }
+
     fn cast(&mut self, expr: &Value) -> String {
         let operand = &inner(expr)[0];
         match expr["castKind"].as_str().unwrap_or("") {
@@ -934,6 +1084,9 @@ impl Translator {
                 }
                 // `%s` prints the bytes as Rust text.
                 Some(_) => unsupported("string literal that is not UTF-8"),
+                None if variable(operand) && char_array(c_type(operand)) => {
+                    format!("Some(&{}[..])", self.expr(operand))
+                }
                 None => match self.elements(expr) {
                     Some(array) if variable(operand) => format!("Some(&{array}[..])"),
                     _ => unsupported("cast ArrayToPointerDecay"),
@@ -989,7 +1142,9 @@ impl Translator {
 
 fn atomic(expr: &Value) -> bool {
     match kind(expr) {
-        "IntegerLiteral" | "DeclRefExpr" | "CallExpr" | "ArraySubscriptExpr" => true,
+        "IntegerLiteral" | "DeclRefExpr" | "CallExpr" => true,
+        // A `char` is a byte converted `as i8`.
+        "ArraySubscriptExpr" => c_type(expr) != "char",
         // A literal such as `4_u64`.
         "UnaryExprOrTypeTraitExpr" => true,
         // A negative one is printed with its sign.
@@ -1168,9 +1323,9 @@ const STRTOL_RUNTIME: &str = r#"    /// Reads a number as glibc's `strtol` and `
     /// gives for 0. Stores where the number ends, or the start of the string
     /// if there is none, through `end`. Returns the sign and the magnitude,
     /// or None for one beyond `u64`. C has no string at a null pointer.
-    fn strto(
-        s: Option<&'static [u8]>,
-        end: Option<&mut Option<&'static [u8]>>,
+    fn strto<'a>(
+        s: Option<&'a [u8]>,
+        end: Option<&mut Option<&'a [u8]>>,
         base: i32,
     ) -> (bool, Option<u64>) {
         let bytes = s.expect("null pointer as a C string");
@@ -1227,9 +1382,9 @@ const STRTOL_RUNTIME: &str = r#"    /// Reads a number as glibc's `strtol` and `
 /// The part of the `crt` module that `strtol` and `strtoll` call.
 const STRTOL_SIGNED_RUNTIME: &str = r#"    /// C's `strtol`, which saturates a value out of range and sets `errno`
     /// to `ERANGE` for it.
-    pub fn strtol(
-        s: Option<&'static [u8]>,
-        end: Option<&mut Option<&'static [u8]>>,
+    pub fn strtol<'a>(
+        s: Option<&'a [u8]>,
+        end: Option<&mut Option<&'a [u8]>>,
         base: i32,
     ) -> i64 {
         let (negative, magnitude) = strto(s, end, base);
@@ -1250,9 +1405,9 @@ const STRTOL_SIGNED_RUNTIME: &str = r#"    /// C's `strtol`, which saturates a v
 /// The part of the `crt` module that `strtoul` and `strtoull` call.
 const STRTOUL_RUNTIME: &str = r#"    /// C's `strtoul`, which negates a value after a `-` in `u64` and
     /// gives `u64::MAX` and sets `errno` to `ERANGE` for one out of range.
-    pub fn strtoul(
-        s: Option<&'static [u8]>,
-        end: Option<&mut Option<&'static [u8]>>,
+    pub fn strtoul<'a>(
+        s: Option<&'a [u8]>,
+        end: Option<&mut Option<&'a [u8]>>,
         base: i32,
     ) -> u64 {
         match strto(s, end, base) {
@@ -1337,5 +1492,64 @@ const DIV_RUNTIME: &str = r#"    /// C's `div`, `ldiv` and `lldiv` as `(quot, re
         T: Copy + std::ops::Div<Output = T> + std::ops::Rem<Output = T>,
     {
         (numer / denom, numer % denom)
+    }
+"#;
+
+/// The part of the `crt` module that `atoi` calls, with `strtol`'s parts.
+const ATOI_RUNTIME: &str = r#"    /// C's `atoi`, which glibc defines as `strtol` in base 10 converted to
+    /// `int`.
+    pub fn atoi(s: Option<&[u8]>) -> i32 {
+        strtol(s, None, 10) as i32
+    }
+"#;
+
+/// The part of the `crt` module that `strlen` calls.
+const STRLEN_RUNTIME: &str = r#"    /// C's `strlen`: the number of bytes before the first zero. A string
+    /// without one reads past its array, which panics.
+    pub fn strlen(s: Option<&[u8]>) -> u64 {
+        let s = s.expect("null pointer as a C string");
+        let mut n = 0;
+        while s[n] != 0 {
+            n += 1;
+        }
+        n as u64
+    }
+"#;
+
+/// The part of the `crt` module that `memset` calls.
+const MEMSET_RUNTIME: &str = r#"    /// C's `memset` on bytes: sets the first `n` to `c` converted to
+    /// `unsigned char`. Writing past the array panics.
+    pub fn memset(s: &mut [u8], c: i32, n: u64) {
+        s[..n as usize].fill(c as u8);
+    }
+"#;
+
+/// The part of the `crt` module that `strcpy` calls.
+const STRCPY_RUNTIME: &str = r#"    /// C's `strcpy`: copies the bytes of `src` through its first zero.
+    /// Reading or writing past an array panics.
+    pub fn strcpy(dest: &mut [u8], src: Option<&[u8]>) {
+        let src = src.expect("null pointer as a C string");
+        let mut i = 0;
+        loop {
+            dest[i] = src[i];
+            if src[i] == 0 {
+                break;
+            }
+            i += 1;
+        }
+    }
+"#;
+
+/// The part of the `crt` module that `strncpy` calls.
+const STRNCPY_RUNTIME: &str = r#"    /// C's `strncpy`: copies the bytes of `src` before its first zero, at
+    /// most `n`, and fills the rest of the `n` with zeros. Reading or
+    /// writing past an array panics.
+    pub fn strncpy(dest: &mut [u8], src: Option<&[u8]>, n: u64) {
+        let src = src.expect("null pointer as a C string");
+        let mut ended = false;
+        for i in 0..n as usize {
+            ended = ended || src[i] == 0;
+            dest[i] = if ended { 0 } else { src[i] };
+        }
     }
 "#;

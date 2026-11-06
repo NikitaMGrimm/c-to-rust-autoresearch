@@ -1,6 +1,6 @@
 //! C's formatted input and output: `printf` becomes `print!` with the format
-//! converted when the program is translated, and `scanf` calls a small
-//! runtime that reads standard input as glibc does.
+//! converted when the program is translated, and `scanf` and `fgets` call a
+//! small runtime that reads standard input as glibc does.
 
 use crate::translate::{Translator, c_type, inner, kind, rust_type, unsupported};
 use serde_json::Value;
@@ -377,5 +377,35 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
             }
         }
         stored
+    }
+"#;
+
+/// The part of the `crt` module that `fgets` calls.
+pub(crate) const FGETS_RUNTIME: &str = r#"    /// C's `fgets` on standard input as glibc has it: reads bytes into `s`
+    /// up to and including a newline, at most `n - 1`, and a zero after
+    /// them. Returns None, leaving `s` as it was, when `n` is not positive
+    /// or input ends or fails before a byte; `n` of 1 reads nothing and
+    /// stores the zero. Writing past the array panics.
+    pub fn fgets(s: &mut [u8], n: i32) -> Option<()> {
+        use std::io::BufRead;
+        let room = usize::try_from(n).ok().filter(|&n| n > 0)? - 1;
+        let mut input = std::io::stdin().lock();
+        let mut read = 0;
+        while read < room {
+            let Some(&byte) = input.fill_buf().ok()?.first() else {
+                break;
+            };
+            input.consume(1);
+            s[read] = byte;
+            read += 1;
+            if byte == b'\n' {
+                break;
+            }
+        }
+        if read == 0 && room > 0 {
+            return None;
+        }
+        s[read] = 0;
+        Some(())
     }
 "#;
