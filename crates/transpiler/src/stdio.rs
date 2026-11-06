@@ -107,8 +107,11 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
     if targets.len() != types.len() {
         return unsupported("scanf with the wrong number of arguments");
     }
-    let mut dests = Vec::new();
-    for (target, ty) in targets.iter().zip(types) {
+    // One closure stores every value, so a variable named twice, as in
+    // `scanf("%d%d", &x, &x)`, is borrowed once and written in order. Its
+    // parameters have names that C reserves, so no C variable hides them.
+    let mut arms = String::new();
+    for (i, (target, ty)) in targets.iter().zip(types).enumerate() {
         if kind(target) != "UnaryOperator" || target["opcode"] != "&" {
             return unsupported("scanf into a pointer variable");
         }
@@ -116,13 +119,12 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
         if c_type(place) != ty {
             return unsupported(&format!("scanf of {ty} into {}", c_type(place)));
         }
-        dests.push(format!("crt::Scan::Int(&mut {})", t.place(place)));
+        arms.push_str(&format!("{i} => {} = __value as i32, ", t.place(place)));
     }
     t.uses_scanf = true;
     format!(
-        "crt::scanf({}, &mut [{}])",
+        "crt::scanf({}, |__arg, __value| match __arg {{ {arms}_ => {{}} }})",
         byte_string(&format),
-        dests.join(", ")
     )
 }
 
@@ -224,11 +226,6 @@ pub(crate) const SCANF_RUNTIME: &str = r#"/// C library functions that Rust's st
 mod crt {
     use std::io::BufRead;
 
-    /// Where a scanf conversion stores its value.
-    pub enum Scan<'a> {
-        Int(&'a mut i32),
-    }
-
     /// C's `isspace` in the C locale.
     fn is_space(byte: u8) -> bool {
         matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
@@ -274,11 +271,11 @@ mod crt {
         })
     }
 
-    /// Reads standard input as C's `scanf` does. Returns the number of
-    /// values stored, or -1 if input ended before the first.
-    pub fn scanf(format: &[u8], args: &mut [Scan]) -> i32 {
+    /// Reads standard input as C's `scanf` does, passing each converted
+    /// value to `store` with the index of its argument. Returns the number
+    /// of values stored, or -1 if input ended before the first.
+    pub fn scanf(format: &[u8], mut store: impl FnMut(usize, i64)) -> i32 {
         let mut input = std::io::stdin().lock();
-        let mut args = args.iter_mut();
         let mut stored = 0;
         let ended = |stored| if stored == 0 { -1 } else { stored };
         let mut format = format.iter();
@@ -296,10 +293,7 @@ mod crt {
                     let Some(value) = read_int(&mut input) else {
                         return stored;
                     };
-                    match args.next() {
-                        Some(Scan::Int(dest)) => **dest = value as i32,
-                        None => return stored,
-                    }
+                    store(stored as usize, value);
                     stored += 1;
                     continue;
                 }

@@ -116,6 +116,25 @@ int main(void) {
 }
 
 #[test]
+fn scanf_stores_into_a_repeated_destination_in_order() {
+    let c = r#"
+#include <stdio.h>
+
+int main(void) {
+    int x = 7, value = 0;
+    int n = scanf("%d %d %d", &x, &value, &x);
+    printf("%d %d %d\n", n, x, value);
+    return x;
+}
+"#;
+    same_behaviour(
+        "scanf_stores_into_a_repeated_destination_in_order",
+        c,
+        &["1 2 3", "1 2 z", "1", "", "-4 5 6"],
+    );
+}
+
+#[test]
 fn reports_unsupported_constructs_as_compile_errors() {
     let dir = scratch("reports_unsupported_constructs_as_compile_errors");
     let rust = translate(

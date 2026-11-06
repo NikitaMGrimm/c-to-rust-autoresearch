@@ -31,7 +31,9 @@ Entry format, newest last:
   `std::process::exit`; operands in parentheses unless atomic; `print!` or
   `println!` with the format converted at translation time; `crt::scanf`, a
   runtime emitted once that reads standard input byte by byte as glibc does,
-  saturating out-of-range numbers as `strtol` does. Every other construct,
+  saturating out-of-range numbers as `strtol` does, and passes each value to
+  one closure that matches the argument's index and assigns its variable, so
+  a variable named twice is written twice in order. Every other construct,
   including `static` and `extern` local variables, becomes
   `compile_error!("unsupported C: ...")`
 - Motivation: the transpiler emitted an empty file, so every development
