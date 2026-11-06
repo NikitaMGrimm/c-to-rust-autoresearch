@@ -661,6 +661,9 @@ fn a_run_starts_every_session_afresh_and_stops_at_contact() {
     assert_eq!(run("1", "", 0), Some(2));
 
     std::fs::remove_dir_all(&fixture.loop_dir).unwrap();
+    // The gate would refuse this ID only after the session.
+    assert_eq!(fixture.run_loop(&["_r", "1"], "", 0), Some(2));
+    assert!(!fixture.loop_dir.exists());
     let before = git(repo, &["rev-parse", "run/r1"]);
     assert_eq!(run("3", "", 1), Some(1));
     let calls = fixture.calls();

@@ -49,7 +49,7 @@ sessions=$2
 private=$3
 shift 3
 # Like loop/round, which checks it again.
-if [[ ! $run =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] ||
+if [[ ! $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
   ! git check-ref-format "refs/heads/run/$run"; then
   usage
 fi

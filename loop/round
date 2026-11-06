@@ -40,7 +40,7 @@ done
 branch=main
 if [[ -n $run ]]; then
   # The names the gate allows for its log directory, and git for a branch.
-  if $github || [[ ! $run =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] ||
+  if $github || [[ ! $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
     ! git check-ref-format "refs/heads/run/$run"; then
     usage
   fi
