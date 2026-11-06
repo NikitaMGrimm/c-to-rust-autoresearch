@@ -316,3 +316,48 @@ Entry format, newest last:
 - Changes: extends R4's `char *`, which held only literals and arguments with
   the `'static` lifetime, R7's `strtol` runtime and R10's local arrays, whose
   variable-length form is now borrowed as a slice too
+
+## R12: floating-point numbers
+
+- C: `float` and `double` variables, parameters and return values, and
+  their literals; `+ - * /`, unary `-`, comparisons and tests of them, and
+  `+=`, `-=`, `*=` and `/=` where C computes in the variable's own type;
+  conversions between them, from and to integers and `bool`; `sizeof`;
+  `printf`'s `%f`, `%F`, `%e`, `%E`, `%g` and `%G`, with a precision, a
+  width, the flag `-` and the length `l`; `strtod` with a null end pointer
+  or the address of a `char *` variable, `atof`, `fabs`, `floor`, `ceil`,
+  `sqrt` and `pow`
+- Rust: `f32` and `f64`, whose operators round as C's do on x86-64; a
+  literal is the value Clang gives, printed by Rust with the fewest digits
+  that keep it, as `0.1_f64`; a test is `x != 0.0`; conversions are `as`,
+  which truncates towards zero and saturates where C leaves a value out of
+  range undefined, and a `bool` converts with `f64::from(u8::from(b))`.
+  `printf` passes each floating value to `crt::float`, which formats `%f`
+  and `%e` with Rust's exact rounding, ties to even as in glibc, writes C's
+  exponent with a sign and two digits, picks `%f` or `%e` for `%g` and
+  trims its zeros, and prints `inf` and `nan` with their signs; a width
+  pads the text. `crt::strtod` reads what glibc's `strtod` reads, including
+  `inf`, `infinity` and `nan(...)` in any case, lets Rust's parser round the
+  decimal number, stores the end as R7's `strtol` does and sets `errno` to
+  `ERANGE` for an infinite result or a subnormal or zero one of nonzero
+  digits; a hexadecimal number panics. `atof` is `crt::strtod(s, None)`.
+  `fabs`, `floor` and `ceil` are Rust's `abs`, `floor` and `ceil`;
+  `crt::sqrt` sets `errno` to `EDOM` for a negative number; `crt::pow` calls
+  Rust's `powf`, which is glibc's `pow`, and sets `errno` as glibc does: to
+  `EDOM` for a result that is not a number of operands that are, and to
+  `ERANGE` for an infinite result of finite operands or a zero one of a
+  finite nonzero base. `long double`, `++` and `--` on floating values,
+  `+=` on a `float` that C computes in `double`, floating arrays, pointers
+  and static locals, `printf`'s `%a` and floating conversions with the
+  flags `+`, `0`, space or `#`, a precision on other conversions, `scanf`
+  of floating values and the `float` versions of the functions stay
+  unsupported
+- Motivation: `g2_016_divide_by_zero_float` reads a `float` with `fgets`
+  and `atof`, tests it with `fabs` and prints `(int)(100.0 / data)`;
+  `g1_007_errno_pow` reads two `double` arguments with `strtod`, checks
+  `errno` for `ERANGE` and the end pointer, and prints `pow` of them with
+  `%.2f` or its `EDOM` and `ERANGE` errors
+- Changes: extends R1's variables, arithmetic, compound assignments and
+  `printf`, R2's comparisons and tests, R7's `strtol` end pointer, which
+  `strtod` shares, R8's conversions of `bool` and R9's `sizeof` and
+  `errno`, whose `ERANGE` is now a part of the runtime of its own

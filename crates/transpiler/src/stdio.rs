@@ -23,14 +23,28 @@ pub(crate) fn printf(t: &mut Translator, mac: &str, args: &[Value]) -> String {
     for (value, ty) in values.iter().zip(types) {
         call.push_str(", ");
         match (c_type(value), ty) {
-            ("char *", "char *") => {
+            ("double", Argument::Float(conversion, precision)) => {
+                t.require(FLOAT_RUNTIME);
+                call.push_str(&format!(
+                    "crt::float({}, b'{conversion}', {precision})",
+                    t.expr(value)
+                ));
+            }
+            (arg, Argument::Float(..)) => {
+                return unsupported(&format!("printf of {arg} as double"));
+            }
+            ("char *", Argument::Value("char *")) => {
                 t.require(C_STR_RUNTIME);
                 call.push_str(&format!("crt::c_str({})", t.expr(value)));
             }
-            (arg, ty) if arg == ty => call.push_str(&t.expr(value)),
+            (arg, Argument::Value(ty)) if arg == ty => call.push_str(&t.expr(value)),
             // glibc reads the bits of an int as unsigned, as Rust's `as` does.
-            ("int", "unsigned int") => call.push_str(&format!("{} as u32", t.operand(value))),
-            (arg, ty) => return unsupported(&format!("printf of {arg} as {ty}")),
+            ("int", Argument::Value("unsigned int")) => {
+                call.push_str(&format!("{} as u32", t.operand(value)));
+            }
+            (arg, Argument::Value(ty)) => {
+                return unsupported(&format!("printf of {arg} as {ty}"));
+            }
         }
     }
     let line = if format.ends_with('\n') {
@@ -42,9 +56,17 @@ pub(crate) fn printf(t: &mut Translator, mac: &str, args: &[Value]) -> String {
     format!("{mac}{line}!({format:?}{call})")
 }
 
-/// Converts a printf format to a Rust one and lists the C types of the
-/// arguments it reads.
-fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
+/// What a printf conversion reads.
+enum Argument {
+    /// A value of this C type, which Rust formats itself.
+    Value(&'static str),
+    /// A `double` that `crt::float` formats with this conversion, such as
+    /// `f`, and this precision.
+    Float(char, usize),
+}
+
+/// Converts a printf format to a Rust one and lists the arguments it reads.
+fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
     let Ok(format) = std::str::from_utf8(format) else {
         return Err("printf format that is not UTF-8".to_string());
     };
@@ -70,12 +92,41 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                     chars.next();
                     width.push(digit);
                 }
+                // A point without digits is the precision 0.
+                let mut precision = None;
+                if chars.next_if_eq(&'.').is_some() {
+                    let mut digits = String::new();
+                    while let Some(digit) = chars.next_if(char::is_ascii_digit) {
+                        digits.push(digit);
+                    }
+                    precision = Some(digits.parse().unwrap_or(0));
+                }
+                // `l` changes nothing for a floating conversion.
+                let long = chars.next_if_eq(&'l').is_some();
                 match chars.next() {
+                    // Rust pads strings on the right by default.
+                    Some(conversion @ ('f' | 'F' | 'e' | 'E' | 'g' | 'G')) if !(plus || zero) => {
+                        if width.is_empty() {
+                            out.push_str("{}");
+                        } else {
+                            out.push_str(&format!("{{:{}{width}}}", if left { "<" } else { ">" }));
+                        }
+                        types.push(Argument::Float(conversion, precision.unwrap_or(6)));
+                    }
+                    Some('f' | 'F' | 'e' | 'E' | 'g' | 'G') => {
+                        return Err("printf floating conversion with the flag + or 0".into());
+                    }
+                    _ if precision.is_some() || long => {
+                        return Err(
+                            "printf precision or length on a conversion that is not floating"
+                                .into(),
+                        );
+                    }
                     Some('%') if !(left || plus || zero) && width.is_empty() => out.push('%'),
                     // A width counts bytes in C but characters in Rust.
                     Some('s') if !(left || plus || zero) && width.is_empty() => {
                         out.push_str("{}");
-                        types.push("char *");
+                        types.push(Argument::Value("char *"));
                     }
                     Some('s') => return Err("printf conversion %s with flags or a width".into()),
                     Some(conversion @ ('d' | 'i' | 'u' | 'o' | 'x' | 'X')) => {
@@ -99,7 +150,7 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                         } else {
                             out.push_str(&format!("{{:{spec}}}"));
                         }
-                        types.push(ty);
+                        types.push(Argument::Value(ty));
                     }
                     other => {
                         return Err(format!(
@@ -282,6 +333,63 @@ pub(crate) const C_STR_RUNTIME: &str = r#"    /// The text of a C string, its by
         let s = s.expect("null pointer as a C string");
         let end = s.iter().position(|&byte| byte == 0).unwrap_or(s.len());
         std::str::from_utf8(&s[..end]).expect("C string that is not UTF-8")
+    }
+"#;
+
+/// The part of the `crt` module that `printf`'s floating conversions call.
+pub(crate) const FLOAT_RUNTIME: &str = r#"    /// `printf`'s `%f`, `%e` or `%g` of `value` with `precision` as glibc
+    /// formats it, or `%F`, `%E` or `%G` in capitals. Rust rounds the exact
+    /// value to the nearest decimal, ties to even, as glibc does.
+    pub fn float(value: f64, conversion: u8, precision: usize) -> String {
+        let text = if value.is_nan() {
+            String::from(if value.is_sign_negative() { "-nan" } else { "nan" })
+        } else if value.is_infinite() {
+            String::from(if value < 0.0 { "-inf" } else { "inf" })
+        } else {
+            match conversion.to_ascii_lowercase() {
+                b'f' => format!("{value:.precision$}"),
+                b'e' => {
+                    let e = format!("{value:.precision$e}");
+                    let (mantissa, power) = e.split_once('e').unwrap();
+                    exponent(mantissa, power.parse().unwrap())
+                }
+                // `%e`'s exponent with `precision` significant digits picks
+                // `%f` from -4 to below `precision`, and trailing zeros go.
+                _ => {
+                    let digits = precision.max(1) as i64;
+                    let e = format!("{value:.*e}", digits as usize - 1);
+                    let (mantissa, power) = e.split_once('e').unwrap();
+                    let power: i64 = power.parse().unwrap();
+                    if (-4..digits).contains(&power) {
+                        let fixed = format!("{value:.*}", (digits - 1 - power) as usize);
+                        trim(&fixed).to_string()
+                    } else {
+                        exponent(trim(mantissa), power)
+                    }
+                }
+            }
+        };
+        if conversion.is_ascii_uppercase() {
+            text.to_ascii_uppercase()
+        } else {
+            text
+        }
+    }
+
+    /// C's exponent after `mantissa`: a sign and at least two digits.
+    fn exponent(mantissa: &str, power: i64) -> String {
+        let sign = if power < 0 { '-' } else { '+' };
+        format!("{mantissa}e{sign}{:02}", power.unsigned_abs())
+    }
+
+    /// A number without the zeros that end its fraction, nor its point if
+    /// they are all of it, as `%g` prints it.
+    fn trim(number: &str) -> &str {
+        if number.contains('.') {
+            number.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            number
+        }
     }
 "#;
 

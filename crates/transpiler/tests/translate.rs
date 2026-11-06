@@ -56,6 +56,7 @@ fn same_behaviour_on(test: &str, c: &str, runs: &[(&[&str], &str)]) -> String {
     build(
         Command::new(transpiler::CLANG)
             .arg(dir.join("input.c"))
+            .arg("-lm")
             .arg("-o")
             .arg(dir.join("c")),
     );
@@ -193,10 +194,10 @@ fn reports_unsupported_constructs_as_compile_errors() {
     let dir = scratch("reports_unsupported_constructs_as_compile_errors");
     let rust = translate(
         &dir,
-        "#include <stdio.h>\nint main(void) { printf(\"%f\\n\", 1.5); return 0; }\n",
+        "#include <stdio.h>\nint main(void) { printf(\"%a\\n\", 1.5); return 0; }\n",
     );
     assert!(
-        rust.contains(r#"compile_error!("unsupported C: printf conversion %f")"#),
+        rust.contains(r#"compile_error!("unsupported C: printf conversion %a")"#),
         "{rust}"
     );
     // A block-scope extern refers to glibc's optind, which is 1, not 0.
@@ -1138,5 +1139,139 @@ fn rejects_array_uses_it_cannot_translate() {
             "{c}\n{rust}"
         );
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_floating_point_values() {
+    let c = r#"
+#include <errno.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+double mean(double a, float b) {
+    return (a + b) / 2;
+}
+
+void power(double x, double y) {
+    errno = 0;
+    double r = pow(x, y);
+    printf("pow %g %d\n", r, errno);
+}
+
+int main(int argc, char **argv) {
+    char *end;
+    for (int i = 1; i < argc; i++) {
+        errno = 0;
+        double x = strtod(argv[i], &end);
+        printf("%g|%.3e|%f|%d|%s|", x, x, x, errno, end);
+        printf("%-12.4G|%10.2f|%E|%lf|%.0f|%.g\n", x, -x, x * 1e10, x / 3, x, x);
+    }
+    double base = argc > 1 ? atof(argv[1]) : 0.1;
+    float single = 1.0F / 3;
+    single += 0.25F;
+    double wide = single;
+    // C leaves converting a value out of range undefined.
+    long whole = fabs(base) < 1e6 ? (long)(base * 1000.5) : 0;
+    unsigned u = 7;
+    double sum = u + whole + 0.125;
+    sum -= 1;
+    sum *= 2.5;
+    sum /= -4;
+    printf("%.9g %.17g %d %g %d\n", single, wide, (int)whole, sum, fabs(sum) < 1e9 ? (int)-sum : 0);
+    printf("%g %g %g %g\n", fabs(-base), floor(-2.5), ceil(2.25), mean(base, single));
+    errno = 0;
+    printf("%g %d\n", sqrt(base), errno);
+    power(2, 0.5);
+    power(-2, 0.5);
+    power(0, -1);
+    power(10, 400);
+    power(10, -400);
+    power(10, -320);
+    power(base, 3);
+    if (base) {
+        printf("nonzero %d %d %d\n", base < 1.5, !base, base != 2);
+    }
+    printf("%d %g %d %d\n", base == base, -0.0, (int)sizeof(double), (int)sizeof single);
+    return base >= 1;
+}
+"#;
+    let numbers = [
+        "2.5",
+        "-0.1",
+        "1e500",
+        "-1e500",
+        "1e-400",
+        "2e-310",
+        "0e-999",
+        "inf",
+        "-INFINITY",
+        "nan(abc)",
+        "nan(",
+        "-nan",
+        ".5",
+        "5.",
+        ".",
+        "1e",
+        "1e+",
+        "  +3.25xyz",
+        "x",
+        "-x",
+        "123456789",
+        "0.0001",
+        "0.00001",
+        "100000",
+        "1000000",
+        "2.675",
+        "0.125",
+    ];
+    let mut runs: Vec<(&[&str], &str)> = numbers
+        .iter()
+        .map(|number| (std::slice::from_ref(number), ""))
+        .collect();
+    runs.push((&[], ""));
+    runs.push((&numbers[..], ""));
+    let rust = same_behaviour_on("translates_floating_point_values", c, &runs);
+    assert!(rust.contains("let mut sum: f64"), "{rust}");
+    assert!(rust.contains("0.25_f32"), "{rust}");
+}
+
+#[test]
+fn rejects_floating_uses_it_cannot_translate() {
+    let dir = scratch("rejects_floating_uses_it_cannot_translate");
+    let rust = translate(
+        &dir,
+        "int main(void) { float f = 1; f += 0.5; return f; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: += on float")"#),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "#include <stdio.h>\nint main(void) { printf(\"%+f %.2d\\n\", 1.0, 3); return 0; }\n",
+    );
+    assert!(
+        rust.contains(
+            r#"compile_error!("unsupported C: printf floating conversion with the flag + or 0")"#
+        ),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "#include <stdio.h>\nint main(void) { printf(\"%.2d\\n\", 3); return 0; }\n",
+    );
+    assert!(
+        rust.contains(
+            "unsupported C: printf precision or length on a conversion that is not floating"
+        ),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "int main(void) { long double x = 1.5L; return x > 1; }\n",
+    );
+    assert!(rust.contains("unsupported C: type long double"), "{rust}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

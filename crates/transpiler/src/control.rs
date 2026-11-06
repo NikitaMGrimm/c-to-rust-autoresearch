@@ -4,8 +4,8 @@
 //! continues that loop.
 
 use crate::translate::{
-    Translator, c_type, ident, inner, is_bool, kind, null_pointer, pointer, rust_type, unsupported,
-    value_type, zero,
+    Translator, c_type, ident, inner, is_bool, kind, null_pointer, number_type, pointer, rust_type,
+    unsupported, value_type, zero,
 };
 use serde_json::Value;
 
@@ -136,7 +136,7 @@ impl Translator {
                 )
             }
             ("BinaryOperator", Some(op)) if comparison(op) => {
-                match (rust_type(c_type(&args[0])), rust_type(c_type(&args[1]))) {
+                match (number_type(c_type(&args[0])), number_type(c_type(&args[1]))) {
                     (Some(a), Some(b)) if a == b => {
                         format!("{} {op} {}", self.operand(&args[0]), self.operand(&args[1]))
                     }
@@ -173,7 +173,7 @@ impl Translator {
         }
     }
 
-    /// Compares an integer to zero, or a pointer to null, with `==` or `!=`;
+    /// Compares a number to zero, or a pointer to null, with `==` or `!=`;
     /// a `bool` is its own test.
     fn nonzero(&mut self, expr: &Value, op: &str) -> String {
         if is_bool(c_type(expr)) {
@@ -188,10 +188,12 @@ impl Translator {
             let test = if op == "==" { "is_none" } else { "is_some" };
             return format!("{}.{test}()", self.operand(expr));
         }
-        if rust_type(c_type(expr)).is_none() {
-            return unsupported(&format!("condition of type {}", c_type(expr)));
-        }
-        format!("{} {op} 0", self.operand(expr))
+        let literal = match number_type(c_type(expr)) {
+            Some("f32" | "f64") => "0.0",
+            Some(_) => "0",
+            None => return unsupported(&format!("condition of type {}", c_type(expr))),
+        };
+        format!("{} {op} {literal}", self.operand(expr))
     }
 
     /// Translates a loop or block body. A compound statement shares the

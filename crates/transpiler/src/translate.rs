@@ -58,20 +58,35 @@ pub(crate) fn rust_type(c: &str) -> Option<&'static str> {
     })
 }
 
+/// The Rust type of a C floating type: `float` and `double` are IEEE 754
+/// single and double precision on x86-64 Linux, as are `f32` and `f64`.
+pub(crate) fn float_type(c: &str) -> Option<&'static str> {
+    match c {
+        "float" => Some("f32"),
+        "double" => Some("f64"),
+        _ => None,
+    }
+}
+
+/// The Rust type of a C integer or floating type.
+pub(crate) fn number_type(c: &str) -> Option<&'static str> {
+    rust_type(c).or(float_type(c))
+}
+
 /// Whether `c` is C's boolean type, which `<stdbool.h>` spells `bool`.
 pub(crate) fn is_bool(c: &str) -> bool {
     matches!(c, "bool" | "_Bool")
 }
 
 /// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, a `bool`, a `char *` into a string literal, a program argument
-/// or a local `char` array, a `char **` into `main`'s `argv`, a pointer to
-/// an integer variable or array element, or the result of `div`. A pointer
-/// is `None` for null. A `char *` is otherwise the bytes from where it
-/// points through the end of its array, and a pointer to an integer is the
-/// cells from the one it points to through the end of its array, a variable
-/// being an array of one. A `char **` is the pointers from where it points
-/// through the null that ends `argv`.
+/// integer, a `float` or `double`, a `bool`, a `char *` into a string
+/// literal, a program argument or a local `char` array, a `char **` into
+/// `main`'s `argv`, a pointer to an integer variable or array element, or the
+/// result of `div`. A pointer is `None` for null. A `char *` is otherwise the
+/// bytes from where it points through the end of its array, and a pointer to
+/// an integer is the cells from the one it points to through the end of its
+/// array, a variable being an array of one. A `char **` is the pointers from
+/// where it points through the null that ends `argv`.
 pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
         c if is_bool(c) => Some("bool".to_string()),
@@ -79,7 +94,7 @@ pub(crate) fn value_type(c: &str) -> Option<String> {
         "char **" => Some("&'static [Option<&'static [u8]>]".to_string()),
         c => match c.strip_suffix(" *") {
             Some(pointee) => cell_type(pointee).map(|ty| format!("Option<&[{CELL}<{ty}>]>")),
-            None => rust_type(c)
+            None => number_type(c)
                 .map(String::from)
                 .or_else(|| quotient_type(c).map(|ty| format!("({ty}, {ty})"))),
         },
@@ -146,6 +161,8 @@ pub(crate) fn zero(c: &str) -> &'static str {
         "&[]"
     } else if quotient_type(c).is_some() {
         "(0, 0)"
+    } else if float_type(c).is_some() {
+        "0.0"
     } else {
         "0"
     }
@@ -634,10 +651,12 @@ impl Translator {
             ("CompoundAssignOperator", Some(op)) => {
                 let ty = c_type(&args[0]);
                 let op = op.trim_end_matches('=');
-                if ty != expr["computeLHSType"]["qualType"]
-                    || rust_type(ty).is_none()
-                    || !ARITHMETIC.contains(&op)
-                {
+                let supported = match float_type(ty) {
+                    Some(_) => matches!(op, "+" | "-" | "*" | "/"),
+                    None => rust_type(ty).is_some() && ARITHMETIC.contains(&op),
+                };
+                // A `float` that C computes in `double` would need converting.
+                if ty != expr["computeLHSType"]["qualType"] || !supported {
                     return unsupported(&format!("{op}= on {ty}"));
                 }
                 self.assign(&args[0], op, &args[1])
@@ -814,6 +833,25 @@ impl Translator {
                     None => unsupported(&format!("literal of type {}", c_type(expr))),
                 }
             }
+            // Clang gives the value with the digits that tell it apart from
+            // any other of its type, and Rust prints it with the fewest.
+            "FloatingLiteral" => {
+                let value = expr["value"].as_str().unwrap_or("");
+                let text = match float_type(c_type(expr)) {
+                    Some("f32") => value
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(|v| format!("{v:?}_f32")),
+                    Some(_) => value
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(|v| format!("{v:?}_f64")),
+                    None => None,
+                };
+                text.unwrap_or_else(|| unsupported(&format!("literal of type {}", c_type(expr))))
+            }
             // Clang gives the value as the bits of an unsigned int. A negative
             // one has a suffix, or `as u32` would make Rust read it unsigned.
             "CharacterLiteral" if c_type(expr) == "int" => match expr["value"].as_u64() {
@@ -832,13 +870,13 @@ impl Translator {
                 self.require(ERRNO_RUNTIME);
                 format!("crt::ERRNO.load({RELAXED})")
             }
-            // The size of an integer or a pointer on x86-64 Linux.
+            // The size of a number or a pointer on x86-64 Linux.
             "UnaryExprOrTypeTraitExpr" if expr["name"] == "sizeof" => {
                 let of = match args.first() {
                     Some(operand) => c_type(operand),
                     None => qual_type(&expr["argType"]),
                 };
-                let size = |of: &str| match rust_type(of) {
+                let size = |of: &str| match number_type(of) {
                     _ if of.ends_with('*') => Some(8),
                     Some(ty) => ty[1..].parse::<u64>().ok().map(|bits| bits / 8),
                     None if is_bool(of) => Some(1),
@@ -904,7 +942,9 @@ impl Translator {
             }
             _ if control::boolean(expr) => format!("i32::from({})", self.cond(expr)),
             "UnaryOperator" => match expr["opcode"].as_str() {
-                Some("-") if signed(c_type(expr)) => format!("-{}", self.operand(&args[0])),
+                Some("-") if signed(c_type(expr)) || float_type(c_type(expr)).is_some() => {
+                    format!("-{}", self.operand(&args[0]))
+                }
                 // C negates an unsigned value modulo its range.
                 Some("-") if rust_type(c_type(expr)).is_some() => {
                     format!("{}.wrapping_neg()", self.operand(&args[0]))
@@ -953,6 +993,12 @@ impl Translator {
                     let right = self.right_operand(op, c_type(expr), &args[1]);
                     binary(op, c_type(expr), &left, &right)
                 }
+                // Rust's floating operators round as C's do, and give an
+                // infinity or not a number where C's do.
+                Some(op @ ("+" | "-" | "*" | "/")) if float_type(c_type(expr)).is_some() => {
+                    let left = self.operand(&args[0]);
+                    format!("{left} {op} {}", self.operand(&args[1]))
+                }
                 op => unsupported(&format!("binary {} on {}", op.unwrap_or("?"), c_type(expr))),
             },
             "CallExpr" => match callee(expr) {
@@ -971,6 +1017,7 @@ impl Translator {
                 // and its `atol` and `atoll` are `strtol` itself.
                 Some(name @ ("atoi" | "atol" | "atoll")) => {
                     self.require(ERRNO_RUNTIME);
+                    self.require(ERANGE_RUNTIME);
                     self.require(STRTOL_RUNTIME);
                     self.require(STRTOL_SIGNED_RUNTIME);
                     let s = self.expr(&args[1]);
@@ -980,6 +1027,41 @@ impl Translator {
                     } else {
                         format!("crt::strtol({s}, None, 10)")
                     }
+                }
+                // glibc's `atof` is `strtod` without an end pointer.
+                Some("atof") => {
+                    self.require(ERRNO_RUNTIME);
+                    self.require(ERANGE_RUNTIME);
+                    self.require(STRTOD_RUNTIME);
+                    format!("crt::strtod({}, None)", self.expr(&args[1]))
+                }
+                Some("strtod") => match self.end_pointer("strtod", &args[2]) {
+                    Ok(end) => {
+                        self.require(ERRNO_RUNTIME);
+                        self.require(ERANGE_RUNTIME);
+                        self.require(STRTOD_RUNTIME);
+                        format!("crt::strtod({}, {end})", self.expr(&args[1]))
+                    }
+                    Err(err) => err,
+                },
+                // Rust's methods compute these exactly, as glibc does, and
+                // none sets `errno`.
+                Some(name @ ("fabs" | "floor" | "ceil")) => {
+                    let method = if name == "fabs" { "abs" } else { name };
+                    format!("{}.{method}()", self.operand(&args[1]))
+                }
+                Some("sqrt") => {
+                    self.require(ERRNO_RUNTIME);
+                    self.require(EDOM_RUNTIME);
+                    self.require(SQRT_RUNTIME);
+                    format!("crt::sqrt({})", self.expr(&args[1]))
+                }
+                Some("pow") => {
+                    self.require(ERRNO_RUNTIME);
+                    self.require(EDOM_RUNTIME);
+                    self.require(ERANGE_RUNTIME);
+                    self.require(POW_RUNTIME);
+                    format!("crt::pow({}, {})", self.expr(&args[1]), self.expr(&args[2]))
                 }
                 Some("strlen") => {
                     self.require(STRLEN_RUNTIME);
@@ -1010,27 +1092,12 @@ impl Translator {
     /// `strtoul` and `strtoull`, with a null end pointer or the address of a
     /// `char *` variable.
     fn strtol(&mut self, name: &str, args: &[Value]) -> String {
-        let end = if null_pointer(&args[1]) {
-            "None".to_string()
-        } else {
-            let mut end = &args[1];
-            while kind(end) == "ParenExpr" {
-                end = &inner(end)[0];
-            }
-            let target = inner(end).first();
-            match target {
-                Some(target)
-                    if kind(end) == "UnaryOperator"
-                        && end["opcode"] == "&"
-                        && c_type(target) == "char *"
-                        && variable(target) =>
-                {
-                    format!("Some(&mut {})", self.place(target))
-                }
-                _ => return unsupported("strtol with an end pointer other than &variable"),
-            }
+        let end = match self.end_pointer("strtol", &args[1]) {
+            Ok(end) => end,
+            Err(err) => return err,
         };
         self.require(ERRNO_RUNTIME);
+        self.require(ERANGE_RUNTIME);
         self.require(STRTOL_RUNTIME);
         let function = if name.starts_with("strtoul") {
             self.require(STRTOUL_RUNTIME);
@@ -1044,6 +1111,31 @@ impl Translator {
             self.expr(&args[0]),
             self.expr(&args[2])
         )
+    }
+
+    /// The end pointer of `strtol` or `strtod`, null or the address of a
+    /// `char *` variable, as the runtime takes it, or the unsupported error.
+    fn end_pointer(&mut self, name: &str, end: &Value) -> Result<String, String> {
+        if null_pointer(end) {
+            return Ok("None".to_string());
+        }
+        let mut end = end;
+        while kind(end) == "ParenExpr" {
+            end = &inner(end)[0];
+        }
+        match inner(end).first() {
+            Some(target)
+                if kind(end) == "UnaryOperator"
+                    && end["opcode"] == "&"
+                    && c_type(target) == "char *"
+                    && variable(target) =>
+            {
+                Ok(format!("Some(&mut {})", self.place(target)))
+            }
+            _ => Err(unsupported(&format!(
+                "{name} with an end pointer other than &variable"
+            ))),
+        }
     }
 
     /// `fgets` from `stdin`, `memset`, `strcpy` and `strncpy`, which write
@@ -1114,6 +1206,21 @@ impl Translator {
                 (Some(_), Some(to)) => format!("{} as {to}", self.operand(operand)),
                 _ => unsupported(&format!("cast to {}", c_type(expr))),
             },
+            "FloatingToBoolean" => self.cond(operand),
+            // Rust's `as` rounds to the nearest floating value, as C does.
+            "IntegralToFloating" | "FloatingCast" => match float_type(c_type(expr)) {
+                Some(to) if is_bool(c_type(operand)) => {
+                    format!("{to}::from(u8::from({}))", self.expr(operand))
+                }
+                Some(to) => format!("{} as {to}", self.operand(operand)),
+                None => unsupported(&format!("cast to {}", c_type(expr))),
+            },
+            // Both truncate towards zero. C leaves a value out of range
+            // undefined, where Rust's `as` saturates.
+            "FloatingToIntegral" => match rust_type(c_type(expr)) {
+                Some(to) => format!("{} as {to}", self.operand(operand)),
+                None => unsupported(&format!("cast to {}", c_type(expr))),
+            },
             other => unsupported(&format!("cast {other}")),
         }
     }
@@ -1142,7 +1249,7 @@ impl Translator {
 
 fn atomic(expr: &Value) -> bool {
     match kind(expr) {
-        "IntegerLiteral" | "DeclRefExpr" | "CallExpr" => true,
+        "IntegerLiteral" | "FloatingLiteral" | "DeclRefExpr" | "CallExpr" => true,
         // A `char` is a byte converted `as i8`.
         "ArraySubscriptExpr" => c_type(expr) != "char",
         // A literal such as `4_u64`.
@@ -1316,8 +1423,21 @@ const ERRNO_RUNTIME: &str = r#"    /// C's `errno`, which the functions here set
     pub static ERRNO: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 "#;
 
+/// The part of the `crt` module that names C's `ERANGE`, for the functions
+/// that set `errno` to it.
+const ERANGE_RUNTIME: &str = r#"    /// C's `ERANGE` on Linux.
+    const ERANGE: i32 = 34;
+"#;
+
+/// The part of the `crt` module that names C's `EDOM`, for the functions
+/// that set `errno` to it.
+const EDOM_RUNTIME: &str = r#"    /// C's `EDOM` on Linux.
+    const EDOM: i32 = 33;
+"#;
+
 /// The part of the `crt` module that `strtol`, `strtoll`, `strtoul` and
-/// `strtoull` share. It sets `errno`, so the translation needs that part too.
+/// `strtoull` share. It sets `errno`, so the translation needs that part and
+/// `ERANGE`'s too.
 const STRTOL_RUNTIME: &str = r#"    /// Reads a number as glibc's `strtol` and `strtoul` do: skips white
     /// space, reads a sign and digits in `base`, or in the base their prefix
     /// gives for 0. Stores where the number ends, or the start of the string
@@ -1374,9 +1494,6 @@ const STRTOL_RUNTIME: &str = r#"    /// Reads a number as glibc's `strtol` and `
         }
         (negative && parsed, value)
     }
-
-    /// C's `ERANGE` on Linux.
-    const ERANGE: i32 = 34;
 "#;
 
 /// The part of the `crt` module that `strtol` and `strtoll` call.
@@ -1551,5 +1668,128 @@ const STRNCPY_RUNTIME: &str = r#"    /// C's `strncpy`: copies the bytes of `src
             ended = ended || src[i] == 0;
             dest[i] = if ended { 0 } else { src[i] };
         }
+    }
+"#;
+
+/// The part of the `crt` module that `strtod` and `atof` call, with the
+/// parts of `errno` and `ERANGE`.
+const STRTOD_RUNTIME: &str = r#"    /// C's `strtod` as glibc has it: skips white space, reads a sign and a
+    /// decimal number, or `inf`, `infinity` or `nan` with an optional
+    /// `(...)` in any case, and stores where the number ends, or the start of
+    /// the string if there is none, through `end`. Rust's parser rounds the
+    /// number to the nearest `f64`, as glibc does. A result beyond `f64` is
+    /// infinite, and one of nonzero digits too small to be normal is
+    /// subnormal or zero; both set `errno` to `ERANGE`. C has no string at a
+    /// null pointer, and a hexadecimal number panics, as Rust cannot read it.
+    pub fn strtod<'a>(s: Option<&'a [u8]>, end: Option<&mut Option<&'a [u8]>>) -> f64 {
+        let bytes = s.expect("null pointer as a C string");
+        let word = |i: usize, word: &[u8]| {
+            bytes
+                .get(i..i + word.len())
+                .is_some_and(|b| b.eq_ignore_ascii_case(word))
+        };
+        let digits = |mut i: usize, hex: bool| {
+            while bytes.get(i).is_some_and(|b| {
+                if hex { b.is_ascii_hexdigit() } else { b.is_ascii_digit() }
+            }) {
+                i += 1;
+            }
+            i
+        };
+        let mut i = 0;
+        while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')) {
+            i += 1;
+        }
+        let negative = match bytes.get(i) {
+            Some(&sign @ (b'+' | b'-')) => {
+                i += 1;
+                sign == b'-'
+            }
+            _ => false,
+        };
+        let (value, used) = if word(i, b"infinity") {
+            (f64::INFINITY, i + 8)
+        } else if word(i, b"inf") {
+            (f64::INFINITY, i + 3)
+        } else if word(i, b"nan") {
+            let mut used = i + 3;
+            let mut close = used + 1;
+            while bytes.get(close).is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_') {
+                close += 1;
+            }
+            if bytes.get(used) == Some(&b'(') && bytes.get(close) == Some(&b')') {
+                used = close + 1;
+            }
+            (f64::NAN, used)
+        } else {
+            if word(i, b"0x") && {
+                let point = usize::from(bytes.get(i + 2) == Some(&b'.'));
+                digits(i + 2 + point, true) > i + 2 + point
+            } {
+                panic!("hexadecimal floating-point number in strtod");
+            }
+            let whole = digits(i, false);
+            let mut used = whole;
+            if bytes.get(used) == Some(&b'.') {
+                used = digits(used + 1, false);
+            }
+            let mantissa = &bytes[i..used];
+            if !mantissa.iter().any(u8::is_ascii_digit) {
+                if let Some(end) = end {
+                    *end = s;
+                }
+                return 0.0;
+            }
+            if matches!(bytes.get(used), Some(b'e' | b'E')) {
+                let sign = usize::from(matches!(bytes.get(used + 1), Some(b'+' | b'-')));
+                let exponent = digits(used + 1 + sign, false);
+                if exponent > used + 1 + sign {
+                    used = exponent;
+                }
+            }
+            let text = std::str::from_utf8(&bytes[i..used]).unwrap();
+            let value: f64 = text.parse().unwrap();
+            let nonzero = mantissa.iter().any(|&b| (b'1'..=b'9').contains(&b));
+            if value.is_infinite() || (nonzero && (value == 0.0 || value.is_subnormal())) {
+                ERRNO.store(ERANGE, std::sync::atomic::Ordering::Relaxed);
+            }
+            (value, used)
+        };
+        if let Some(end) = end {
+            *end = Some(&bytes[used..]);
+        }
+        if negative { -value } else { value }
+    }
+"#;
+
+/// The part of the `crt` module that `sqrt` calls, with the parts of `errno`
+/// and `EDOM`.
+const SQRT_RUNTIME: &str = r#"    /// C's `sqrt`, which glibc gives a negative number not a number for and
+    /// sets `errno` to `EDOM`.
+    pub fn sqrt(x: f64) -> f64 {
+        if x < 0.0 {
+            ERRNO.store(EDOM, std::sync::atomic::Ordering::Relaxed);
+        }
+        x.sqrt()
+    }
+"#;
+
+/// The part of the `crt` module that `pow` calls, with the parts of `errno`,
+/// `EDOM` and `ERANGE`.
+const POW_RUNTIME: &str = r#"    /// C's `pow` from glibc, which Rust's `powf` calls, setting `errno` as
+    /// glibc does: to `EDOM` for a result that is not a number of operands
+    /// that are, and to `ERANGE` for an infinite result of finite operands
+    /// or a zero one of a finite nonzero base and a finite exponent.
+    pub fn pow(x: f64, y: f64) -> f64 {
+        let result = x.powf(y);
+        if result.is_nan() && !x.is_nan() && !y.is_nan() {
+            ERRNO.store(EDOM, std::sync::atomic::Ordering::Relaxed);
+        } else if x.is_finite()
+            && y.is_finite()
+            && (result.is_infinite() || (result == 0.0 && x != 0.0))
+        {
+            ERRNO.store(ERANGE, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
     }
 "#;
