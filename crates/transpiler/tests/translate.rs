@@ -418,15 +418,6 @@ fn rejects_string_pointer_uses_it_cannot_translate() {
         rust.contains(r#"compile_error!("unsupported C: string literal that is not UTF-8")"#),
         "{rust}"
     );
-    // Equal literals may or may not share an address in C.
-    let rust = translate(
-        &dir,
-        "int main(void) { char *p = \"a\", *q = \"a\"; return p == q; }\n",
-    );
-    assert!(
-        rust.contains(r#"compile_error!("unsupported C: comparison of char *")"#),
-        "{rust}"
-    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -481,22 +472,13 @@ skip:;
 #[test]
 fn rejects_integer_pointer_uses_it_cannot_translate() {
     let dir = scratch("rejects_integer_pointer_uses_it_cannot_translate");
-    // No variable outlives the function for the result to borrow.
+    // A pointer is the cells from where it points, so it cannot move back.
     let rust = translate(
         &dir,
-        "int *pick(int *p) { return p; }\nint main(void) { int x = 1; return *pick(&x); }\n",
+        "int main(void) { int a[2] = {1, 2}; int *p = a + 1; return *(p - 1); }\n",
     );
     assert!(
-        rust.contains(r#"compile_error!("unsupported C: return type int *")"#),
-        "{rust}"
-    );
-    // A pointer is the cells from where it points, so it cannot move.
-    let rust = translate(
-        &dir,
-        "int main(void) { int a[2] = {1, 2}; int *p = a + 1; return *p; }\n",
-    );
-    assert!(
-        rust.contains(r#"compile_error!("unsupported C: binary + on int *")"#),
+        rust.contains(r#"compile_error!("unsupported C: binary - on int *")"#),
         "{rust}"
     );
     // A `char *` holds a string literal's bytes, not a character variable.
@@ -1240,12 +1222,9 @@ int main(int argc, char **argv) {
 #[test]
 fn rejects_floating_uses_it_cannot_translate() {
     let dir = scratch("rejects_floating_uses_it_cannot_translate");
-    let rust = translate(
-        &dir,
-        "int main(void) { float f = 1; f += 0.5; return f; }\n",
-    );
+    let rust = translate(&dir, "int main(void) { float f = 1; f++; return f; }\n");
     assert!(
-        rust.contains(r#"compile_error!("unsupported C: += on float")"#),
+        rust.contains(r#"compile_error!("unsupported C: ++ on float")"#),
         "{rust}"
     );
     let rust = translate(
@@ -1263,9 +1242,7 @@ fn rejects_floating_uses_it_cannot_translate() {
         "#include <stdio.h>\nint main(void) { printf(\"%.2d\\n\", 3); return 0; }\n",
     );
     assert!(
-        rust.contains(
-            "unsupported C: printf precision or length on a conversion that is not floating"
-        ),
+        rust.contains("unsupported C: printf precision on a conversion that is not floating"),
         "{rust}"
     );
     let rust = translate(
@@ -1273,5 +1250,675 @@ fn rejects_floating_uses_it_cannot_translate() {
         "int main(void) { long double x = 1.5L; return x > 1; }\n",
     );
     assert!(rust.contains("unsupported C: type long double"), "{rust}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_structs_and_bit_fields() {
+    let c = r#"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+
+struct point { int x; int type; };
+typedef struct point point_t;
+typedef struct { struct point corner; long area; bool filled; } rect;
+typedef struct { unsigned a : 3; int s : 4; unsigned char c : 2; bool b : 1; } bits;
+typedef struct { int v; } Option;
+
+static struct point make(int x, int y) {
+    struct point p = {.type = y, .x = x};
+    return p;
+}
+
+static void shift(point_t *p, int dx) {
+    p->x += dx;
+    (*p).type -= dx;
+}
+
+static int area_of(rect r) {
+    r.area = (long)r.corner.x * r.corner.type;
+    return (int)r.area;
+}
+
+static void bump(int *v) {
+    (*v)++;
+}
+
+static void show(const rect *r) {
+    if (r == NULL) {
+        printf("null\n");
+        return;
+    }
+    printf("%d %d %d %d\n", r->corner.x, r->corner.type, (int)r->area, r->filled);
+}
+
+int main(void) {
+    unsigned u = 0;
+    int n = 0;
+    scanf("%u %d", &u, &n);
+    printf("u=%u\n", u);
+    struct point a = make(n, 3);
+    point_t b = a;
+    b.x = 100;
+    shift(&a, 2);
+    printf("%d %d %d %d\n", a.x, a.type, b.x, b.type);
+    rect r = {{4, 5}, 0, true};
+    rect r2;
+    r2 = r;
+    r2.corner.x = 7;
+    printf("%d %d\n", area_of(r), area_of(r2));
+    show(&r);
+    show(NULL);
+    bump(&r.corner.type);
+    scanf("%d", &r2.corner.type);
+    r.corner = r2.corner;
+    show(&r);
+    show(&r2);
+    Option o;
+    o.v = n;
+    printf("%d\n", o.v);
+    bits k = {0};
+    k.a = u;
+    k.s = n;
+    k.c = 7;
+    k.b = n;
+    printf("%u %d %d %d\n", k.a, k.s, k.c, k.b);
+    for (int i = 0; i < 9; i++) {
+        k.a++;
+        k.s++;
+    }
+    k.s--;
+    printf("%u %d\n", k.a, k.s);
+    k.a = k.a + 6;
+    printf("%u\n", k.a);
+    return a.x;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_structs_and_bit_fields",
+        c,
+        &[
+            "5 9 11",
+            "4294967295 -3 2",
+            "-1 7 0",
+            // `%u` reads as `strtoul` does and keeps the low 32 bits.
+            "9223372036854775808 15 4",
+            "18446744073709551616 -8 3",
+            "-18446744073709551615 2 2",
+            "-9223372036854775809 1 1",
+            "+7 x",
+            "",
+        ],
+    );
+    // Members are cells, so a struct is never `mut`, and only a struct that
+    // is assigned whole, and those inside it, need a `set`.
+    assert!(!rust.contains("let mut a"), "{rust}");
+    assert!(rust.contains("impl rect {"), "{rust}");
+    assert!(rust.contains("impl point {"), "{rust}");
+    assert!(!rust.contains("impl bits {"), "{rust}");
+    assert!(rust.contains("struct Option_ {"), "{rust}");
+}
+
+#[test]
+fn translates_structs_in_a_block_with_labels() {
+    let c = r#"
+#include <stdio.h>
+
+struct acc { int total; unsigned steps : 3; };
+
+static void add(struct acc *a, int v) {
+    a->total += v;
+    a->steps++;
+}
+
+int main(void) {
+    int n = 0;
+    scanf("%d", &n);
+    struct acc a = {0};
+again:
+    add(&a, n);
+    if (a.total < 20) goto again;
+    struct acc b = a;
+    printf("%d %u %d\n", b.total, b.steps, a.total);
+    return 0;
+}
+"#;
+    same_behaviour(
+        "translates_structs_in_a_block_with_labels",
+        c,
+        &["1", "3", "7"],
+    );
+}
+
+#[test]
+fn rejects_struct_uses_it_cannot_translate() {
+    let dir = scratch("rejects_struct_uses_it_cannot_translate");
+    let cases = [
+        // A `char` array is bytes, which no cell of a struct holds.
+        (
+            "struct a { char v[2]; }; int main(void) { struct a x; return 0; }",
+            "type struct a",
+        ),
+        (
+            "union u { int a; }; int main(void) { union u x; x.a = 1; return x.a; }",
+            "type union u",
+        ),
+        // An unnamed bit-field has no member to name in Rust.
+        (
+            "struct p { int x : 3; int : 2; }; int main(void) { struct p a = {1}; return a.x; }",
+            "type struct p",
+        ),
+        // GCC and Clang pack bit-fields, which the layout leaves out.
+        (
+            "struct p { int x : 3; }; int main(void) { return sizeof(struct p); }",
+            "sizeof struct p",
+        ),
+        (
+            "struct p { int x; }; int main(void) { struct p a[2]; return 0; }",
+            "type struct p[2]",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_global_variables() {
+    let c = r#"
+#include <stdio.h>
+
+struct point { int x; double y; };
+
+static struct point origin = {.y = 1.5};
+int counter;
+int counter = 3;
+static long total = 10;
+static unsigned char flags;
+double scale = 2;
+_Bool ready = 1;
+static int table[5] = {1, 2, 3};
+int zeros[3];
+
+static void bump(int *p) { (*p)++; }
+
+static void move(struct point *p, int dx) { p->x += dx; }
+
+static int sum(const int *a, int n) {
+    int s = 0;
+    for (int i = 0; i < n; i++) s += a[i];
+    return s;
+}
+
+int main(void) {
+    int n = 0;
+    if (scanf("%d", &n) != 1) return 1;
+    counter += n;
+    bump(&counter);
+    total *= counter;
+    flags = flags - 1;
+    scale = scale * 1.5;
+    table[3] = n;
+    zeros[1]++;
+    move(&origin, n);
+    origin.y += 1;
+    struct point copy = origin;
+    if (ready) printf("%d %d %d %u %.2f\n", counter, copy.x, (int)total, flags, scale);
+    int counter = 7;
+    printf("%d %d %d %d\n", counter, sum(table, 5), zeros[1], origin.x);
+    scanf("%d", &zeros[2]);
+    printf("%d %.1f\n", zeros[2], origin.y);
+    return 0;
+}
+"#;
+    same_behaviour("translates_global_variables", c, &["4 9", "-3 2", "5"]);
+}
+
+#[test]
+fn rejects_global_variables_it_cannot_translate() {
+    let dir = scratch("rejects_global_variables_it_cannot_translate");
+    let cases = [
+        (
+            "char name[8]; int main(void) { return 0; }",
+            "global variable of type char[8]",
+        ),
+        (
+            "int x; int *p = &x; int main(void) { return 0; }",
+            "global variable of type int *",
+        ),
+        (
+            "int grid[2][2]; int main(void) { return 0; }",
+            "global variable of type int[2][2]",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn compares_pointers_by_address() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+
+struct point { int x; };
+
+static int parsed(const char *str) {
+    char *end = (char *)str;
+    long n = strtol(str, &end, 10);
+    return end != str && n >= 0;
+}
+
+static int same(const int *a, int *b) {
+    return a == b;
+}
+
+static int same_point(struct point *a, struct point *b) {
+    return a != b ? 0 : a->x;
+}
+
+int main(void) {
+    char line[20] = "";
+    fgets(line, sizeof(line), stdin);
+    printf("%d\n", parsed(line));
+    char *p = "a", *q = "a", *r = "b", *none = NULL, *also_none = 0;
+    printf("%d %d %d %d\n", p == q, p != r, none == also_none, none == p);
+    char *start = line;
+    if (start == line)
+        printf("start\n");
+    int a[3] = {1, 2, 3};
+    int *first = a;
+    printf("%d %d %d\n", same(first, &a[0]), same(&a[1], &a[2]), same(&a[2], &a[2]));
+    struct point s = {4}, t = {5};
+    struct point *ps = &s;
+    printf("%d %d\n", same_point(ps, &s), same_point(&s, &t));
+    return 0;
+}
+"#;
+    let rust = same_behaviour("compares_pointers_by_address", c, &["12", "x", "-3", ""]);
+    assert!(rust.contains(".map(<[_]>::as_ptr) != "), "{rust}");
+}
+
+#[test]
+fn moves_pointers_forwards_and_searches_strings() {
+    let c = r#"
+#include <stdio.h>
+#include <string.h>
+
+struct item { int v; };
+
+static int count(const char *text, char c) {
+    int n = 0;
+    for (const char *s = text; (s = strchr(s, c)); s++)
+        n++;
+    return n;
+}
+
+static int sum(const int *p, int n) {
+    int total = 0;
+    for (; n > 0; n--) {
+        total += *p;
+        p++;
+    }
+    return total;
+}
+
+static int counter;
+
+int main(void) {
+    char buf[32] = "";
+    size_t items = fread(buf, 2, 7, stdin);
+    printf("%d [%s]\n", (int)items, buf);
+    printf("%d %d\n", count(buf, 'a'), count(buf, 'z'));
+    const char *last = strrchr(buf, 'a');
+    printf("%s|%s|%d\n", last ? last : "-", strchr(buf, '\0'), strrchr(buf, 0) == buf + strlen(buf));
+    char *rest = buf + 2;
+    rest += 1;
+    printf("[%s] [%s] %d\n", rest, 1 + rest, *(rest + 1));
+    char *end = buf;
+    end += strlen(buf);
+    printf("%d\n", end == buf + strlen(buf));
+    int a[4] = {1, 2, 3, 4};
+    int *p = a + 1;
+    p += 2;
+    printf("%d %d %d\n", sum(a, 4), sum(a + 2, 2), *p);
+    struct item one = {5};
+    struct item *it = &one, *past = it;
+    past++;
+    printf("%d %d %d\n", it->v, past != it, it + 1 == past);
+    int x, y;
+    static int s;
+    char narrow;
+    x = y = 3;
+    int z = (s = x + y) + (counter = 2) + (narrow = x * 50);
+    a[0] = (y = 9);
+    printf("%d %d %d %d %d %d %d\n", x, y, z, s, counter, narrow, a[0]);
+    int m = 4;
+    while ((m = m - 1) > 0)
+        printf("%d", m);
+    printf("\n");
+    return 0;
+}
+"#;
+    same_behaviour(
+        "moves_pointers_forwards_and_searches_strings",
+        c,
+        &["banana bread", "abc", "", "aaaaaaaaaaaaaaaaaaaaaaaaa"],
+    );
+}
+
+#[test]
+fn rejects_pointer_arithmetic_it_cannot_translate() {
+    let dir = scratch("rejects_pointer_arithmetic_it_cannot_translate");
+    let cases = [
+        // A pointer is the slice from where it points, so it cannot go back.
+        ("int f(const char *s) { s--; return 0; }", "-- on char *"),
+        ("int f(const char *s) { s -= 1; return 0; }", "-= on char *"),
+        (
+            "int f(const char *s) { return *(s - 1); }",
+            "binary - on char *",
+        ),
+        (
+            "int main(int argc, char **argv) { char **rest = argv + 1; return 0; }",
+            "binary + on char **",
+        ),
+        (
+            "#include <stdio.h>\nint main(void) { char s[4]; fread(s, 1, 4, stderr); return 0; }",
+            "fread from a stream other than stdin",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_static_local_arrays_and_returns_of_local_arrays() {
+    let c = r#"
+#include <stdio.h>
+#include <string.h>
+
+static const char *greeting(void) {
+    static char text[] = "hello";
+    return text;
+}
+
+static const char *pick(int n) {
+    static char empty[4];
+    static char name[8] = {'a', 'b', 'c'};
+    if (n % 2)
+        return name;
+    return empty;
+}
+
+static int next(void) {
+    static int counts[3];
+    static long steps[4] = {10, 20};
+    counts[0] = counts[0] + 1;
+    steps[counts[0] % 4] += counts[0];
+    int *p = counts + 1;
+    *p = *p + 2;
+    return counts[0] * 100 + counts[1] + (int)steps[1];
+}
+
+static const char *kept(int n) {
+    char local[8] = "gone";
+    if (n > 100)
+        return (local);
+    return "kept";
+}
+
+static char *lost(void) {
+    char buf[2] = "x";
+    return buf;
+}
+
+int main(void) {
+    int n = 0;
+    if (scanf("%d", &n) != 1 || n > 100)
+        return 1;
+    for (int i = 0; i < n; i++)
+        printf("%d ", next());
+    printf("\n%s %s %d [%s] [%s]\n", greeting(), kept(n), (int)strlen(greeting()), pick(n), pick(n + 1));
+    return n == 100 && lost() != NULL;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_static_local_arrays_and_returns_of_local_arrays",
+        c,
+        &["0", "1", "6", "x"],
+    );
+    // Both returns of a local array, in a block and at the end, panic.
+    assert_eq!(
+        rust.matches(
+            r#"panic!("returned a pointer to a local array that ends with its function")"#
+        )
+        .count(),
+        2,
+        "{rust}"
+    );
+}
+
+#[test]
+fn rejects_static_local_arrays_it_cannot_translate() {
+    let dir = scratch("rejects_static_local_arrays_it_cannot_translate");
+    let cases = [
+        (
+            "int main(void) { static int a[2][3]; return 0; }",
+            "static local variable of type int[2][3]",
+        ),
+        (
+            "int main(void) { static const char *names[2] = {\"a\", \"b\"}; return 0; }",
+            "static local variable of type char *[2]",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_heap_structs_member_arrays_and_memcpy() {
+    let c = r#"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef enum { OP_SUM = 0, OP_COPY, OP_LIST = 5 } op_t;
+enum level { LOW = -2, MID, HIGH };
+
+typedef struct {
+    uint8_t data[40];
+    size_t length;
+    uint32_t checksum;
+} buffer_t;
+
+struct node {
+    int16_t value;
+    struct node *next;
+};
+
+typedef struct {
+    buffer_t *buffers;
+    int count;
+} pool_t;
+
+struct flags { unsigned small : 3; int tiny : 3; };
+
+static pool_t *make_pool(int count) {
+    pool_t *pool = malloc(sizeof(pool_t));
+    if (!pool) return NULL;
+    pool->buffers = malloc(sizeof(buffer_t) * count);
+    if (pool->buffers == NULL) {
+        free(pool);
+        return NULL;
+    }
+    pool->count = count;
+    return pool;
+}
+
+static uint32_t checksum(const uint8_t *data, size_t length) {
+    uint32_t sum = 0;
+    for (size_t i = 0; i < length; i++) sum = (sum << 3) ^ data[i];
+    return sum;
+}
+
+// Storing null borrows nothing, so the node may be a local variable.
+static void clear(struct node *node) {
+    node->value = -1;
+    node->next = NULL;
+}
+
+static struct node *push(struct node *head, int16_t value) {
+    struct node *node = malloc(sizeof(struct node));
+    node->value = value;
+    node->next = head;
+    return node;
+}
+
+int main(void) {
+    int count, op;
+    if (scanf("%d %d", &count, &op) != 2 || count < 1 || count > 4) return 1;
+    pool_t *pool = make_pool(count);
+    for (int i = 0; i < count; i++) {
+        buffer_t *b = &pool->buffers[i];
+        int length;
+        if (scanf("%d", &length) != 1 || length < 0 || length > 40) return 2;
+        b->length = length;
+        for (size_t j = 0; j < b->length; j++) {
+            int byte;
+            scanf("%d", &byte);
+            b->data[j] = (uint8_t)byte;
+        }
+        b->checksum = checksum(b->data, b->length);
+    }
+    buffer_t merged = {.length = 0};
+    size_t at = 0;
+    switch ((op_t)op) {
+    case OP_SUM:
+        for (int i = 0; i < count; i++) printf("%u\n", pool->buffers[i].checksum);
+        break;
+    case OP_COPY:
+        for (int i = 0; i < count && at + pool->buffers[i].length <= 40; i++) {
+            memcpy(merged.data + at, pool->buffers[i].data, pool->buffers[i].length);
+            at += pool->buffers[i].length;
+        }
+        merged.length = at;
+        memcpy(&pool->buffers[0], &merged, sizeof(buffer_t));
+        printf("%zu %u\n", pool->buffers[0].length, checksum(pool->buffers[0].data, at));
+        break;
+    default:
+        printf("op %d of %lu\n", op, (unsigned long)OP_LIST);
+        break;
+    }
+    // Every other byte, through an index that a postfix ++ moves.
+    uint8_t picked[40];
+    size_t n = 0;
+    for (size_t j = 0; j < pool->buffers[0].length; j += 2) memcpy(&picked[n++], &pool->buffers[0].data[j], 1);
+    int up = count++;
+    int down = --count;
+    printf("%zu %u %d %d %d\n", n, n > 0 ? picked[n - 1] : 0u, up, down, count);
+    buffer_t copy = pool->buffers[0];
+    copy.data[0] = 99;
+    pool->buffers[0] = copy;
+    printf("%d %zu %zu\n", pool->buffers[0].data[0], sizeof(buffer_t), sizeof(struct node));
+
+    struct node *list = NULL;
+    for (int16_t v = 1; v <= 3; v++) list = push(list, v * (int16_t)count);
+    long total = 0;
+    for (struct node *p = list; p; p = p->next) total += p->value;
+    struct node last;
+    clear(&last);
+    printf("%ld %d %d %d\n", total, LOW + HIGH, (int)MID, last.value + (last.next == NULL));
+
+    // C computes these in a wider type and converts back.
+    int signed_total = -5;
+    signed_total += pool->buffers[0].length;
+    char c = 'a';
+    c += 300;
+    float f = 1.5f;
+    f *= 0.1;
+    struct flags fl = {7, 3};
+    fl.small += 2;
+    fl.tiny += 1;
+    printf("%d %d %.6f %u %d %lld %d\n", signed_total, c, f, fl.small, fl.tiny, 1LL << 40, 4000000000u);
+    while (list) {
+        struct node *next = list->next;
+        free(list);
+        list = next;
+    }
+    free(pool->buffers);
+    free(pool);
+    free(NULL);
+    return 0;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_heap_structs_member_arrays_and_memcpy",
+        c,
+        &[
+            "1 0 3 1 2 3",
+            "3 1 2 10 20 3 1 2 3 1 255",
+            "2 1 1 7 0",
+            "2 5 4 1 2 3 4 2 9 9",
+            "4 0 0 0 0 0",
+        ],
+    );
+    assert!(rust.contains("data: [std::cell::Cell<u8>; 40]"), "{rust}");
+    assert!(rust.contains("crt::malloc("), "{rust}");
+}
+
+#[test]
+fn rejects_heap_and_memcpy_uses_it_cannot_translate() {
+    let dir = scratch("rejects_heap_and_memcpy_uses_it_cannot_translate");
+    let cases = [
+        // A `char` array is bytes, not cells.
+        (
+            "#include <string.h>\nint main(void) { char a[4] = \"abc\", b[4]; memcpy(b, a, 4); return b[0]; }",
+            "memcpy from char * to char *",
+        ),
+        (
+            "#include <string.h>\nint main(void) { int a[2] = {1, 2}; long b[1]; memcpy(b, a, 8); return 0; }",
+            "memcpy from int * to long *",
+        ),
+        (
+            "struct a { int v[2]; int n; }; int main(void) { struct a x = {{1, 2}, 3}; return x.n; }",
+            "initialiser of the array member of struct a",
+        ),
+        (
+            "#include <stdio.h>\nint main(void) { printf(\"%zf\\n\", 1.0); return 0; }",
+            "printf length z on a floating conversion",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

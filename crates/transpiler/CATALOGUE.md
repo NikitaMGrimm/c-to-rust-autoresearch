@@ -361,3 +361,199 @@ Entry format, newest last:
   `printf`, R2's comparisons and tests, R7's `strtol` end pointer, which
   `strtod` shares, R8's conversions of `bool` and R9's `sizeof` and
   `errno`, whose `ERANGE` is now a part of the runtime of its own
+
+## R13: structs, bit-fields and scanf %u
+
+- C: structs defined at file scope, by tag or by a typedef, whose members are
+  named and of the integer types, `float`, `double`, `bool` or such structs,
+  bit-fields included; their local variables, parameters and return values,
+  uninitialised ones as zero; initialiser lists, designators and nested
+  lists included; `s.m`, `p->m`, `(*p).m` and `p[i].m`, read, assigned,
+  with R9's compound assignments and with `++` and `--` as statements;
+  assigning and copying a whole struct; pointers to structs as variables
+  and parameters, with null pointers and tests as R5 has them; `&` of a
+  struct and of a member of a scalar type, which is an `int *` or the like;
+  `scanf` into a member; `scanf`'s conversion `%u` into an `unsigned int`
+- Rust: a Rust struct with the C name, with one more `_` while the
+  translation uses that name for Rust's own types and paths, such as
+  `Option`, or another struct has it; a member of a scalar type is a `std::cell::Cell` and one
+  of a struct type is that struct, so pointers to a struct all read and write
+  its members, as R10's cells let them. Each derives `Clone`, which copies it
+  as C does, and `Default`, which is the value of an uninitialised one, and
+  one that the program assigns whole gets a `set` that sets each member from
+  a value, so no struct is `mut`. A `T *` is `Option<&[T]>`, the structs from
+  the one it points to, `&s` is `Some(std::slice::from_ref(&s))` and `p->m`
+  is a member of `p.expect("null pointer dereference")[0]`. An initialiser
+  list is a struct expression with every member, `Cell::new(0)` or the
+  struct's `default()` for those it leaves out. Reading a struct, as to
+  initialise, pass or return it, is `.clone()`, and assigning one is `.set`.
+  A bit-field stores the low bits of each value, sign-extended for a signed
+  type as GCC and Clang do, as `(v) & 7` or `((v) << 29) >> 29`. `%u` reads
+  as glibc does, with `strtoul`'s negation modulo 2^64 and saturation, and
+  stores the low 32 bits. Unions, structs with other members or unnamed
+  ones, arrays of structs, static and global structs, `sizeof` of a struct,
+  returning or comparing pointers to structs and compound assignments that
+  C computes in a type other than the bit-field's own stay unsupported
+- Motivation: `g3_033_bitfield` reads its values with `scanf("%u", ...)`,
+  initialises a struct of bit-fields with designators and prints its members
+  through a `const foo_t *`; `g3_023_struct_and_errno` and
+  `g3_024_struct_and_static` change a `house_t` through pointers to it with
+  `->`, `++` and `+=`, and fail now only for a `char *` comparison and a
+  global variable
+- Changes: extends R1's types, variables, assignments and `scanf`, whose
+  reading of `%d` keeps its behaviour, R5's null pointers and tests, R9's
+  compound assignments and R10's cells and pointers, which can now point to
+  a struct or into one
+
+## R14: global variables
+
+- C: variables at file scope, `static` or not, of the integer types,
+  `float`, `double`, `bool`, R13's structs and integer arrays of a fixed
+  length, with constant initialisers or none, declared once or again, as in
+  a tentative definition; reading them, assigning them in every way that R9,
+  R10 and R13 allow for a local of the same type, `&` of them and their
+  elements and members, `scanf` into them, and their arrays decaying to
+  pointers; a local variable that hides one
+- Rust: a function `__global_NAME`, a name C reserves, for each, which
+  returns `&'static` of the value R10 and R13 hold for a local: a
+  `std::cell::Cell` of a number or `bool`, the struct, or a slice of cells.
+  The function makes it on its first use from C's initial value, zero
+  without an initialiser, in a `thread_local!` that leaks it with
+  `Box::leak`, as safe Rust has no static of a cell; the program has one
+  thread. A use is `(*__global_NAME())`, a place like a local's name, and an
+  array is `__global_NAME()`, a slice like a local array. Global `char`
+  arrays, pointers, arrays of other types or of a variable length, other
+  initialisers and block-scope `extern` declarations stay unsupported
+- Motivation: `g3_024_struct_and_static` keeps a `static house_t` at file
+  scope with a designated initialiser, passes its address to functions that
+  change it through `->` and adds to a member directly
+- Changes: extends R1's variables, which were only local, R10's integer
+  arrays and R13's structs, which can now be global
+
+## R15: pointer equality
+
+- C: `==` and `!=` between two pointers of the same type that the
+  translation holds, `char *`, pointers to integers and pointers to structs,
+  `const` or not, as conditions and as `int` values; a conversion that only
+  drops a qualifier, as Clang makes when a `char *` meets a `const char *`
+- Rust: `p.map(<[_]>::as_ptr) == q.map(<[_]>::as_ptr)`: each slice runs from
+  where the pointer points to the end of its array, so its start says where,
+  and `None` equals only `None`, as null does in C. C leaves open whether
+  equal string literals share an address; Clang and GCC give them one within
+  a file, as rustc does for equal byte strings. The qualifier conversion is
+  its operand. Comparisons with `<`, `<=`, `>` and `>=` and between
+  pointers of different types stay unsupported
+- Motivation: `g3_023_struct_and_errno` parses its input with `strtol` and
+  tests `endp != str`, a `char *` against a `const char *` parameter, which
+  R7 allowed only when one side was an element of `argv`
+- Changes: replaces R7's comparison of `char *`, which needed an element of
+  `argv`, and lifts R5's and R13's rejection of comparisons between pointers
+  to integers and to structs
+
+## R16: pointers moving forwards, assignments as values, strchr and fread
+
+- C: `p + n` and `n + p` of an integer `n` and a `char *`, a pointer to an
+  integer or a pointer to a struct, or an array that decays to one; `p += n`
+  and `++` on such a pointer as statements; an assignment to a variable,
+  not of a struct type, used as a value, as in `while ((s = strchr(s, c)))`
+  or `a = b = 0`; `strchr` and `strrchr`; `fread(a, size, n, stdin)` into a
+  local `char` array, its result discarded or used as a `size_t`
+- Rust: each pointer is the slice from where it points to the end of its
+  array, so `p + n` is `Some(&p.expect("null pointer arithmetic")[n as
+  usize..])`, or of the array's own slice; one past the last element is the
+  empty slice, and beyond it, a negative `n` and null panic, as C leaves them
+  undefined. `p += n` and `++` assign that value. An assignment as a value is
+  `{ x = v; x }`, which reads the variable back after R1's, R7's or R14's
+  store, so a narrower type gives the converted value as C does.
+  `crt::strchr` and `crt::strrchr` return the rest of the string from the
+  first or last byte equal to `c` converted to `char`, the final zero
+  included, or `None`; a string without a zero panics where the search reads
+  past its array. `crt::fread` reads `size * n` bytes, the product wrapping
+  as glibc's does, from standard input with `scanf`'s buffer into `&mut
+  a[..]`, or as many as input holds, and returns `n` when it read them all
+  and otherwise the whole items read, as glibc does; writing past the array
+  panics. `p - n`, `p -= n`, `--` on a pointer, the difference of two
+  pointers, arithmetic on `char **`, an assignment to anything but a variable
+  used as a value, `fread` into other objects or from other streams stay
+  unsupported
+- Motivation: `g2_028_strchr` reads its input with `fread` into a
+  `char[1000]` and counts a character with `for (const char *s = in; s =
+  strchr(s, c); s++)`
+- Changes: lifts R10's rejection of pointer arithmetic for moving forwards,
+  extends R1's assignments, which were statements only, and R11's functions
+  that write a `char` array
+
+## R17: static local arrays and returns of a local array
+
+- C: `static` local arrays of a fixed length of `char` or of R10's integer
+  types, uninitialised or with a string literal or a list; `return` of a
+  function's own local array that is not static, perhaps in parentheses
+- Rust: the array is made on its block's first run, from the value R10 and
+  R11 give a local array, in a `thread_local!` that leaks it with
+  `Box::leak`, as R14 holds a global one, and the C name is a `let` that
+  borrows it for the whole program: `&[std::cell::Cell<T>]` for integers,
+  as a local integer array, and `&[u8]` for `char`, so a `char *` may borrow
+  it past the function's return; the static is named `__NAME_N`, as R7's. A
+  `return` of a local array that is not static is `panic!`, as the pointer
+  points to nothing once the function returns and C leaves using it
+  undefined; a call whose result C discards panics too. Writing to a static
+  `char` array fails to compile, as safe Rust cannot lend the same bytes
+  mutably on every run; static arrays of other types, of arrays and of
+  pointers stay unsupported, as do other ways to return a local array, such
+  as through a pointer variable or `a + n`
+- Motivation: `g2_015_return_stack_buffer` returns a `static char[]`
+  initialised with a literal from one helper and a local `char[]` from
+  another, which runs only on input that the benchmark leaves out
+- Changes: lifts R7's rejection of static locals of array types and R11's of
+  static `char` arrays and of a function returning its own array
+
+## R18: typedefs, enums, heap structs, member arrays and memcpy
+
+- C: typedefs of numbers and `bool`, such as `uint8_t` and `size_t`, wherever
+  a type names them, as behind a pointer or in a function's type; enum types
+  and their constants; struct members that are pointers or integer arrays of
+  a fixed length, other than of `char`, with a struct that points to itself;
+  such an array as a pointer, indexed, `&` of its elements and moved forwards;
+  `sizeof` of a struct; `malloc` converted to a pointer to an integer or a
+  struct, `free` and `memcpy` between two such pointers of one type; functions
+  that return any pointer the translation holds; `++` and `--` on a variable
+  used as a value; compound assignments that C computes in a type other than
+  the target's, such as `int += size_t`, `char += int` or `float *= double`;
+  `printf`'s lengths `l`, `ll` and `z` on integer conversions, and an integer
+  of the other signedness than the conversion's
+- Rust: before translating, every type the tree gives is spelled with the
+  number type of each such typedef and with each enum's integer type, `unsigned
+  int` without negative constants and `int` with them, as GCC and Clang
+  choose, and each use of a constant becomes its value. A pointer member is a
+  cell of the pointer, borrowing for the whole program; an array member is
+  `[Cell<T>; N]`, with a `Default` of its own for lengths Rust gives none, and
+  a struct's `set` sets each element. `sizeof` lays a struct out as x86-64
+  does, each member at the next multiple of its alignment. `crt::malloc` makes
+  as many zero objects as the bytes hold, leaked to last until the program
+  exits, and null beyond `isize::MAX` bytes; `crt::free` does nothing, as C
+  leaves using the memory afterwards undefined. `crt::memcpy` copies whole
+  objects, cells by value and structs with `set`, and panics for part of one,
+  past an array or for null. Every pointer of a function that returns one
+  borrows for its lifetime `'a`, as R11's `char *` do, and one that stores a
+  pointer other than null or `malloc`'s in a member borrows for `'static`. `x++`
+  as a value is `{ let __value = x; x += 1; __value }` and `++x` is `{ x += 1;
+  x }`. A compound assignment converts the target to C's type with `as`,
+  applies the operator there and converts back, as x86-64 does. `%zu` is
+  `unsigned long`, and an argument of the other signedness is converted `as`
+  the conversion's type, whose bits glibc reads. A pointer member that borrows
+  a local variable fails to compile, as do pointers in a function that stores
+  one and that a caller gives a local. Enums wider than `int`, `char` array
+  members, initialisers of array members, `sizeof` of a struct with
+  bit-fields, `calloc`, `realloc`, `memmove`, `memcpy` of `char` arrays and
+  `malloc` for a `char *` stay unsupported
+- Motivation: `g4_memcpy_fun_buffers` reads byte buffers into `buffer_t`
+  structs of a `uint8_t data[256]`, a `size_t` length and a `uint32_t`
+  checksum, held in an array from `malloc(sizeof(buffer_t) * n)` that a
+  struct points to, copies them with `memcpy`, also through `&dst->data[pos++]`,
+  switches on an `operation_t` enum and prints with `%zu`
+- Changes: extends R1's types, R2's `++` and `--`, R9's compound assignments,
+  `sizeof` and `switch`, R10's arrays and pointers, R11's lifetime of `char *`
+  to every pointer, R12's compound assignments on floating values, which no
+  longer need C's type to be the target's, and R13's structs, which lifts its
+  rejection of `sizeof` of a struct and of returning a pointer to one, and of
+  R5's returning a pointer to an integer

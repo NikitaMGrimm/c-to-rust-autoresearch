@@ -4,6 +4,7 @@
 mod control;
 mod stdio;
 mod translate;
+mod types;
 
 use std::path::Path;
 use std::process::Command;

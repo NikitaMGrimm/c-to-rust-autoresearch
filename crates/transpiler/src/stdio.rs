@@ -38,9 +38,13 @@ pub(crate) fn printf(t: &mut Translator, mac: &str, args: &[Value]) -> String {
                 call.push_str(&format!("crt::c_str({})", t.expr(value)));
             }
             (arg, Argument::Value(ty)) if arg == ty => call.push_str(&t.expr(value)),
-            // glibc reads the bits of an int as unsigned, as Rust's `as` does.
-            ("int", Argument::Value("unsigned int")) => {
-                call.push_str(&format!("{} as u32", t.operand(value)));
+            // glibc reads the bits of an integer of the other signedness, as
+            // Rust's `as` does.
+            (arg, Argument::Value(ty))
+                if let (Some(from), Some(to)) = (rust_type(arg), rust_type(ty))
+                    && from[1..] == to[1..] =>
+            {
+                call.push_str(&format!("{} as {to}", t.operand(value)));
             }
             (arg, Argument::Value(ty)) => {
                 return unsupported(&format!("printf of {arg} as {ty}"));
@@ -101,10 +105,19 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
                     }
                     precision = Some(digits.parse().unwrap_or(0));
                 }
-                // `l` changes nothing for a floating conversion.
-                let long = chars.next_if_eq(&'l').is_some();
+                // `l` changes nothing for a floating conversion; `z` is
+                // `size_t` and `ssize_t`, both `long` on x86-64 Linux.
+                let length = match chars.next_if(|&c| c == 'l' || c == 'z') {
+                    Some('l') if chars.next_if_eq(&'l').is_some() => "ll",
+                    Some('l') => "l",
+                    Some(_) => "z",
+                    None => "",
+                };
                 match chars.next() {
                     // Rust pads strings on the right by default.
+                    Some('f' | 'F' | 'e' | 'E' | 'g' | 'G') if !matches!(length, "" | "l") => {
+                        return Err(format!("printf length {length} on a floating conversion"));
+                    }
                     Some(conversion @ ('f' | 'F' | 'e' | 'E' | 'g' | 'G')) if !(plus || zero) => {
                         if width.is_empty() {
                             out.push_str("{}");
@@ -116,11 +129,14 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
                     Some('f' | 'F' | 'e' | 'E' | 'g' | 'G') => {
                         return Err("printf floating conversion with the flag + or 0".into());
                     }
-                    _ if precision.is_some() || long => {
-                        return Err(
-                            "printf precision or length on a conversion that is not floating"
-                                .into(),
-                        );
+                    _ if precision.is_some() => {
+                        return Err("printf precision on a conversion that is not floating".into());
+                    }
+                    other
+                        if !length.is_empty()
+                            && !matches!(other, Some('d' | 'i' | 'u' | 'o' | 'x' | 'X')) =>
+                    {
+                        return Err(format!("printf length {length} on this conversion"));
                     }
                     Some('%') if !(left || plus || zero) && width.is_empty() => out.push('%'),
                     // A width counts bytes in C but characters in Rust.
@@ -130,19 +146,27 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
                     }
                     Some('s') => return Err("printf conversion %s with flags or a width".into()),
                     Some(conversion @ ('d' | 'i' | 'u' | 'o' | 'x' | 'X')) => {
-                        let (ty, radix) = match conversion {
-                            'd' | 'i' => ("int", ""),
-                            'u' => ("unsigned int", ""),
-                            'o' => ("unsigned int", "o"),
-                            'x' => ("unsigned int", "x"),
-                            _ => ("unsigned int", "X"),
+                        let radix = match conversion {
+                            'o' => "o",
+                            'x' => "x",
+                            'X' => "X",
+                            _ => "",
+                        };
+                        let signed = matches!(conversion, 'd' | 'i');
+                        let ty = match (length, signed) {
+                            ("", true) => "int",
+                            ("", false) => "unsigned int",
+                            ("l" | "z", true) => "long",
+                            ("l" | "z", false) => "unsigned long",
+                            (_, true) => "long long",
+                            (_, false) => "unsigned long long",
                         };
                         // Rust right-aligns numbers already; C ignores 0 with
                         // -, and + on unsigned conversions.
                         let spec = format!(
                             "{}{}{}{width}{radix}",
                             if left { "<" } else { "" },
-                            if plus && ty == "int" { "+" } else { "" },
+                            if plus && signed { "+" } else { "" },
                             if zero && !left { "0" } else { "" },
                         );
                         if spec.is_empty() {
@@ -211,6 +235,7 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
             match bytes.next() {
                 Some(b'%') => {}
                 Some(b'd') => types.push("int"),
+                Some(b'u') => types.push("unsigned int"),
                 Some(b'c') => types.push("char"),
                 other => {
                     return Err(format!(
@@ -412,8 +437,10 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
     }
 
     /// Reads a decimal integer as glibc does: a sign it reads stays read,
-    /// and a value out of range saturates as with `strtol`.
-    fn read_int(input: &mut impl BufRead) -> Option<i64> {
+    /// and a value out of range saturates as with `strtol`, or for
+    /// `unsigned`, as with `strtoul`, which negates a value after `-` modulo
+    /// 2^64; that value is given as the bits of an `i64`.
+    fn read_int(input: &mut impl BufRead, unsigned: bool) -> Option<i64> {
         let negative = match peek(input) {
             Some(sign @ (b'+' | b'-')) => {
                 input.consume(1);
@@ -421,23 +448,26 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
             }
             _ => false,
         };
-        // Counts down, since i64::MIN has no positive counterpart.
-        let mut value: i64 = 0;
+        let mut magnitude = Some(0u64);
         let mut digits = false;
         while let Some(digit @ b'0'..=b'9') = peek(input) {
             input.consume(1);
             digits = true;
-            value = value
-                .saturating_mul(10)
-                .saturating_sub(i64::from(digit - b'0'));
+            magnitude = magnitude
+                .and_then(|m| m.checked_mul(10))
+                .and_then(|m| m.checked_add(u64::from(digit - b'0')));
         }
         if !digits {
             return None;
         }
-        Some(if negative {
-            value
-        } else {
-            value.checked_neg().unwrap_or(i64::MAX)
+        Some(match magnitude {
+            Some(m) if unsigned && negative => m.wrapping_neg() as i64,
+            Some(m) if unsigned => m as i64,
+            None if unsigned => u64::MAX as i64,
+            Some(m) if negative => 0i64.checked_sub_unsigned(m).unwrap_or(i64::MIN),
+            Some(m) => i64::try_from(m).unwrap_or(i64::MAX),
+            None if negative => i64::MIN,
+            None => i64::MAX,
         })
     }
 
@@ -467,7 +497,7 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
                             input.consume(1);
                             i64::from(byte)
                         }
-                        Some(_) => match read_int(&mut input) {
+                        Some(_) => match read_int(&mut input, conversion == Some(&b'u')) {
                             Some(value) => value,
                             None => return stored,
                         },
@@ -515,5 +545,34 @@ pub(crate) const FGETS_RUNTIME: &str = r#"    /// C's `fgets` on standard input 
         }
         s[read] = 0;
         Some(())
+    }
+"#;
+
+/// The part of the `crt` module that `fread` calls.
+pub(crate) const FREAD_RUNTIME: &str = r#"    /// C's `fread` from standard input into bytes as glibc has it: reads
+    /// `size * n` bytes, the product wrapping as `size_t` does, or as many as
+    /// input holds. Returns `n` when it read them all and otherwise the
+    /// number of whole items of `size` bytes. Writing past the array panics.
+    pub fn fread(s: &mut [u8], size: u64, n: u64) -> u64 {
+        use std::io::BufRead;
+        let wanted = size.wrapping_mul(n);
+        if wanted == 0 {
+            return 0;
+        }
+        let mut input = std::io::stdin().lock();
+        let mut read = 0;
+        while read < wanted {
+            let Ok(available) = input.fill_buf() else {
+                break;
+            };
+            if available.is_empty() {
+                break;
+            }
+            let count = available.len().min((wanted - read) as usize);
+            s[read as usize..read as usize + count].copy_from_slice(&available[..count]);
+            input.consume(count);
+            read += count as u64;
+        }
+        if read == wanted { n } else { read / size }
     }
 "#;

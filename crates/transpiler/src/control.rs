@@ -4,8 +4,8 @@
 //! continues that loop.
 
 use crate::translate::{
-    Translator, c_type, ident, inner, is_bool, kind, null_pointer, number_type, pointer, rust_type,
-    unsupported, value_type, zero,
+    Translator, c_type, ident, inner, is_bool, kind, null_pointer, number_type, rust_type,
+    unsupported,
 };
 use serde_json::Value;
 
@@ -65,18 +65,6 @@ pub(crate) fn boolean(expr: &Value) -> bool {
     }
 }
 
-/// Whether `expr` is an element of `main`'s `argv`, the only `char **`.
-fn argument(expr: &Value) -> bool {
-    let mut expr = expr;
-    while kind(expr) == "ParenExpr"
-        || (kind(expr) == "ImplicitCastExpr"
-            && matches!(expr["castKind"].as_str(), Some("LValueToRValue" | "NoOp")))
-    {
-        expr = &inner(expr)[0];
-    }
-    kind(expr) == "ArraySubscriptExpr" && c_type(&inner(expr)[0]) == "char **"
-}
-
 /// A nonzero integer constant as a condition, as in `while (1)`.
 fn always(cond: &Value) -> bool {
     let cond = strip_parens(cond);
@@ -120,17 +108,15 @@ impl Translator {
                 };
                 self.nonzero(pointer, op)
             }
-            // Two `char *` are equal where they point to the same byte. Each
-            // slice runs to the end of its array, so its start says where.
-            // One must be a program argument: C may or may not give equal
-            // string literals one address, but never an argument.
+            // Two pointers are equal where they point to the same object.
+            // Each slice runs to the end of its array, so its start says
+            // where. C leaves it open whether equal string literals share an
+            // address; Clang, GCC and rustc all give them one.
             ("BinaryOperator", Some(op @ ("==" | "!=")))
-                if c_type(&args[0]) == "char *"
-                    && c_type(&args[1]) == "char *"
-                    && (argument(&args[0]) || argument(&args[1])) =>
+                if c_type(&args[0]) == c_type(&args[1]) && self.pointer(c_type(&args[0])) =>
             {
                 format!(
-                    "{}.map(<[u8]>::as_ptr) {op} {}.map(<[u8]>::as_ptr)",
+                    "{}.map(<[_]>::as_ptr) {op} {}.map(<[_]>::as_ptr)",
                     self.operand(&args[0]),
                     self.operand(&args[1])
                 )
@@ -184,7 +170,7 @@ impl Translator {
                 value
             };
         }
-        if pointer(c_type(expr)) {
+        if self.pointer(c_type(expr)) {
             let test = if op == "==" { "is_none" } else { "is_some" };
             return format!("{}.{test}()", self.operand(expr));
         }
@@ -503,7 +489,7 @@ impl Translator {
     fn hoist(&mut self, var: &Value, block: &[Value]) -> Option<(String, Option<String>)> {
         if kind(var) != "VarDecl"
             || !var["storageClass"].is_null()
-            || value_type(c_type(var)).is_none()
+            || self.value_type(c_type(var)).is_none()
         {
             return None;
         }
@@ -512,18 +498,18 @@ impl Translator {
             return None;
         }
         let binding = self.binding(var);
-        let zero = zero(c_type(var));
+        let zero = self.zero(c_type(var));
         match inner(var).first() {
             Some(init) if var["init"].is_string() && self.is_cell(Some(id)) => {
                 let assign = format!("{}.set({})", ident(name), self.expr(init));
-                Some((self.declaration(var, zero), Some(assign)))
+                Some((self.declaration(var, &zero), Some(assign)))
             }
             Some(init) if var["init"].is_string() => {
                 let binding = binding.strip_prefix("mut ").unwrap_or(&binding);
                 let assign = format!("{} = {}", ident(name), self.expr(init));
                 Some((format!("let mut {binding} = {zero};"), Some(assign)))
             }
-            _ => Some((self.declaration(var, zero), None)),
+            _ => Some((self.declaration(var, &zero), None)),
         }
     }
 
