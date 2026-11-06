@@ -330,6 +330,11 @@ fn made_up_name(rng: &mut Rng) -> String {
 /// Changes about half of the decimal integer constants of 2 or more by a
 /// small amount. Returns `None` if there is nothing to change.
 fn change_constants(source: &str, rng: &mut Rng) -> Option<String> {
+    // The main that intake adds to a library only reads the arguments; a
+    // changed argument count or base would make every input fail in the same
+    // way, without reaching the library.
+    let end = source.find(bench::GENERATED_MAIN).unwrap_or(source.len());
+    let (source, generated) = source.split_at(end);
     let mut changed = false;
     let result = replace(source, |token, text| {
         if token.kind != Kind::Number {
@@ -346,7 +351,7 @@ fn change_constants(source: &str, rng: &mut Rng) -> Option<String> {
         changed |= new_value != value;
         Some(format!("{new_value}{}", &text[digits.len()..]))
     });
-    changed.then_some(result)
+    changed.then(|| result + generated)
 }
 
 /// The same input with about half of its numbers replaced by other numbers
@@ -612,6 +617,26 @@ int main(void) {
         assert!(words.contains(&"0") && words.contains(&"1") && words.contains(&"010"));
         assert_ne!(changed, source);
         assert!(words.iter().any(|word| word.ends_with('u')), "{changed}");
+    }
+
+    #[test]
+    fn constants_of_a_generated_main_stay() {
+        let main = format!(
+            "{}\nint main(int argc, char **argv) {{\n    if (argc != 3) return 2;\n    return (int)strtoll(argv[1], 0, 10);\n}}\n",
+            bench::GENERATED_MAIN
+        );
+        let source = format!("int scale(int x) {{ return x * 20; }}\n{main}");
+        for seed in 0..20 {
+            if let Some(changed) = change_constants(&source, &mut Rng(seed)) {
+                assert!(changed.ends_with(&main), "{changed}");
+                assert!(!changed.contains("x * 20;"), "{changed}");
+            }
+        }
+        let library_without_constants = format!("int id(int x) {{ return x; }}\n{main}");
+        assert_eq!(
+            change_constants(&library_without_constants, &mut Rng(0)),
+            None
+        );
     }
 
     #[test]

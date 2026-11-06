@@ -16,18 +16,20 @@ B01 and B02, from both the public tests and the formerly hidden tests:
 
 - `gN_name.c` is TRACTOR's `main.c`, unchanged.
 - `gN_name.json` names the source and lists the inputs. Each input holds the
-  command-line arguments and standard input of one TRACTOR test vector.
+  command-line arguments and standard input of one TRACTOR test vector; for
+  a library program, the arguments are the vector's state, one per field.
 
-A library test case becomes a program too when its family has no executable
-test case and TRACTOR's Rust runner does nothing but one plain call: its state
-holds only numbers, `bool`s and strings, and its `run` passes fields, or a
-string's first byte, to the library's function and may store the result in a
-field. The program is the library's source with its header inlined and a
+A library test case becomes a program too when its family has no program
+from an executable test case and TRACTOR's Rust runner does nothing but one
+plain call: its state holds only numbers, `bool`s and strings, and its `run`
+passes fields, or a string's first byte, to the library's function and may
+store the result in a field. The program is the library's source with its header inlined and a
 generated `main`, marked by a comment, that reads the state from the
 command line, one argument per field, makes the call and prints the result
 field. An input then also needs the expected result, with floats compared as
 TRACTOR's runner does: equal within 1e-6, or within the type's machine
-epsilon relative to the larger value.
+epsilon relative to the larger value. Since the program prints only the
+result, TRACTOR must expect every other field to stay as it was.
 
 The evaluator runs the C and the Rust program on every input. An input is kept
 only if the sanitized C build gives TRACTOR's expected exit code, and its
@@ -90,7 +92,7 @@ unions and function pointers, and a program's group is the highest feature
 anywhere in its file, although its test calls one function.
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`a51c42d4741cf4fddc08477d82c8a75e15b4d3bd72f34638f8e8abca900bc7e4`.
+`b439f13a3f01b57fbd67bc1a3ba85fb4ebe5c67a22611fec5002149d6b813925`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -104,7 +106,9 @@ them:
 - `__r`: every identifier the program declares, including macros, gets a
   made-up name, the same everywhere.
 - `__k`: the renamed program with about half of its decimal constants of 2 or
-  more changed by a small amount.
+  more changed by a small amount. The generated `main` of a library program
+  stays as it is, since a changed argument count would make every input fail
+  before the library runs.
 - `__i`: the original program on inputs whose numbers are partly replaced by
   others with as many digits. For a program that calls `atoi`, `atol`,
   `atoll` or the `scanf` family, inputs with a number beyond `int` are left
@@ -118,9 +122,9 @@ them either.
 
 | Set | Variants | No valid constants change | No numbers in inputs |
 |---|---:|---:|---:|
-| Dev | 128 | 14 | 8 |
-| Validation | 63 | 6 | 3 |
-| Held-out | 52 | 10 | 4 |
+| Dev | 127 | 15 | 8 |
+| Validation | 61 | 8 | 3 |
+| Held-out | 54 | 8 | 4 |
 
 Renamed variants kept every input of their original.
 
