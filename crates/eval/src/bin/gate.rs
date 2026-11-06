@@ -45,17 +45,18 @@ struct Args {
     run: Option<String>,
 }
 
-fn parse_args() -> Option<Args> {
+/// The gate's arguments, without the program name, or `None` for a usage error.
+fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
     let mut positional = Vec::new();
     let (mut jobs, mut usage, mut dev_only, mut run) = (2, None, false, None);
-    let mut rest = std::env::args().skip(1);
+    let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().filter(|value| !value.starts_with('-'));
         match arg.as_str() {
             "--jobs" => jobs = value()?.parse().ok().filter(|&n| n > 0)?,
             "--usage" => usage = Some(value()?.into()),
             "--dev-only" => dev_only = true,
-            "--run" => run = Some(value()?).filter(|id| run_id(id)),
+            "--run" => run = Some(value().filter(|id| run_id(id))?),
             _ if arg.starts_with('-') => return None,
             _ => positional.push(arg),
         }
@@ -72,6 +73,14 @@ fn parse_args() -> Option<Args> {
     })
 }
 
+/// Where the gate appends its log: the run's directory, or the loop's.
+fn log_dir(args: &Args) -> PathBuf {
+    match &args.run {
+        Some(run) => args.private.join("runs").join(run),
+        None => args.private.join("loop"),
+    }
+}
+
 /// Whether `id` can name a run's log directory: letters, digits, `.`, `-`
 /// and `_`, not starting with a dot.
 fn run_id(id: &str) -> bool {
@@ -83,7 +92,7 @@ fn run_id(id: &str) -> bool {
 }
 
 fn main() -> ExitCode {
-    let Some(args) = parse_args() else {
+    let Some(args) = parse_args(std::env::args().skip(1)) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
@@ -184,11 +193,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         "sets": summary,
         "usage": usage,
     });
-    let log = match &args.run {
-        Some(run) => args.private.join("runs").join(run),
-        None => args.private.join("loop"),
-    };
-    append_log(&log, &entry)?;
+    append_log(&log_dir(args), &entry)?;
 
     // The loop agent sees the development set only, and validation through the
     // decision alone.
@@ -223,6 +228,17 @@ fn near_copies(private: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, Str
     };
     let json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    // A file from before a set existed would drop that set's score without
+    // near-copies from the log.
+    if let Some(set) = ["validation", "held-out"]
+        .into_iter()
+        .find(|set| !json["sets"][set].is_object())
+    {
+        return Err(format!(
+            "{} has no {set} set; run the near-copies tool again",
+            path.display()
+        ));
+    }
     let sets = json["sets"].as_object().into_iter().flatten();
     Ok(sets
         .map(|(set, programs)| {
@@ -441,17 +457,53 @@ mod tests {
         let before = results(&[Pass, Mismatch], &[Pass, Panic]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
         let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
+        let same_overfit = results(&[Mismatch, Pass], &[Panic, Panic]);
         assert_eq!(rejection(&before, &overfit, false, true), None);
+        assert_eq!(rejection(&before, &same_overfit, true, true), None);
         assert!(rejection(&before, &trade, false, true).is_some());
         assert!(rejection(&before, &overfit, false, false).is_some());
     }
 
+    fn parsed(args: &[&str]) -> Option<Args> {
+        parse_args(args.iter().map(|arg| arg.to_string()))
+    }
+
     #[test]
-    fn run_ids_name_one_directory() {
-        assert!(run_id("wp2-a.1_b"));
+    fn a_run_logs_to_its_own_directory() {
+        let args = parsed(&["private", "base", "candidate", "--run", "wp2-a.1_b"]).unwrap();
+        assert_eq!(log_dir(&args), Path::new("private/runs/wp2-a.1_b"));
+        let args = parsed(&["private", "base", "candidate", "--dev-only"]).unwrap();
+        assert!(args.dev_only);
+        assert_eq!(log_dir(&args), Path::new("private/loop"));
+    }
+
+    #[test]
+    fn a_run_id_that_could_leave_its_directory_is_a_usage_error() {
         for id in ["", ".", "..", ".hidden", "a/b", "../loop", "a b"] {
-            assert!(!run_id(id), "{id}");
+            assert!(
+                parsed(&["private", "base", "candidate", "--run", id]).is_none(),
+                "{id}"
+            );
         }
+    }
+
+    #[test]
+    fn near_copies_must_list_both_private_sets() {
+        let dir = eval::Scratch::new("gate-near-copies").unwrap();
+        let file = dir.join("near-copies.json");
+        std::fs::write(&file, r#"{"sets": {"validation": {"g1_a": {}}}}"#).unwrap();
+        assert!(near_copies(&dir).unwrap_err().contains("held-out"));
+        std::fs::write(
+            &file,
+            r#"{"sets": {"validation": {"g1_a": {}}, "held-out": {}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            near_copies(&dir).unwrap()["validation"],
+            BTreeSet::from(["g1_a".to_owned()])
+        );
+        std::fs::remove_file(&file).unwrap();
+        assert!(near_copies(&dir).unwrap().is_empty());
     }
 
     #[test]
