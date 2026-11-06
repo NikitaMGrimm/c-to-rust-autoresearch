@@ -18,6 +18,17 @@ B01 and B02, from both the public tests and the formerly hidden tests:
 - `gN_name.json` names the source and lists the inputs. Each input holds the
   command-line arguments and standard input of one TRACTOR test vector.
 
+A library test case becomes a program too when its family has no executable
+test case and TRACTOR's Rust runner does nothing but one plain call: its state
+holds only numbers, `bool`s and strings, and its `run` passes fields, or a
+string's first byte, to the library's function and may store the result in a
+field. The program is the library's source with its header inlined and a
+generated `main`, marked by a comment, that reads the state from the
+command line, one argument per field, makes the call and prints the result
+field. An input then also needs the expected result, with floats compared as
+TRACTOR's runner does: equal within 1e-6, or within the type's machine
+epsilon relative to the larger value.
+
 The evaluator runs the C and the Rust program on every input. An input is kept
 only if the sanitized C build gives TRACTOR's expected exit code, and its
 expected standard output where the vector gives one, twice in a row. Builds
@@ -27,12 +38,14 @@ of an optimised build.
 
 | Not used | Count | Why |
 |---|---:|---|
-| Library test cases | 169 | They are called through a Rust FFI runner, not run as programs |
-| Several source files | 14 | The transpiler reads one file |
-| No usable input left | 3 | |
-| Inputs marked as undefined behaviour | 25 | Dropped; the rest of the program stays |
+| Library forms of a family that has a program | 46 | They repeat its code |
+| Library runners that do more than one plain call | 67 | Their state or call needs more than a generated `main` |
+| Several source files | 22 | The transpiler reads one file |
+| No usable input left | 6 | |
+| Inputs marked as undefined behaviour | 44 | Dropped; the rest of the program stays |
 | Inputs with undefined behaviour the sanitizers miss | 2 | `atoi` beyond `int`; listed in the intake tool |
-| Inputs with a pattern as expected output | 28 | Dropped; the expected output cannot be checked exactly |
+| Inputs with a pattern as expected output | 48 | Dropped; the expected output cannot be checked exactly |
+| Inputs in a format the intake tool does not know | 1 | Dropped |
 
 ## Difficulty groups
 
@@ -65,15 +78,19 @@ share a set.
 
 | Group | Dev | Validation | Held-out |
 |---|---:|---:|---:|
-| G1 | 7 | 3 | 3 |
-| G2 | 7 | 4 | 3 |
-| G3 | 8 | 5 | 6 |
-| G4 | 1 | 1 | 0 |
-| G5 | 1 | 1 | 1 |
-| Total | 24 | 14 | 13 |
+| G1 | 10 | 4 | 3 |
+| G2 | 9 | 4 | 3 |
+| G3 | 11 | 5 | 6 |
+| G4 | 3 | 2 | 2 |
+| G5 | 17 | 9 | 8 |
+| Total | 50 | 24 | 22 |
+
+Most library programs land in G5: libraries use `void *`, `goto` cleanup,
+unions and function pointers, and a program's group is the highest feature
+anywhere in its file, although its test calls one function.
 
 The private sets are fixed by their manifest, whose SHA-256 is
-`a583af90a875b1a65819edaa455750ad8ecffa3aa33262edcb2307e680ea3d89`.
+`86265c43267922eec64502932aa0b6f13ef8693e2bdf5c4cc633ddba14de39e3`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -101,9 +118,9 @@ them either.
 
 | Set | Variants | No valid constants change | No numbers in inputs |
 |---|---:|---:|---:|
-| Dev | 60 | 5 | 7 |
-| Validation | 37 | 2 | 3 |
-| Held-out | 28 | 7 | 4 |
+| Dev | 128 | 14 | 8 |
+| Validation | 63 | 6 | 3 |
+| Held-out | 52 | 10 | 4 |
 
 Renamed variants kept every input of their original.
 
@@ -125,9 +142,9 @@ files.
 
 | Set | Fuzzed inputs | Programs with them | Programs |
 |---|---:|---:|---:|
-| Dev | 198 | 21 | 24 |
-| Validation | 100 | 10 | 14 |
-| Held-out | 95 | 11 | 13 |
+| Dev | 410 | 47 | 50 |
+| Validation | 175 | 20 | 24 |
+| Held-out | 159 | 20 | 22 |
 
 The evaluator reports them as a separate result for now, so the pass rule
 stays as it is. Of the four hand translations of dev programs that pass, two
@@ -141,7 +158,8 @@ split by family can put the two on different sides. A rule learned on a
 development program then passes its private twin almost for free, which looks
 like transfer but is not. `cargo run -p bench --bin near-copies -- PRIVATE_DIR`
 compares every private program with every development program by the Jaccard
-similarity of their token 4-grams, ignoring comments. A private program
+similarity of their token 4-grams, ignoring comments and the `main` that
+intake generates for a library test case. A private program
 counts as a near-copy from 0.5; no pair scores between 0.41 and 0.53. The
 list stays private, and results for the private sets are reported with and
 without near-copies. The gate logs both validation scores; its decision uses
@@ -149,8 +167,8 @@ all programs.
 
 | Set | Near-copies | Programs |
 |---|---:|---:|
-| Validation | 4 | 14 |
-| Held-out | 2 | 13 |
+| Validation | 10 | 24 |
+| Held-out | 4 | 22 |
 
 ## Regenerating
 
