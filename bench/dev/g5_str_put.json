@@ -1,0 +1,37 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "100"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "10000"
+      ],
+      "name": "3",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "address_of",
+    "array",
+    "goto",
+    "heap",
+    "pointer",
+    "string",
+    "string_function",
+    "struct_pointer",
+    "void_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_organic/str_put_lib"
+}

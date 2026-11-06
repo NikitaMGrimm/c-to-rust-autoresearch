@@ -1,0 +1,55 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "10",
+        "5",
+        "2",
+        "3",
+        "0"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "20",
+        "4",
+        "1",
+        "8",
+        "0"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "15",
+        "3",
+        "4",
+        "2",
+        "0"
+      ],
+      "name": "4",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "address_of",
+    "function_pointer",
+    "heap",
+    "pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_synthetic/mathop_lib"
+}

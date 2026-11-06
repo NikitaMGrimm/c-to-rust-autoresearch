@@ -1,0 +1,45 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "42"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "255"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "-1"
+      ],
+      "name": "4",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "65555"
+      ],
+      "name": "5",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "array",
+    "pointer",
+    "void_pointer"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_organic/siphash_lib"
+}

@@ -1,0 +1,77 @@
+{
+  "inputs": [
+    {
+      "args": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "1",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "0",
+        "65535",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "2",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "1",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "3",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "2",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "4",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "4",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "name": "5",
+      "stdin": ""
+    },
+    {
+      "args": [
+        "3",
+        "10",
+        "5",
+        "3",
+        "0"
+      ],
+      "name": "6",
+      "stdin": ""
+    }
+  ],
+  "signals": [
+    "function_pointer",
+    "heap",
+    "string",
+    "string_function"
+  ],
+  "source": "TRACTOR 37960ee08a7c644ee66e29855eca33903f702e67 Public-Tests/B02_synthetic/charinbuf_lib"
+}
