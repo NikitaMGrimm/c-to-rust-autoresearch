@@ -125,3 +125,12 @@ runs Claude through Claude Code, so its Claude chats are included; Codex runs
 are not. Claude Code names the transcript directory after the working
 directory, so a worktree has its own directory. `--since` and `--until` limit
 the sums to one loop iteration or another time window.
+
+## Acknowledgements
+
+For project work performed on bwUniCluster, the following acknowledgement applies:
+
+> This work was performed on the computational resource bwUniCluster funded
+> by the Ministry of Science, Research and the Arts Baden-Württemberg and the
+> Universities of the State of Baden-Württemberg, Germany, within the framework
+> program bwHPC.
