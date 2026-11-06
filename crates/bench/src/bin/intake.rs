@@ -315,16 +315,19 @@ fn program(
     } else {
         None
     };
+    // Cases of different batteries may share a name, and a program written
+    // here is read again only once all cases are converted.
+    let scratch_name = case.source().replace('/', "_");
     let c_file = match &runner {
         Some(runner) => {
-            let program = scratch.join(format!("{}.c", case.name));
+            let program = scratch.join(format!("{scratch_name}.c"));
             let source = inline_headers(c_file, &test_case.join("include"))?;
             write(&program, &(source + &main_for(runner)))?;
             program
         }
         None => c_file.clone(),
     };
-    let references = eval::References::build(&c_file, &c_flags, &scratch.join(&case.name))?;
+    let references = eval::References::build(&c_file, &c_flags, &scratch.join(&scratch_name))?;
 
     let mut inputs = Vec::new();
     for vector in eval::entries(&case.dir.join("test_vectors"))? {
@@ -520,8 +523,14 @@ fn parse_runner(text: &str, default_symbol: &str) -> Option<Runner> {
         let (name, ty) = field.split_once(':')?;
         fields.push((name.trim().to_owned(), CType::of(ty.trim())?));
     }
+    // Only a string literal names the function for certain.
     let symbol = match text.find("symbol:") {
-        Some(at) => text[at..].split('"').nth(1)?.to_owned(),
+        Some(at) => {
+            let literal = text[at + "symbol:".len()..]
+                .trim_start()
+                .strip_prefix('"')?;
+            literal[..literal.find('"')?].to_owned()
+        }
         None => default_symbol.to_owned(),
     };
     let body: Vec<&str> = block(&text[text.find("fn run")?..])?
@@ -570,9 +579,21 @@ fn parse_runner(text: &str, default_symbol: &str) -> Option<Runner> {
         .split(|token| token == ",")
         .filter(|arg| !arg.is_empty())
     {
-        // `as` casts to the parameter's type, which C does by itself.
+        // `as` casts to the parameter's type, which C does by itself. Only a
+        // type may follow it, not arithmetic or a second cast.
         let arg = match arg.iter().position(|token| token == "as") {
-            Some(at) => &arg[..at],
+            Some(at) => {
+                let type_token = |token: &String| {
+                    token == ":"
+                        || token == "*"
+                        || token != "as"
+                            && token.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                };
+                if !arg[at + 1..].iter().all(type_token) {
+                    return None;
+                }
+                &arg[..at]
+            }
             None => arg,
         };
         let words: Vec<&str> = arg.iter().map(String::as_str).collect();
@@ -1254,14 +1275,22 @@ harness! {
             ("value: f64,", "value: Vec<u8>,"),
             ("value: f64,", "value: point,"),
             ("self.value\n", "self.value + 1.0\n"),
+            ("self.value\n", "self.value as f64 + 1.0\n"),
+            ("self.factor,", "self.factor as usize - 1,"),
+            ("self.value\n", "self.value as f32 as f64\n"),
             ("self.value\n", "self.value.as_ptr()\n"),
             ("        };\n", "        };\n        self.value = 0.0;\n"),
+            // The next quoted text would be the "C" of the signature.
+            ("symbol: \"scale\",", "symbol: &*NAME,"),
         ];
         for (from, to) in variants {
             let runner = SCALE_RUNNER.replacen(from, to, 1);
             assert_ne!(runner, SCALE_RUNNER);
             assert_eq!(parse_runner(&runner, "scale"), None, "{to}");
         }
+        let cast = SCALE_RUNNER.replacen("self.factor,", "self.factor as std::ffi::c_int,", 1);
+        let args = parse_runner(&cast, "scale").unwrap().args;
+        assert_eq!(args[0], Arg::Field("factor".to_owned()));
     }
 
     #[test]
@@ -1352,6 +1381,20 @@ harness! {
             &mut dropped,
         );
         let converted = super::program(&case, &BTreeSet::new(), &scratch, &mut dropped);
+        // A case of the same name in another battery writes its own program.
+        let other_dir = dir.join("B02_test/scale_lib");
+        for (path, text) in files {
+            let path = other_dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text.replace("scaling", "other")).unwrap();
+        }
+        let other = Case {
+            visibility: "Public-Tests".to_owned(),
+            battery: "B02_test".to_owned(),
+            name: "scale_lib".to_owned(),
+            dir: other_dir,
+        };
+        let _ = super::program(&other, &BTreeSet::new(), &scratch, &mut BTreeMap::new());
 
         let source = converted.as_ref().ok().map(|p| read(&p.c_file).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1370,6 +1413,7 @@ harness! {
             ])
         );
         let source = source.unwrap();
+        assert!(source.contains("\"scaling\\n\""), "{source}");
         assert!(source.contains("#define SCALE_H\n"));
         assert!(!source.contains("#include \"scale.h\""));
         assert!(!source.contains('\r'));
