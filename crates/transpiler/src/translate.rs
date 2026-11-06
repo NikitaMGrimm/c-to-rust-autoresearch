@@ -239,8 +239,11 @@ impl Translator {
         if kind(var) != "VarDecl" {
             return format!("{};", unsupported(&format!("declaration {}", kind(var))));
         }
-        if var["storageClass"] == "static" {
-            return format!("{};", unsupported("static local variable"));
+        match var["storageClass"].as_str() {
+            Some("static") => return format!("{};", unsupported("static local variable")),
+            // It names an object defined elsewhere, not a fresh zero.
+            Some("extern") => return format!("{};", unsupported("extern local variable")),
+            _ => {}
         }
         // An uninitialised C variable has no value to read, so any value will do.
         let init = match inner(var).first() {

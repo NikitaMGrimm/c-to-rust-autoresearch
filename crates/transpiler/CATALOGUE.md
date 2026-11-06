@@ -31,8 +31,9 @@ Entry format, newest last:
   `std::process::exit`; operands in parentheses unless atomic; `print!` or
   `println!` with the format converted at translation time; `crt::scanf`, a
   runtime emitted once that reads standard input byte by byte as glibc does,
-  saturating out-of-range numbers as `strtol` does. Every other construct
-  becomes `compile_error!("unsupported C: ...")`
+  saturating out-of-range numbers as `strtol` does. Every other construct,
+  including `static` and `extern` local variables, becomes
+  `compile_error!("unsupported C: ...")`
 - Motivation: the transpiler emitted an empty file, so every development
   program failed to compile; `g1_040_storage_class_auto` needs exactly these
 - Changes: none, the first rule

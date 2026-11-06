@@ -126,6 +126,15 @@ fn reports_unsupported_constructs_as_compile_errors() {
         rust.contains(r#"compile_error!("unsupported C: printf conversion %f")"#),
         "{rust}"
     );
+    // A block-scope extern refers to glibc's optind, which is 1, not 0.
+    let rust = translate(
+        &dir,
+        "int main(void) { extern int optind; return optind; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: extern local variable")"#),
+        "{rust}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
