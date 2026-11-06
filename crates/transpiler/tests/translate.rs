@@ -1462,3 +1462,81 @@ fn rejects_struct_uses_it_cannot_translate() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_global_variables() {
+    let c = r#"
+#include <stdio.h>
+
+struct point { int x; double y; };
+
+static struct point origin = {.y = 1.5};
+int counter;
+int counter = 3;
+static long total = 10;
+static unsigned char flags;
+double scale = 2;
+_Bool ready = 1;
+static int table[5] = {1, 2, 3};
+int zeros[3];
+
+static void bump(int *p) { (*p)++; }
+
+static void move(struct point *p, int dx) { p->x += dx; }
+
+static int sum(const int *a, int n) {
+    int s = 0;
+    for (int i = 0; i < n; i++) s += a[i];
+    return s;
+}
+
+int main(void) {
+    int n = 0;
+    if (scanf("%d", &n) != 1) return 1;
+    counter += n;
+    bump(&counter);
+    total *= counter;
+    flags = flags - 1;
+    scale = scale * 1.5;
+    table[3] = n;
+    zeros[1]++;
+    move(&origin, n);
+    origin.y += 1;
+    struct point copy = origin;
+    if (ready) printf("%d %d %d %u %.2f\n", counter, copy.x, (int)total, flags, scale);
+    int counter = 7;
+    printf("%d %d %d %d\n", counter, sum(table, 5), zeros[1], origin.x);
+    scanf("%d", &zeros[2]);
+    printf("%d %.1f\n", zeros[2], origin.y);
+    return 0;
+}
+"#;
+    same_behaviour("translates_global_variables", c, &["4 9", "-3 2", "5"]);
+}
+
+#[test]
+fn rejects_global_variables_it_cannot_translate() {
+    let dir = scratch("rejects_global_variables_it_cannot_translate");
+    let cases = [
+        (
+            "char name[8]; int main(void) { return 0; }",
+            "global variable of type char[8]",
+        ),
+        (
+            "int x; int *p = &x; int main(void) { return 0; }",
+            "global variable of type int *",
+        ),
+        (
+            "int grid[2][2]; int main(void) { return 0; }",
+            "global variable of type int[2][2]",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -120,6 +120,11 @@ fn array_type(c: &str) -> Option<(&str, &str)> {
     Some((element.trim_end(), length))
 }
 
+/// Whether the length of an array, as `array_type` gives it, is fixed.
+fn fixed_length(length: &str) -> bool {
+    !length.is_empty() && length.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Whether `c` is an array of `char`, which the translation holds as bytes.
 fn char_array(c: &str) -> bool {
     array_type(c).is_some_and(|(element, _)| element == "char")
@@ -225,6 +230,10 @@ pub(crate) struct Translator {
     cells: HashSet<String>,
     /// The Rust statics of the static local variables, by id.
     statics: HashMap<String, String>,
+    /// The Rust functions that give the global variables the translation
+    /// holds, by the id of each of their declarations, and whether each is
+    /// an array.
+    globals: HashMap<String, (String, bool)>,
     /// The parts of the `crt` runtime the translation calls, in first use.
     runtime: Vec<&'static str>,
     /// Rust loops and labelled blocks around the current statement.
@@ -257,6 +266,7 @@ pub(crate) fn program(ast: &Value) -> String {
         mutated: HashSet::new(),
         cells: HashSet::new(),
         statics: HashMap::new(),
+        globals: HashMap::new(),
         runtime: Vec::new(),
         scopes: Vec::new(),
         loops: Vec::new(),
@@ -264,19 +274,15 @@ pub(crate) fn program(ast: &Value) -> String {
         fresh: 0,
     };
     translator.collect_records(ast);
+    let globals = translator.collect_globals(ast);
     let mut functions = String::new();
     for function in &definitions {
         functions.push_str(&translator.function(function));
         functions.push('\n');
     }
+    let globals = translator.global_definitions(&globals);
     let mut out = translator.struct_definitions();
-    for decl in inner(ast) {
-        // Declarations from headers have no initialiser and are `extern`.
-        if kind(decl) == "VarDecl" && decl["storageClass"] != "extern" {
-            out.push_str(&unsupported("global variable"));
-            out.push_str(";\n\n");
-        }
-    }
+    out.push_str(&globals);
     out.push_str(&functions);
     if let Some(main) = definitions.iter().find(|f| f["name"] == "main") {
         // Rust's own `main` calls the C one and exits with its result.
@@ -699,13 +705,49 @@ impl Translator {
             None => return format!("{};", unsupported(&format!("type {}", c_type(var)))),
         };
         let init = inner(var).first().filter(|_| var["init"].is_string());
-        if !length.is_empty() && length.bytes().all(|b| b.is_ascii_digit()) {
-            let array = if bytes {
-                format!("[0; {length}]")
-            } else {
-                format!("[const {{ {zero} }}; {length}]")
+        if fixed_length(length) {
+            // As a slice, so a constant index out of bounds panics when it
+            // runs, as an array's would fail to compile even where it never
+            // runs.
+            return match self.fixed_array(var, bytes, &zero, length) {
+                Ok(value) => format!("let {name}: {slice} = {borrow}{value};"),
+                Err(err) => format!("{err};"),
             };
-            let value = match init {
+        }
+        let mut chars = length.chars();
+        let variable = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !variable || init.is_some() {
+            return format!(
+                "{};",
+                unsupported(&format!("variable length array {}", c_type(var)))
+            );
+        }
+        // A negative length converts to one too large to allocate.
+        format!(
+            "let {name}: {slice} = {borrow}vec![{zero}; {} as usize];",
+            ident(length)
+        )
+    }
+
+    /// The Rust array of `length` elements, bytes or else cells with the
+    /// value `zero`, that the initialiser of `var` gives, if it has one.
+    fn fixed_array(
+        &mut self,
+        var: &Value,
+        bytes: bool,
+        zero: &str,
+        length: &str,
+    ) -> Result<String, String> {
+        let array = if bytes {
+            format!("[0; {length}]")
+        } else {
+            format!("[const {{ {zero} }}; {length}]")
+        };
+        Ok(
+            match inner(var).first().filter(|_| var["init"].is_string()) {
                 None => array,
                 // The literal's bytes, without the zero at its end when the
                 // array has no room for it, and zeros after them.
@@ -725,8 +767,8 @@ impl Translator {
                     }
                 }
                 Some(list) if kind(list) == "InitListExpr" => {
-                    // With a filler for the elements it leaves out, Clang
-                    // lists the filler and then the elements.
+                    // With a filler for the elements it leaves out, Clang lists
+                    // the filler and then the elements.
                     let elements = match list["array_filler"].as_array() {
                         Some(filler) => &filler[1..],
                         None => inner(list),
@@ -750,29 +792,116 @@ impl Translator {
                         format!("{{ {binding} __array = {array};{sets} __array }}")
                     }
                 }
-                Some(_) => return format!("{};", unsupported("array initialiser")),
-            };
-            // As a slice, so a constant index out of bounds panics when it
-            // runs, as an array's would fail to compile even where it never
-            // runs.
-            return format!("let {name}: {slice} = {borrow}{value};");
-        }
-        let mut chars = length.chars();
-        let variable = chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !variable || init.is_some() {
-            return format!(
-                "{};",
-                unsupported(&format!("variable length array {}", c_type(var)))
-            );
-        }
-        // A negative length converts to one too large to allocate.
-        format!(
-            "let {name}: {slice} = {borrow}vec![{zero}; {} as usize];",
-            ident(length)
+                Some(_) => return Err(unsupported("array initialiser")),
+            },
         )
+    }
+
+    /// Records the global variables that the program defines and the
+    /// translation holds, by the ids of all their declarations, as C lets
+    /// a file declare one again. Returns the declaration that defines each,
+    /// the one with an initialiser if there is one.
+    fn collect_globals<'v>(&mut self, ast: &'v Value) -> Vec<&'v Value> {
+        let vars: Vec<&Value> = inner(ast)
+            .iter()
+            .filter(|decl| kind(decl) == "VarDecl")
+            .collect();
+        let mut definitions: Vec<&Value> = Vec::new();
+        // Declarations from headers have no initialiser and are `extern`.
+        for &var in vars.iter().filter(|var| var["storageClass"] != "extern") {
+            match definitions.iter_mut().find(|d| d["name"] == var["name"]) {
+                Some(definition) if var["init"].is_string() => *definition = var,
+                Some(_) => {}
+                None => definitions.push(var),
+            }
+        }
+        for definition in &definitions {
+            if self.global_type(c_type(definition)).is_none() {
+                continue;
+            }
+            let name = definition["name"].as_str().unwrap_or("");
+            let array = array_type(c_type(definition)).is_some();
+            for var in vars.iter().filter(|var| var["name"] == name) {
+                if let Some(id) = var["id"].as_str() {
+                    let function = format!("__global_{name}");
+                    self.globals.insert(id.to_string(), (function, array));
+                }
+            }
+        }
+        definitions
+    }
+
+    /// The Rust type of a global variable of the C type `c` that the
+    /// translation holds, which it borrows for the whole program: a cell of
+    /// a number or `bool`, a struct or a slice of cells for an integer array
+    /// of a fixed length, as R10 and R13 hold local ones.
+    fn global_type(&self, c: &str) -> Option<String> {
+        if let Some((element, length)) = array_type(c) {
+            let ty = cell_type(element).filter(|_| fixed_length(length))?;
+            return Some(format!("[{CELL}<{ty}>]"));
+        }
+        match self.record(c) {
+            Some(record) => Some(record.name.clone()),
+            None if is_bool(c) => Some(format!("{CELL}<bool>")),
+            None => number_type(c).map(|ty| format!("{CELL}<{ty}>")),
+        }
+    }
+
+    /// A Rust function for each global variable in `definitions` that
+    /// gives it, made on its first use with C's initial value, which is
+    /// constant. Safe Rust has no mutable static of a cell, so each thread
+    /// holds its own, leaked to borrow it for the whole program; the
+    /// program's one thread is all that uses it.
+    fn global_definitions(&mut self, definitions: &[&Value]) -> String {
+        self.cells.clear();
+        self.mutated.clear();
+        let mut out = String::new();
+        for definition in definitions {
+            let ty = c_type(definition);
+            let Some(rust) = self.global_type(ty) else {
+                out.push_str(&unsupported(&format!("global variable of type {ty}")));
+                out.push_str(";\n\n");
+                continue;
+            };
+            let value = match array_type(ty) {
+                Some((_, length)) => {
+                    let zero = format!("{CELL}::new(0)");
+                    self.fixed_array(definition, false, &zero, length)
+                        .unwrap_or_else(|err| err)
+                }
+                None => {
+                    let value = match inner(definition).first() {
+                        Some(init) if definition["init"].is_string() => self.expr(init),
+                        _ => self.zero(ty),
+                    };
+                    if self.record(ty).is_some() {
+                        value
+                    } else {
+                        format!("{CELL}::new({value})")
+                    }
+                }
+            };
+            let name = definition["name"].as_str().unwrap_or("");
+            out.push_str(&format!(
+                "fn __global_{name}() -> &'static {rust} {{\n    thread_local! {{\n        static GLOBAL: &'static {rust} = Box::leak(Box::new({value}));\n    }}\n    GLOBAL.with(|global| *global)\n}}\n\n"
+            ));
+        }
+        out
+    }
+
+    /// The Rust place of the global variable that `expr` names, if the
+    /// translation holds it: the slice of an array, as a local array is a
+    /// borrowed slice, and the value of anything else.
+    fn global(&self, expr: &Value) -> Option<String> {
+        if kind(expr) != "DeclRefExpr" {
+            return None;
+        }
+        let (function, array) = self.globals.get(expr["referencedDecl"]["id"].as_str()?)?;
+        Some(if *array {
+            format!("{function}()")
+        } else {
+            format!("(*{function}())")
+        })
     }
 
     /// A static local variable of an integer type, as a Rust static atomic
@@ -1062,6 +1191,10 @@ impl Translator {
         match kind(expr) {
             "ParenExpr" => self.cell(&args[0]),
             "MemberExpr" => self.member(expr),
+            // A global array is no cell, but its elements are.
+            "DeclRefExpr" if self.global(expr).is_some() => self
+                .global(expr)
+                .filter(|_| array_type(c_type(expr)).is_none()),
             "DeclRefExpr"
                 if self.static_var(expr).is_none()
                     && self.is_cell(expr["referencedDecl"]["id"].as_str()) =>
@@ -1166,7 +1299,10 @@ impl Translator {
                 Some(name) => format!("{name}.load({RELAXED})"),
                 None => match self.cell(expr) {
                     Some(cell) => format!("{cell}.get()"),
-                    None => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
+                    // A global struct or array.
+                    None => self.global(expr).unwrap_or_else(|| {
+                        ident(expr["referencedDecl"]["name"].as_str().unwrap_or(""))
+                    }),
                 },
             },
             _ if errno(expr) => {

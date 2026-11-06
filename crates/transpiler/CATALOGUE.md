@@ -404,3 +404,28 @@ Entry format, newest last:
   reading of `%d` keeps its behaviour, R5's null pointers and tests, R9's
   compound assignments and R10's cells and pointers, which can now point to
   a struct or into one
+
+## R14: global variables
+
+- C: variables at file scope, `static` or not, of the integer types,
+  `float`, `double`, `bool`, R13's structs and integer arrays of a fixed
+  length, with constant initialisers or none, declared once or again, as in
+  a tentative definition; reading them, assigning them in every way that R9,
+  R10 and R13 allow for a local of the same type, `&` of them and their
+  elements and members, `scanf` into them, and their arrays decaying to
+  pointers; a local variable that hides one
+- Rust: a function `__global_NAME`, a name C reserves, for each, which
+  returns `&'static` of the value R10 and R13 hold for a local: a
+  `std::cell::Cell` of a number or `bool`, the struct, or a slice of cells.
+  The function makes it on its first use from C's initial value, zero
+  without an initialiser, in a `thread_local!` that leaks it with
+  `Box::leak`, as safe Rust has no static of a cell; the program has one
+  thread. A use is `(*__global_NAME())`, a place like a local's name, and an
+  array is `__global_NAME()`, a slice like a local array. Global `char`
+  arrays, pointers, arrays of other types or of a variable length, other
+  initialisers and block-scope `extern` declarations stay unsupported
+- Motivation: `g3_024_struct_and_static` keeps a `static house_t` at file
+  scope with a designated initialiser, passes its address to functions that
+  change it through `->` and adds to a member directly
+- Changes: extends R1's variables, which were only local, R10's integer
+  arrays and R13's structs, which can now be global
