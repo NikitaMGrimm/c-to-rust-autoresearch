@@ -155,6 +155,28 @@ int main(void) {
 }
 
 #[test]
+fn keeps_names_that_rust_reserves_apart() {
+    // `self` and `main` need new Rust names, which must not be names the
+    // program already uses.
+    let c = r#"
+#include <stdio.h>
+
+int c_main(void) { return 3; }
+int main_(void) { return 4; }
+
+int main(void) {
+    int self = 1;
+    int self_ = 2;
+    int Self = 5;
+    int Self_ = 6;
+    printf("%d %d %d %d %d %d\n", self, self_, Self, Self_, c_main(), main_());
+    return self * 10 + Self;
+}
+"#;
+    same_behaviour("keeps_names_that_rust_reserves_apart", c, &[""]);
+}
+
+#[test]
 fn reports_unsupported_constructs_as_compile_errors() {
     let dir = scratch("reports_unsupported_constructs_as_compile_errors");
     let rust = translate(

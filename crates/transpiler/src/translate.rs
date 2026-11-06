@@ -47,6 +47,8 @@ pub(crate) fn unsupported(what: &str) -> String {
 }
 
 /// Identifiers that Rust reserves, as a raw identifier where Rust allows one.
+/// The others, and `main`, which Rust's own `main` takes, get one more `_`,
+/// as does any of them followed by underscores, so no two C names meet.
 pub(crate) fn ident(name: &str) -> String {
     const KEYWORDS: &[&str] = &[
         "as", "async", "await", "box", "break", "const", "continue", "dyn", "else", "enum",
@@ -56,9 +58,14 @@ pub(crate) fn ident(name: &str) -> String {
         "abstract", "become", "do", "final", "override",
     ];
     match name {
-        "self" | "Self" | "super" | "crate" | "_" => format!("{name}_"),
-        // Rust's own `main` calls the C one and exits with its result.
-        "main" => "c_main".to_string(),
+        // `_` trims to the empty name.
+        _ if matches!(
+            name.trim_end_matches('_'),
+            "self" | "Self" | "super" | "crate" | "" | "main"
+        ) =>
+        {
+            format!("{name}_")
+        }
         _ if KEYWORDS.contains(&name) => format!("r#{name}"),
         _ => name.to_string(),
     }
@@ -124,7 +131,11 @@ pub(crate) fn program(ast: &Value) -> String {
         out.push('\n');
     }
     if translator.functions.contains("main") {
-        out.push_str("fn main() {\n    std::process::exit(c_main());\n}\n");
+        // Rust's own `main` calls the C one and exits with its result.
+        out.push_str(&format!(
+            "fn main() {{\n    std::process::exit({}());\n}}\n",
+            ident("main")
+        ));
     }
     if translator.uses_scanf {
         out.push('\n');

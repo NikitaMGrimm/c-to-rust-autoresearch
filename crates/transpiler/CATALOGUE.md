@@ -26,9 +26,11 @@ Entry format, newest last:
   and `%%`, whose result is discarded; `scanf` with a literal format of `%d`
   into `&variable`; either format ends at its first zero byte, as in C
 - Rust: `fn` with `i8`…`u64`, `let` with `mut` only for variables that are
-  assigned or whose address is taken, raw identifiers for Rust keywords, the
-  last `return` as the tail expression, C's `main` as `c_main` called by
-  `std::process::exit`; operands in parentheses unless atomic; `print!` or
+  assigned or whose address is taken, raw identifiers for Rust keywords;
+  `self`, `Self`, `super`, `crate`, `_` and `main`, and each of them
+  followed by underscores, with one more `_`, so no two C names share a
+  Rust name; the last `return` as the tail expression, C's `main` as `main_`
+  called by `std::process::exit`; operands in parentheses unless atomic; `print!` or
   `println!` with the format converted at translation time; `crt::scanf`, a
   runtime emitted once that reads standard input byte by byte as glibc does,
   saturating out-of-range numbers as `strtol` does, and passes each value to
