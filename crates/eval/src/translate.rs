@@ -2,6 +2,7 @@
 //! existing translation, then compiling it with Clippy.
 
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,9 +31,48 @@ const BUILD_ARGS: [&str; 5] = [
     "--message-format=json-render-diagnostics",
 ];
 
-/// Builds the transpiler binary and returns its path.
-pub fn build_transpiler() -> Result<PathBuf, String> {
-    cargo_executable(Command::new("cargo").args(BUILD_ARGS).current_dir(REPO))
+/// Builds the transpiler of the git checkout `checkout` as it is now, in the
+/// sandbox, from a copy in the new directory `workspace`, and returns its path.
+/// The copy leaves out ignored files such as `local/`, which may hold private
+/// outputs, and keeps symlinks as links, so neither reaches the build.
+pub fn build_transpiler(checkout: &Path, workspace: &Path) -> Result<PathBuf, String> {
+    let listed = Command::new("git")
+        .args(["ls-files", "-z", "--cached", "--others"])
+        .args(["--exclude-standard", "--deduplicate"])
+        .current_dir(checkout)
+        .output()
+        .map_err(|err| format!("cannot run git: {err}"))?;
+    if !listed.status.success() {
+        return Err(format!(
+            "cannot list the files of {}\n{}",
+            checkout.display(),
+            tail(&listed.stderr)
+        ));
+    }
+    let copy_error =
+        |path: &Path, err: std::io::Error| format!("cannot copy {}: {err}", path.display());
+    for path in listed
+        .stdout
+        .split(|&byte| byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let path = Path::new(std::ffi::OsStr::from_bytes(path));
+        let (from, to) = (checkout.join(path), workspace.join(path));
+        // A file deleted in the working tree is still listed.
+        let Ok(metadata) = from.symlink_metadata() else {
+            continue;
+        };
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| copy_error(path, err))?;
+        }
+        if metadata.is_symlink() {
+            let target = std::fs::read_link(&from).map_err(|err| copy_error(path, err))?;
+            std::os::unix::fs::symlink(target, &to).map_err(|err| copy_error(path, err))?;
+        } else if metadata.is_file() {
+            std::fs::copy(&from, &to).map_err(|err| copy_error(path, err))?;
+        }
+    }
+    build_transpiler_sandboxed(workspace)
 }
 
 /// Builds the transpiler of an untrusted `workspace` in the sandbox, so its

@@ -32,8 +32,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install
       - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      # The default members leave out the agent-written transpiler; CI has no
+      # private data, so it checks every crate.
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
       - name: Inspect a sample program
         run: |
           printf '#include <stdio.h>\nint main(void) { puts("ok"); return 0; }\n' > "$RUNNER_TEMP/sample.c"
