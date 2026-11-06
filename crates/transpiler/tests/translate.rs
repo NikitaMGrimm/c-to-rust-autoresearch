@@ -312,3 +312,27 @@ fn rejects_jumps_it_cannot_translate() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_characters_and_unsigned_conversions() {
+    let c = r#"
+#include <stdio.h>
+
+int main(void) {
+    char a = '-', b = 'z';
+    int n = scanf("%c%c", &a, &b);
+    char c = '?';
+    int m = fscanf(stdin, " %c%%", &c);
+    unsigned int big = 4000000000u;
+    printf("%d %d %d|%d %d|\n", n, m, '\xff' + '\0', 'o', -'\n');
+    printf("%x %X %o %u|%+u|%-6x|%08X|%3o\n", a, b, c, a - 'a', big, c, big, '\377');
+    return c + 1;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_characters_and_unsigned_conversions",
+        c,
+        &["ab c%", "a", "", " \n x", "\u{80}\u{ff}", "abc", "ab\tc"],
+    );
+    assert!(rust.contains("as u32"), "{rust}");
+}

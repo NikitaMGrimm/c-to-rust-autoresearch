@@ -68,3 +68,18 @@ Entry format, newest last:
   `g5_021_complex_goto` jumps forwards and backwards between labels inside a
   `while` body
 - Changes: extends R1, whose function bodies held only straight-line code
+
+## R3: characters and unsigned conversions in formatted I/O
+
+- C: character literals of type `int`; `printf` conversions `%u`, `%o`,
+  `%x` and `%X` with the flags and width of R1, of an `unsigned int` or an
+  `int`; `scanf` conversion `%c` into a `char`; `fscanf(stdin, ...)`
+- Rust: a character literal as its `int` value, with an `_i32` suffix when
+  negative; `{}`, `{:o}`, `{:x}` and `{:X}`, without the `+` flag, which C
+  ignores on unsigned conversions, and an `int` argument converted
+  `as u32`, whose bits glibc prints; `%c` stores the next byte of input
+  without skipping white space, converted `as i8`; `fscanf` on `stdin` is
+  `scanf`. `%c` in `printf` stays unsupported
+- Motivation: `g1_010_integer_overflow` reads a character with
+  `fscanf(stdin, "%c", ...)`, starts from `' '` and prints with `%02x`
+- Changes: extends R1's `printf` and `scanf`

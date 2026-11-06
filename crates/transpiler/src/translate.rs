@@ -324,6 +324,13 @@ impl Translator {
                     None => unsupported(&format!("literal of type {}", c_type(expr))),
                 }
             }
+            // Clang gives the value as the bits of an unsigned int. A negative
+            // one has a suffix, or `as u32` would make Rust read it unsigned.
+            "CharacterLiteral" if c_type(expr) == "int" => match expr["value"].as_u64() {
+                Some(value) if value <= i32::MAX as u64 => value.to_string(),
+                Some(value) => format!("{}_i32", value as u32 as i32),
+                None => unsupported("character literal"),
+            },
             "DeclRefExpr" => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
             "ParenExpr" => self.expr(&args[0]),
             "ImplicitCastExpr" | "CStyleCastExpr" => self.cast(expr),
@@ -345,6 +352,9 @@ impl Translator {
                     format!("{}({})", ident(name), args.join(", "))
                 }
                 Some("scanf") => stdio::scanf(self, &args[1..]),
+                Some("fscanf") if args.get(1).is_some_and(stdio::is_stdin) => {
+                    stdio::scanf(self, &args[2..])
+                }
                 name => unsupported(&format!("call of {}", name.unwrap_or("a function pointer"))),
             },
             other => unsupported(other),
@@ -379,6 +389,8 @@ impl Translator {
 fn atomic(expr: &Value) -> bool {
     match kind(expr) {
         "IntegerLiteral" | "DeclRefExpr" | "CallExpr" => true,
+        // A negative one is printed with its sign.
+        "CharacterLiteral" => expr["value"].as_u64().is_some_and(|v| v <= i32::MAX as u64),
         "ParenExpr" => atomic(&inner(expr)[0]),
         "ImplicitCastExpr" => {
             matches!(expr["castKind"].as_str(), Some("LValueToRValue" | "NoOp"))

@@ -2,7 +2,7 @@
 //! converted when the program is translated, and `scanf` calls a small
 //! runtime that reads standard input as glibc does.
 
-use crate::translate::{Translator, c_type, inner, kind, unsupported};
+use crate::translate::{Translator, c_type, inner, kind, rust_type, unsupported};
 use serde_json::Value;
 
 /// `printf` with a literal format, whose result the program discards.
@@ -20,11 +20,13 @@ pub(crate) fn printf(t: &mut Translator, args: &[Value]) -> String {
     }
     let mut call = String::new();
     for (value, ty) in values.iter().zip(types) {
-        if c_type(value) != ty {
-            return unsupported(&format!("printf of {} as {ty}", c_type(value)));
-        }
         call.push_str(", ");
-        call.push_str(&t.expr(value));
+        match (c_type(value), ty) {
+            (arg, ty) if arg == ty => call.push_str(&t.expr(value)),
+            // glibc reads the bits of an int as unsigned, as Rust's `as` does.
+            ("int", "unsigned int") => call.push_str(&format!("{} as u32", t.operand(value))),
+            (arg, ty) => return unsupported(&format!("printf of {arg} as {ty}")),
+        }
     }
     let mac = if format.ends_with('\n') {
         format.pop();
@@ -65,12 +67,20 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                 }
                 match chars.next() {
                     Some('%') if !(left || plus || zero) && width.is_empty() => out.push('%'),
-                    Some('d' | 'i') => {
-                        // Rust right-aligns numbers already; C ignores 0 with -.
+                    Some(conversion @ ('d' | 'i' | 'u' | 'o' | 'x' | 'X')) => {
+                        let (ty, radix) = match conversion {
+                            'd' | 'i' => ("int", ""),
+                            'u' => ("unsigned int", ""),
+                            'o' => ("unsigned int", "o"),
+                            'x' => ("unsigned int", "x"),
+                            _ => ("unsigned int", "X"),
+                        };
+                        // Rust right-aligns numbers already; C ignores 0 with
+                        // -, and + on unsigned conversions.
                         let spec = format!(
-                            "{}{}{}{width}",
+                            "{}{}{}{width}{radix}",
                             if left { "<" } else { "" },
-                            if plus { "+" } else { "" },
+                            if plus && ty == "int" { "+" } else { "" },
                             if zero && !left { "0" } else { "" },
                         );
                         if spec.is_empty() {
@@ -78,7 +88,7 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                         } else {
                             out.push_str(&format!("{{:{spec}}}"));
                         }
-                        types.push("int");
+                        types.push(ty);
                     }
                     other => {
                         return Err(format!(
@@ -119,7 +129,8 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
         if c_type(place) != ty {
             return unsupported(&format!("scanf of {ty} into {}", c_type(place)));
         }
-        arms.push_str(&format!("{i} => {} = __value as i32, ", t.place(place)));
+        let rust = rust_type(ty).unwrap_or_default();
+        arms.push_str(&format!("{i} => {} = __value as {rust}, ", t.place(place)));
     }
     t.uses_scanf = true;
     format!(
@@ -137,6 +148,7 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
             match bytes.next() {
                 Some(b'%') => {}
                 Some(b'd') => types.push("int"),
+                Some(b'c') => types.push("char"),
                 other => {
                     return Err(format!(
                         "scanf conversion %{}",
@@ -147,6 +159,18 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
         }
     }
     Ok(types)
+}
+
+/// Whether `expr` is C's `stdin`, as the stream of `fscanf`.
+pub(crate) fn is_stdin(expr: &Value) -> bool {
+    let mut expr = expr;
+    while matches!(kind(expr), "ImplicitCastExpr" | "ParenExpr") {
+        match inner(expr).first() {
+            Some(operand) => expr = operand,
+            None => return false,
+        }
+    }
+    kind(expr) == "DeclRefExpr" && expr["referencedDecl"]["name"] == "stdin"
 }
 
 /// The bytes of a narrow string literal up to its first zero, where C's
@@ -290,13 +314,22 @@ mod crt {
                 continue;
             }
             if byte == b'%' {
-                if format.next() != Some(&b'%') {
-                    skip_space(&mut input);
-                    if peek(&mut input).is_none() {
-                        return ended(stored);
+                let conversion = format.next();
+                if conversion != Some(&b'%') {
+                    // `%c` takes the next byte, even a space.
+                    if conversion != Some(&b'c') {
+                        skip_space(&mut input);
                     }
-                    let Some(value) = read_int(&mut input) else {
-                        return stored;
+                    let value = match peek(&mut input) {
+                        None => return ended(stored),
+                        Some(byte) if conversion == Some(&b'c') => {
+                            input.consume(1);
+                            i64::from(byte)
+                        }
+                        Some(_) => match read_int(&mut input) {
+                            Some(value) => value,
+                            None => return stored,
+                        },
                     };
                     store(stored as usize, value);
                     stored += 1;
