@@ -1629,6 +1629,11 @@ impl Translator {
             "NullToPointer" | "BitCast" if null_pointer(expr) && self.pointer(c_type(expr)) => {
                 "None".to_string()
             }
+            // A conversion that only drops a qualifier, as Clang makes to
+            // compare a `const char *` with a `char *`, keeps the Rust value.
+            "BitCast" if c_type(expr) == c_type(operand) && self.pointer(c_type(expr)) => {
+                self.expr(operand)
+            }
             "ArrayToPointerDecay" => match stdio::string_array(operand) {
                 Some(bytes) if std::str::from_utf8(&bytes).is_ok() => {
                     format!("Some({}.as_slice())", stdio::byte_string(&bytes))

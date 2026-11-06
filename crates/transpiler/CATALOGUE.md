@@ -429,3 +429,23 @@ Entry format, newest last:
   change it through `->` and adds to a member directly
 - Changes: extends R1's variables, which were only local, R10's integer
   arrays and R13's structs, which can now be global
+
+## R15: pointer equality
+
+- C: `==` and `!=` between two pointers of the same type that the
+  translation holds, `char *`, pointers to integers and pointers to structs,
+  `const` or not, as conditions and as `int` values; a conversion that only
+  drops a qualifier, as Clang makes when a `char *` meets a `const char *`
+- Rust: `p.map(<[_]>::as_ptr) == q.map(<[_]>::as_ptr)`: each slice runs from
+  where the pointer points to the end of its array, so its start says where,
+  and `None` equals only `None`, as null does in C. C leaves open whether
+  equal string literals share an address; Clang and GCC give them one within
+  a file, as rustc does for equal byte strings. The qualifier conversion is
+  its operand. Comparisons with `<`, `<=`, `>` and `>=` and between
+  pointers of different types stay unsupported
+- Motivation: `g3_023_struct_and_errno` parses its input with `strtol` and
+  tests `endp != str`, a `char *` against a `const char *` parameter, which
+  R7 allowed only when one side was an element of `argv`
+- Changes: replaces R7's comparison of `char *`, which needed an element of
+  `argv`, and lifts R5's and R13's rejection of comparisons between pointers
+  to integers and to structs

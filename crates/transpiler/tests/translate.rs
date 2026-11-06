@@ -418,15 +418,6 @@ fn rejects_string_pointer_uses_it_cannot_translate() {
         rust.contains(r#"compile_error!("unsupported C: string literal that is not UTF-8")"#),
         "{rust}"
     );
-    // Equal literals may or may not share an address in C.
-    let rust = translate(
-        &dir,
-        "int main(void) { char *p = \"a\", *q = \"a\"; return p == q; }\n",
-    );
-    assert!(
-        rust.contains(r#"compile_error!("unsupported C: comparison of char *")"#),
-        "{rust}"
-    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -1440,10 +1431,6 @@ fn rejects_struct_uses_it_cannot_translate() {
             "return type struct p *",
         ),
         (
-            "struct p { int x; }; int f(struct p *a, struct p *b) { return a == b; }",
-            "comparison of struct p *",
-        ),
-        (
             "struct p { int x; }; int main(void) { struct p a[2]; return 0; }",
             "type struct p[2]",
         ),
@@ -1539,4 +1526,48 @@ fn rejects_global_variables_it_cannot_translate() {
         );
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn compares_pointers_by_address() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+
+struct point { int x; };
+
+static int parsed(const char *str) {
+    char *end = (char *)str;
+    long n = strtol(str, &end, 10);
+    return end != str && n >= 0;
+}
+
+static int same(const int *a, int *b) {
+    return a == b;
+}
+
+static int same_point(struct point *a, struct point *b) {
+    return a != b ? 0 : a->x;
+}
+
+int main(void) {
+    char line[20] = "";
+    fgets(line, sizeof(line), stdin);
+    printf("%d\n", parsed(line));
+    char *p = "a", *q = "a", *r = "b", *none = NULL, *also_none = 0;
+    printf("%d %d %d %d\n", p == q, p != r, none == also_none, none == p);
+    char *start = line;
+    if (start == line)
+        printf("start\n");
+    int a[3] = {1, 2, 3};
+    int *first = a;
+    printf("%d %d %d\n", same(first, &a[0]), same(&a[1], &a[2]), same(&a[2], &a[2]));
+    struct point s = {4}, t = {5};
+    struct point *ps = &s;
+    printf("%d %d\n", same_point(ps, &s), same_point(&s, &t));
+    return 0;
+}
+"#;
+    let rust = same_behaviour("compares_pointers_by_address", c, &["12", "x", "-3", ""]);
+    assert!(rust.contains(".map(<[_]>::as_ptr) != "), "{rust}");
 }
