@@ -33,6 +33,11 @@ scripts/inspect output.rs    # rustc and Clippy warnings, unsafe code, rustfmt, 
 `scripts/inspect` passes further arguments to the program and exits 1 when a
 tool reports an error.
 
+The loop agent writes the transpiler, so plain `cargo` commands such as
+`cargo test` leave it out, and `cargo run -p eval` builds and runs it in the
+sandbox. On a machine with the private sets, build, test or run it directly
+only in the sandbox; CI checks it with `--workspace`.
+
 ## Evaluation
 
 ```sh
@@ -41,7 +46,8 @@ cargo run -p eval -- --only g1 --json results.json
 cargo run -p eval -- --translations DIR   # existing translations DIR/NAME.rs
 ```
 
-The evaluator builds the transpiler and compares every `.c` program in the
+The evaluator builds the transpiler in the sandbox, from a copy of the
+checkout without its ignored files, and compares every `.c` program in the
 benchmark directory with its translation. A translation passes when it
 compiles as safe Rust and, with overflow checks on, prints the same standard
 output and exits with the same code as the C program on every input. Program

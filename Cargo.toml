@@ -1,5 +1,9 @@
 [workspace]
 members = ["crates/*"]
+# The loop agent writes the transpiler, so plain cargo commands leave it out:
+# its build scripts and tests would run outside the sandbox. eval and the gate
+# build it in the sandbox; CI checks it with --workspace.
+default-members = ["crates/bench", "crates/eval", "crates/transcripts"]
 resolver = "3"
 
 [workspace.package]

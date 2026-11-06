@@ -40,8 +40,8 @@ Code's, are blocked, and the only skills are those in `loop/skills`.
    call a language model or any network service.
 4. Add the rule's entry to `crates/transpiler/CATALOGUE.md` and a test in
    `crates/transpiler/tests/`.
-5. Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-   and the evaluator again. Programs that passed before should still pass.
+5. Run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`,
+   `cargo test --workspace` and the evaluator again. Programs that passed before should still pass.
 6. Commit as `feat(transpiler): ...` and stop with a short report: the rule,
    the programs it fixed and any it broke.
 
