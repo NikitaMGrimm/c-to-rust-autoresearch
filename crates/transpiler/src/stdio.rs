@@ -211,6 +211,7 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
             match bytes.next() {
                 Some(b'%') => {}
                 Some(b'd') => types.push("int"),
+                Some(b'u') => types.push("unsigned int"),
                 Some(b'c') => types.push("char"),
                 other => {
                     return Err(format!(
@@ -412,8 +413,10 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
     }
 
     /// Reads a decimal integer as glibc does: a sign it reads stays read,
-    /// and a value out of range saturates as with `strtol`.
-    fn read_int(input: &mut impl BufRead) -> Option<i64> {
+    /// and a value out of range saturates as with `strtol`, or for
+    /// `unsigned`, as with `strtoul`, which negates a value after `-` modulo
+    /// 2^64; that value is given as the bits of an `i64`.
+    fn read_int(input: &mut impl BufRead, unsigned: bool) -> Option<i64> {
         let negative = match peek(input) {
             Some(sign @ (b'+' | b'-')) => {
                 input.consume(1);
@@ -421,23 +424,26 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
             }
             _ => false,
         };
-        // Counts down, since i64::MIN has no positive counterpart.
-        let mut value: i64 = 0;
+        let mut magnitude = Some(0u64);
         let mut digits = false;
         while let Some(digit @ b'0'..=b'9') = peek(input) {
             input.consume(1);
             digits = true;
-            value = value
-                .saturating_mul(10)
-                .saturating_sub(i64::from(digit - b'0'));
+            magnitude = magnitude
+                .and_then(|m| m.checked_mul(10))
+                .and_then(|m| m.checked_add(u64::from(digit - b'0')));
         }
         if !digits {
             return None;
         }
-        Some(if negative {
-            value
-        } else {
-            value.checked_neg().unwrap_or(i64::MAX)
+        Some(match magnitude {
+            Some(m) if unsigned && negative => m.wrapping_neg() as i64,
+            Some(m) if unsigned => m as i64,
+            None if unsigned => u64::MAX as i64,
+            Some(m) if negative => 0i64.checked_sub_unsigned(m).unwrap_or(i64::MIN),
+            Some(m) => i64::try_from(m).unwrap_or(i64::MAX),
+            None if negative => i64::MIN,
+            None => i64::MAX,
         })
     }
 
@@ -467,7 +473,7 @@ pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
                             input.consume(1);
                             i64::from(byte)
                         }
-                        Some(_) => match read_int(&mut input) {
+                        Some(_) => match read_int(&mut input, conversion == Some(&b'u')) {
                             Some(value) => value,
                             None => return stored,
                         },

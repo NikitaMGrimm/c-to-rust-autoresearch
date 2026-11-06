@@ -78,16 +78,16 @@ pub(crate) fn is_bool(c: &str) -> bool {
     matches!(c, "bool" | "_Bool")
 }
 
-/// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, a `float` or `double`, a `bool`, a `char *` into a string
-/// literal, a program argument or a local `char` array, a `char **` into
-/// `main`'s `argv`, a pointer to an integer variable or array element, or the
-/// result of `div`. A pointer is `None` for null. A `char *` is otherwise the
-/// bytes from where it points through the end of its array, and a pointer to
-/// an integer is the cells from the one it points to through the end of its
-/// array, a variable being an array of one. A `char **` is the pointers from
-/// where it points through the null that ends `argv`.
-pub(crate) fn value_type(c: &str) -> Option<String> {
+/// The Rust type of a C type other than a struct that the translation can
+/// hold in a variable: an integer, a `float` or `double`, a `bool`, a `char *`
+/// into a string literal, a program argument or a local `char` array, a
+/// `char **` into `main`'s `argv`, a pointer to an integer variable or array
+/// element, or the result of `div`. A pointer is `None` for null. A `char *`
+/// is otherwise the bytes from where it points through the end of its array,
+/// and a pointer to an integer is the cells from the one it points to through
+/// the end of its array, a variable being an array of one. A `char **` is the
+/// pointers from where it points through the null that ends `argv`.
+fn builtin_type(c: &str) -> Option<String> {
     match c {
         c if is_bool(c) => Some("bool".to_string()),
         "char *" => Some("Option<&[u8]>".to_string()),
@@ -125,16 +125,6 @@ fn char_array(c: &str) -> bool {
     array_type(c).is_some_and(|(element, _)| element == "char")
 }
 
-/// The Rust type of a parameter or return value of the C type `c`. Every
-/// `char *` of a function borrows for its lifetime `'a`, so one it returns
-/// may come from a parameter, a string literal or an argument.
-fn signature_type(c: &str) -> Option<String> {
-    match c {
-        "char *" => Some("Option<&'a [u8]>".to_string()),
-        c => value_type(c),
-    }
-}
-
 /// The Rust type of the members of `div_t`, `ldiv_t` or `lldiv_t`, which
 /// the translation holds as the pair `(quot, rem)`.
 fn quotient_type(c: &str) -> Option<&'static str> {
@@ -142,29 +132,6 @@ fn quotient_type(c: &str) -> Option<&'static str> {
         "div_t" => Some("i32"),
         "ldiv_t" | "lldiv_t" => Some("i64"),
         _ => None,
-    }
-}
-
-/// Whether `value_type` translates the C type `c` as a pointer.
-pub(crate) fn pointer(c: &str) -> bool {
-    c.ends_with(" *") && value_type(c).is_some()
-}
-
-/// The value of an uninitialised variable of a C type that `value_type`
-/// translates, as C gives the program no value to read.
-pub(crate) fn zero(c: &str) -> &'static str {
-    if pointer(c) {
-        "None"
-    } else if is_bool(c) {
-        "false"
-    } else if c == "char **" {
-        "&[]"
-    } else if quotient_type(c).is_some() {
-        "(0, 0)"
-    } else if float_type(c).is_some() {
-        "0.0"
-    } else {
-        "0"
     }
 }
 
@@ -219,9 +186,38 @@ fn reserved(name: &str) -> bool {
             .is_some_and(|c| c == '_' || c.is_ascii_uppercase())
 }
 
+/// A C struct, which the translation holds as a Rust struct whose members
+/// of a scalar type are cells, so that pointers to it can all read and write
+/// them, as R10's cells let pointers to integers do.
+struct Record {
+    /// Its Rust name.
+    name: String,
+    /// Its members: their names, C types and widths if they are bit-fields.
+    members: Vec<(String, String, Option<u32>)>,
+    /// Whether the translation names it, so it needs a definition.
+    used: std::cell::Cell<bool>,
+    /// Whether the translation assigns it whole, so it needs a `set`.
+    assigned: std::cell::Cell<bool>,
+}
+
+/// Names that the translation uses for Rust's own types, values and paths,
+/// which a struct may not take.
+const RUST_NAMES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
+    "f64", "bool", "char", "str", "Option", "Some", "None", "Vec", "String", "Box", "Result", "Ok",
+    "Err", "Default", "Clone", "std", "core", "crt",
+];
+
 pub(crate) struct Translator {
     /// Names of the functions the program defines.
     functions: HashSet<String>,
+    /// The structs the program defines at file scope.
+    records: Vec<Record>,
+    /// The record of each C type that names a struct, as `struct tag` or by
+    /// a typedef.
+    record_types: HashMap<String, usize>,
+    /// The width of each bit-field member, by the id of its declaration.
+    bitfields: HashMap<String, u32>,
     /// Ids of the variables that are assigned or whose address is taken.
     mutated: HashSet<String>,
     /// Ids of the integer variables held in a cell, as the program points
@@ -255,6 +251,9 @@ pub(crate) fn program(ast: &Value) -> String {
             .iter()
             .filter_map(|f| f["name"].as_str().map(String::from))
             .collect(),
+        records: Vec::new(),
+        record_types: HashMap::new(),
+        bitfields: HashMap::new(),
         mutated: HashSet::new(),
         cells: HashSet::new(),
         statics: HashMap::new(),
@@ -264,7 +263,13 @@ pub(crate) fn program(ast: &Value) -> String {
         labels: HashMap::new(),
         fresh: 0,
     };
-    let mut out = String::new();
+    translator.collect_records(ast);
+    let mut functions = String::new();
+    for function in &definitions {
+        functions.push_str(&translator.function(function));
+        functions.push('\n');
+    }
+    let mut out = translator.struct_definitions();
     for decl in inner(ast) {
         // Declarations from headers have no initialiser and are `extern`.
         if kind(decl) == "VarDecl" && decl["storageClass"] != "extern" {
@@ -272,10 +277,7 @@ pub(crate) fn program(ast: &Value) -> String {
             out.push_str(";\n\n");
         }
     }
-    for function in &definitions {
-        out.push_str(&translator.function(function));
-        out.push('\n');
-    }
+    out.push_str(&functions);
     if let Some(main) = definitions.iter().find(|f| f["name"] == "main") {
         // Rust's own `main` calls the C one and exits with its result.
         let call = if inner(main).iter().any(|n| kind(n) == "ParmVarDecl") {
@@ -300,6 +302,213 @@ pub(crate) fn program(ast: &Value) -> String {
 }
 
 impl Translator {
+    /// Records the structs that the program defines at file scope, by their
+    /// tags and the typedefs that name them. A struct with an unnamed member
+    /// or without a name to give it in Rust has no record.
+    fn collect_records(&mut self, ast: &Value) {
+        let mut ids = HashMap::new();
+        for decl in inner(ast) {
+            match kind(decl) {
+                "RecordDecl"
+                    if decl["tagUsed"] == "struct" && decl["completeDefinition"] == true =>
+                {
+                    let mut members = Vec::new();
+                    for member in inner(decl).iter().filter(|n| kind(n) == "FieldDecl") {
+                        let Some(name) = member["name"].as_str().filter(|name| !name.is_empty())
+                        else {
+                            members.clear();
+                            break;
+                        };
+                        let width = (member["isBitfield"] == true)
+                            .then(|| inner(member).first()?["value"].as_str()?.parse().ok())
+                            .flatten();
+                        if let (Some(width), Some(id)) = (width, member["id"].as_str()) {
+                            self.bitfields.insert(id.to_string(), width);
+                        }
+                        members.push((name.to_string(), c_type(member).to_string(), width));
+                    }
+                    if members.is_empty() {
+                        continue;
+                    }
+                    let tag = decl["name"].as_str().unwrap_or("");
+                    if !tag.is_empty() {
+                        self.record_types
+                            .insert(format!("struct {tag}"), self.records.len());
+                    }
+                    if let Some(id) = decl["id"].as_str() {
+                        ids.insert(id.to_string(), self.records.len());
+                    }
+                    self.records.push(Record {
+                        name: tag.to_string(),
+                        members,
+                        used: std::cell::Cell::new(false),
+                        assigned: std::cell::Cell::new(false),
+                    });
+                }
+                "TypedefDecl" => {
+                    let mut ty = inner(decl).first();
+                    while let Some(node) = ty.filter(|node| kind(node) == "ElaboratedType") {
+                        ty = inner(node).first();
+                    }
+                    let Some(&index) = ty
+                        .filter(|node| kind(node) == "RecordType")
+                        .and_then(|node| node["decl"]["id"].as_str())
+                        .and_then(|id| ids.get(id))
+                    else {
+                        continue;
+                    };
+                    let name = decl["name"].as_str().unwrap_or("");
+                    self.record_types.insert(name.to_string(), index);
+                    if self.records[index].name.is_empty() {
+                        self.records[index].name = name.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Each struct gets a Rust name of its own that no Rust type or path
+        // of the translation has.
+        let mut taken: HashSet<String> = RUST_NAMES.iter().map(|n| n.to_string()).collect();
+        for record in &mut self.records {
+            if record.name.is_empty() {
+                continue;
+            }
+            let mut name = ident(&record.name);
+            while !taken.insert(name.clone()) {
+                name.push('_');
+            }
+            record.name = name;
+        }
+    }
+
+    /// The record of the C struct type `c`, if the translation holds each of
+    /// its members, so the translation names it and needs its definition.
+    /// `div_t` and its kind are pairs instead.
+    fn record(&self, c: &str) -> Option<&Record> {
+        let record = &self.records[*self.record_types.get(c)?];
+        if record.name.is_empty() || quotient_type(c).is_some() {
+            return None;
+        }
+        for (_, ty, _) in &record.members {
+            self.member_type(ty)?;
+        }
+        record.used.set(true);
+        Some(record)
+    }
+
+    /// The Rust type of a struct member of the C type `c`: a cell of a
+    /// number or `bool`, or another struct.
+    fn member_type(&self, c: &str) -> Option<String> {
+        match number_type(c) {
+            Some(ty) => Some(format!("{CELL}<{ty}>")),
+            None if is_bool(c) => Some(format!("{CELL}<bool>")),
+            None => self.record(c).map(|record| record.name.clone()),
+        }
+    }
+
+    /// The Rust definitions of the structs that the translation names. Each
+    /// derives `Clone`, which copies it as C does, and `Default`, its value
+    /// before C gives it one. One that the program assigns whole has a `set`
+    /// that assigns each member, as C's `=` does, so a struct is assigned
+    /// through a shared borrow as a cell is.
+    fn struct_definitions(&self) -> String {
+        // Assigning a struct assigns the structs of its members.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for record in self.records.iter().filter(|r| r.assigned.get()) {
+                for (_, ty, _) in &record.members {
+                    if let Some(member) = self.record(ty)
+                        && !member.assigned.replace(true)
+                    {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        let mut out = String::new();
+        let mut defined = 0;
+        // Defining a struct names the structs of its members.
+        while let Some(record) = self.records.iter().filter(|r| r.used.get()).nth(defined) {
+            defined += 1;
+            let mut fields = String::new();
+            let mut sets = String::new();
+            for (name, ty, _) in &record.members {
+                let name = ident(name);
+                let read = if self.record(ty).is_some() {
+                    ""
+                } else {
+                    ".get()"
+                };
+                fields.push_str(&format!(
+                    "    {name}: {},\n",
+                    self.member_type(ty).unwrap_or_default()
+                ));
+                sets.push_str(&format!("        self.{name}.set(value.{name}{read});\n"));
+            }
+            let name = &record.name;
+            out.push_str(&format!(
+                "#[derive(Clone, Default)]\nstruct {name} {{\n{fields}}}\n\n"
+            ));
+            if record.assigned.get() {
+                out.push_str(&format!(
+                    "impl {name} {{\n    fn set(&self, value: {name}) {{\n{sets}    }}\n}}\n\n"
+                ));
+            }
+        }
+        out
+    }
+
+    /// The Rust type of a C type that the translation can hold in a
+    /// variable: one of `builtin_type`, a struct or a pointer to a struct,
+    /// which is `None` for null and otherwise the structs from the one it
+    /// points to through the end of its array, a variable being an array of
+    /// one.
+    pub(crate) fn value_type(&self, c: &str) -> Option<String> {
+        builtin_type(c).or_else(|| match c.strip_suffix(" *") {
+            Some(pointee) => self
+                .record(pointee)
+                .map(|record| format!("Option<&[{}]>", record.name)),
+            None => self.record(c).map(|record| record.name.clone()),
+        })
+    }
+
+    /// The Rust type of a parameter or return value of the C type `c`. Every
+    /// `char *` of a function borrows for its lifetime `'a`, so one it returns
+    /// may come from a parameter, a string literal or an argument.
+    fn signature_type(&self, c: &str) -> Option<String> {
+        match c {
+            "char *" => Some("Option<&'a [u8]>".to_string()),
+            c => self.value_type(c),
+        }
+    }
+
+    /// Whether `value_type` translates the C type `c` as a pointer.
+    pub(crate) fn pointer(&self, c: &str) -> bool {
+        c.ends_with(" *") && self.value_type(c).is_some()
+    }
+
+    /// The value of an uninitialised variable of a C type that `value_type`
+    /// translates, as C gives the program no value to read.
+    pub(crate) fn zero(&self, c: &str) -> String {
+        let zero = if self.pointer(c) {
+            "None"
+        } else if is_bool(c) {
+            "false"
+        } else if c == "char **" {
+            "&[]"
+        } else if quotient_type(c).is_some() {
+            "(0, 0)"
+        } else if float_type(c).is_some() {
+            "0.0"
+        } else if let Some(record) = self.record(c) {
+            return format!("{}::default()", record.name);
+        } else {
+            "0"
+        };
+        zero.to_string()
+    }
+
     /// Emits `part` of the runtime into the translation.
     pub(crate) fn require(&mut self, part: &'static str) {
         if !self.runtime.contains(&part) {
@@ -319,8 +528,9 @@ impl Translator {
         let Some(body) = inner(function).iter().find(|n| kind(n) == "CompoundStmt") else {
             return String::new();
         };
-        self.mutated.clear();
-        collect_mutated(body, &mut self.mutated);
+        let mut mutated = HashSet::new();
+        collect_mutated(body, &mut mutated, &|c| self.record(c).is_some());
+        self.mutated = mutated;
         self.cells.clear();
         collect_pointed_to(body, &mut self.cells);
 
@@ -345,20 +555,20 @@ impl Translator {
             .collect();
         let params: Vec<String> = params
             .iter()
-            .map(|p| self.typed_binding(p, signature_type(c_type(p))))
+            .map(|p| self.typed_binding(p, self.signature_type(c_type(p))))
             .collect();
         out.push_str(&params.join(", "));
         out.push(')');
         match ret {
             "void" => {}
             // Rust has no lifetime for the variable such a pointer borrows.
-            ret if pointer(ret) && ret != "char *" => {
+            ret if self.pointer(ret) && ret != "char *" => {
                 out.push_str(&format!(
                     " -> {}",
                     unsupported(&format!("return type {ret}"))
                 ));
             }
-            ret => match signature_type(ret) {
+            ret => match self.signature_type(ret) {
                 Some(ty) => out.push_str(&format!(" -> {ty}")),
                 None => out.push_str(&format!(" -> {}", unsupported(&format!("type {ret}")))),
             },
@@ -386,7 +596,7 @@ impl Translator {
 
     /// `name: Type` for a parameter, with `mut` if the function assigns it.
     pub(crate) fn binding(&self, var: &Value) -> String {
-        self.typed_binding(var, value_type(c_type(var)))
+        self.typed_binding(var, self.value_type(c_type(var)))
     }
 
     /// `binding` with the Rust type `ty`, if the translation has one.
@@ -469,7 +679,7 @@ impl Translator {
         // An uninitialised C variable has no value to read, so any value will do.
         let init = match inner(var).first() {
             Some(init) if var["init"].is_string() => self.expr(init),
-            _ => zero(c_type(var)).to_string(),
+            _ => self.zero(c_type(var)),
         };
         self.declaration(var, &init)
     }
@@ -586,7 +796,7 @@ impl Translator {
         self.fresh += 1;
         let init = match inner(var).first() {
             Some(init) if var["init"].is_string() => self.expr(init),
-            _ => zero(ty).to_string(),
+            _ => self.zero(ty),
         };
         if let Some(id) = var["id"].as_str() {
             self.statics.insert(id.to_string(), name.clone());
@@ -630,7 +840,10 @@ impl Translator {
             }
             None if let Some(cell) = self.cell(target) => {
                 let value = self.right_operand(op, ty, value);
-                update(&cell, |old| binary(op, ty, old, &value))
+                let width = self.bitfield(target);
+                update(&cell, |old| {
+                    truncate(width, ty, &binary(op, ty, old, &value))
+                })
             }
             // Rust's `+=` would check what C wraps.
             None if wraps(op, ty) => {
@@ -687,7 +900,8 @@ impl Translator {
                     return format!("{name}.store({value}, {RELAXED})");
                 }
                 if let Some(cell) = self.cell(&args[0]) {
-                    return update(&cell, step);
+                    let width = self.bitfield(&args[0]);
+                    return update(&cell, |old| truncate(width, ty, &step(old)));
                 }
                 let place = self.place(&args[0]);
                 if checked {
@@ -712,13 +926,93 @@ impl Translator {
 
     /// Writes the Rust value `value` to the C lvalue `target`.
     pub(crate) fn store(&mut self, target: &Value, value: &str) -> String {
+        if let Some(record) = self.record(c_type(target)) {
+            record.assigned.set(true);
+            return format!("{}.set({value})", self.operand(target));
+        }
         if let Some(byte) = self.byte(target) {
             return format!("{byte} = ({value}) as u8");
         }
         match self.cell(target) {
-            Some(cell) => format!("{cell}.set({value})"),
+            Some(cell) => {
+                let value = truncate(self.bitfield(target), c_type(target), value);
+                format!("{cell}.set({value})")
+            }
             None => format!("{} = {value}", self.place(target)),
         }
+    }
+
+    /// The width of the bit-field that `expr` designates, if it is one.
+    fn bitfield(&self, expr: &Value) -> Option<u32> {
+        let mut expr = expr;
+        while kind(expr) == "ParenExpr" {
+            expr = &inner(expr)[0];
+        }
+        let member = expr["referencedMemberDecl"].as_str()?;
+        (kind(expr) == "MemberExpr")
+            .then(|| self.bitfields.get(member).copied())
+            .flatten()
+    }
+
+    /// The Rust place of a member of a struct, `s.m` or `p->m`, where `p`
+    /// points to the first of its structs.
+    fn member(&mut self, expr: &Value) -> Option<String> {
+        let base = &inner(expr)[0];
+        let base = if expr["isArrow"] == true {
+            format!("{}[0]", self.elements(base)?)
+        } else {
+            self.record(c_type(base))?;
+            self.operand(base)
+        };
+        Some(format!("{base}.{}", ident(expr["name"].as_str()?)))
+    }
+
+    /// The Rust place of a struct that `expr` designates as `*p`, `p[i]`,
+    /// `s.m` or `p->m`.
+    fn struct_place(&mut self, expr: &Value) -> Option<String> {
+        let args = inner(expr);
+        match kind(expr) {
+            "ArraySubscriptExpr" if rust_type(c_type(&args[1])).is_some() => {
+                let elements = self.elements(&args[0])?;
+                Some(format!("{elements}[{}]", self.index(&args[1])))
+            }
+            "UnaryOperator" if expr["opcode"] == "*" => {
+                Some(format!("{}[0]", self.elements(&args[0])?))
+            }
+            "MemberExpr" => self.member(expr),
+            _ => None,
+        }
+    }
+
+    /// A struct of the C type `c` from the elements of the initialiser list
+    /// `list`, which Clang gives one for each member in order, those without
+    /// a value as `ImplicitValueInitExpr`.
+    fn struct_literal(&mut self, c: &str, list: &Value) -> String {
+        let Some(record) = self.record(c) else {
+            return unsupported(&format!("initialiser of {c}"));
+        };
+        let (name, members) = (record.name.clone(), record.members.clone());
+        let elements = inner(list);
+        if elements.len() > members.len() || !list["array_filler"].is_null() {
+            return unsupported(&format!("initialiser of {c}"));
+        }
+        let mut fields = Vec::new();
+        for (i, (member, ty, width)) in members.iter().enumerate() {
+            let value = match elements.get(i) {
+                Some(element) if kind(element) != "ImplicitValueInitExpr" => {
+                    let value = self.expr(element);
+                    truncate(*width, ty, &value)
+                }
+                _ => self.zero(ty),
+            };
+            let value = if self.record(ty).is_some() {
+                value
+            } else {
+                format!("{CELL}::new({value})")
+            };
+            fields.push(format!("{}: {value}", ident(member)));
+        }
+        format!("{name} {{ {} }}", fields.join(", "))
     }
 
     /// The Rust place of a C `char` that is an element of a local `char`
@@ -757,11 +1051,17 @@ impl Translator {
 
     /// The Rust cell of a C lvalue that the translation holds in one: an
     /// integer variable that the program points to, an element of an
-    /// integer array or `*p` of a pointer to an integer.
+    /// integer array, `*p` of a pointer to an integer or a struct member of
+    /// a scalar type.
     fn cell(&mut self, expr: &Value) -> Option<String> {
         let args = inner(expr);
+        // A struct is no cell, but its members of scalar types are.
+        if self.record(c_type(expr)).is_some() {
+            return None;
+        }
         match kind(expr) {
             "ParenExpr" => self.cell(&args[0]),
+            "MemberExpr" => self.member(expr),
             "DeclRefExpr"
                 if self.static_var(expr).is_none()
                     && self.is_cell(expr["referencedDecl"]["id"].as_str()) =>
@@ -779,11 +1079,14 @@ impl Translator {
         }
     }
 
-    /// The cells that a pointer to an integer points to, from the first: the
-    /// array that decays to it, or the pointer's slice, as C has no object
-    /// at null.
+    /// The cells or structs that a pointer to an integer or a struct points
+    /// to, from the first: the array that decays to it, or the pointer's
+    /// slice, as C has no object at null.
     fn elements(&mut self, pointer: &Value) -> Option<String> {
-        cell_type(c_type(pointer).strip_suffix(" *")?)?;
+        let pointee = c_type(pointer).strip_suffix(" *")?;
+        if cell_type(pointee).is_none() {
+            self.record(pointee)?;
+        }
         let mut decayed = pointer;
         while kind(decayed) == "ParenExpr" {
             decayed = &inner(decayed)[0];
@@ -905,6 +1208,13 @@ impl Translator {
                 self.expr(&args[1]),
                 self.expr(&args[2])
             ),
+            // A struct as a place, which a value of it copies.
+            _ if self.record(c_type(expr)).is_some()
+                && let Some(place) = self.struct_place(expr) =>
+            {
+                place
+            }
+            "InitListExpr" => self.struct_literal(c_type(expr), expr),
             // An element of `argv`.
             "ArraySubscriptExpr"
                 if c_type(&args[0]) == "char **" && rust_type(c_type(&args[1])).is_some() =>
@@ -940,6 +1250,10 @@ impl Translator {
                 };
                 format!("{}.{field}", self.operand(&args[0]))
             }
+            "MemberExpr" => match self.cell(expr) {
+                Some(cell) => format!("{cell}.get()"),
+                None => unsupported("MemberExpr"),
+            },
             _ if control::boolean(expr) => format!("i32::from({})", self.cond(expr)),
             "UnaryOperator" => match expr["opcode"].as_str() {
                 Some("-") if signed(c_type(expr)) || float_type(c_type(expr)).is_some() => {
@@ -953,19 +1267,24 @@ impl Translator {
                     format!("!{}", self.operand(&args[0]))
                 }
                 Some("+") => self.expr(&args[0]),
-                // The address of an integer variable, the one cell it holds,
-                // or of an array element, the cells from it to the array's
-                // end, which may be none past its last element.
-                Some("&") if c_type(expr) != "char *" && pointer(c_type(expr)) => {
+                // The address of an integer variable or member, the one cell
+                // it holds, or of a struct, or of an array element, the cells
+                // or structs from it to the array's end, which may be none
+                // past its last element.
+                Some("&") if c_type(expr) != "char *" && self.pointer(c_type(expr)) => {
                     let mut target = &args[0];
                     while kind(target) == "ParenExpr" {
                         target = &inner(target)[0];
                     }
+                    let structure = self.record(c_type(target)).is_some();
                     match (kind(target), self.cell(target)) {
-                        ("DeclRefExpr", Some(cell)) => {
+                        ("DeclRefExpr" | "MemberExpr", Some(cell)) => {
                             format!("Some(std::slice::from_ref(&{cell}))")
                         }
-                        ("ArraySubscriptExpr", Some(_)) => {
+                        ("DeclRefExpr" | "MemberExpr", None) if structure => {
+                            format!("Some(std::slice::from_ref(&{}))", self.expr(target))
+                        }
+                        ("ArraySubscriptExpr", cell) if cell.is_some() || structure => {
                             let target = inner(target);
                             let elements = self.elements(&target[0]).unwrap_or_default();
                             format!("Some(&{elements}[{}..])", self.index(&target[1]))
@@ -973,7 +1292,7 @@ impl Translator {
                         _ => unsupported("unary &"),
                     }
                 }
-                Some("*") if c_type(&args[0]) != "char *" && pointer(c_type(&args[0])) => {
+                Some("*") if c_type(&args[0]) != "char *" && self.pointer(c_type(&args[0])) => {
                     match self.cell(expr) {
                         Some(cell) => format!("{cell}.get()"),
                         None => unsupported("unary *"),
@@ -1166,8 +1485,12 @@ impl Translator {
     fn cast(&mut self, expr: &Value) -> String {
         let operand = &inner(expr)[0];
         match expr["castKind"].as_str().unwrap_or("") {
+            // Reading a struct copies it.
+            "LValueToRValue" if self.record(c_type(operand)).is_some() => {
+                format!("{}.clone()", self.operand(operand))
+            }
             "LValueToRValue" | "NoOp" | "FunctionToPointerDecay" => self.expr(operand),
-            "NullToPointer" | "BitCast" if null_pointer(expr) && pointer(c_type(expr)) => {
+            "NullToPointer" | "BitCast" if null_pointer(expr) && self.pointer(c_type(expr)) => {
                 "None".to_string()
             }
             "ArrayToPointerDecay" => match stdio::string_array(operand) {
@@ -1308,6 +1631,24 @@ fn binary(op: &str, ty: &str, left: &str, right: &str) -> String {
     }
 }
 
+/// `value`, of the C type `ty`, converted to a bit-field of `width` bits if
+/// it is one: C keeps the low bits, and GCC and Clang read those of a signed
+/// type as a signed number of that width.
+fn truncate(width: Option<u32>, ty: &str, value: &str) -> String {
+    let Some((width, rust)) = width.zip(rust_type(ty)) else {
+        return value.to_string();
+    };
+    let bits: u32 = rust[1..].parse().unwrap_or(0);
+    if width >= bits {
+        value.to_string()
+    } else if signed(ty) {
+        let shift = bits - width;
+        format!("(({value}) << {shift}) >> {shift}")
+    } else {
+        format!("({value}) & {}", (1u64 << width) - 1)
+    }
+}
+
 /// Sets `cell` to `new` of its value. The cell is found once, so an index
 /// into an array is computed once, as C computes it.
 fn update(cell: &str, new: impl FnOnce(&str) -> String) -> String {
@@ -1341,8 +1682,9 @@ pub(crate) fn callee(call: &Value) -> Option<&str> {
 }
 
 /// Records the variables that `node` assigns, increments or takes the
-/// address of.
-fn collect_mutated(node: &Value, mutated: &mut HashSet<String>) {
+/// address of, other than structs, whose C type `structure` tells, as the
+/// translation writes them only through their members' cells.
+fn collect_mutated(node: &Value, mutated: &mut HashSet<String>, structure: &dyn Fn(&str) -> bool) {
     let writes = match kind(node) {
         "BinaryOperator" => node["opcode"] == "=",
         "CompoundAssignOperator" => true,
@@ -1353,12 +1695,14 @@ fn collect_mutated(node: &Value, mutated: &mut HashSet<String>) {
         while matches!(kind(target), "ParenExpr" | "ImplicitCastExpr") {
             target = &inner(target)[0];
         }
-        if let Some(id) = target["referencedDecl"]["id"].as_str() {
+        if let Some(id) = target["referencedDecl"]["id"].as_str()
+            && !structure(c_type(target))
+        {
             mutated.insert(id.to_string());
         }
     }
     for child in inner(node) {
-        collect_mutated(child, mutated);
+        collect_mutated(child, mutated, structure);
     }
 }
 

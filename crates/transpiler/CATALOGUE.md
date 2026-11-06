@@ -361,3 +361,46 @@ Entry format, newest last:
   `printf`, R2's comparisons and tests, R7's `strtol` end pointer, which
   `strtod` shares, R8's conversions of `bool` and R9's `sizeof` and
   `errno`, whose `ERANGE` is now a part of the runtime of its own
+
+## R13: structs, bit-fields and scanf %u
+
+- C: structs defined at file scope, by tag or by a typedef, whose members are
+  named and of the integer types, `float`, `double`, `bool` or such structs,
+  bit-fields included; their local variables, parameters and return values,
+  uninitialised ones as zero; initialiser lists, designators and nested
+  lists included; `s.m`, `p->m`, `(*p).m` and `p[i].m`, read, assigned,
+  with R9's compound assignments and with `++` and `--` as statements;
+  assigning and copying a whole struct; pointers to structs as variables
+  and parameters, with null pointers and tests as R5 has them; `&` of a
+  struct and of a member of a scalar type, which is an `int *` or the like;
+  `scanf` into a member; `scanf`'s conversion `%u` into an `unsigned int`
+- Rust: a Rust struct with the C name, with one more `_` while the
+  translation uses that name for Rust's own types and paths, such as
+  `Option`, or another struct has it; a member of a scalar type is a `std::cell::Cell` and one
+  of a struct type is that struct, so pointers to a struct all read and write
+  its members, as R10's cells let them. Each derives `Clone`, which copies it
+  as C does, and `Default`, which is the value of an uninitialised one, and
+  one that the program assigns whole gets a `set` that sets each member from
+  a value, so no struct is `mut`. A `T *` is `Option<&[T]>`, the structs from
+  the one it points to, `&s` is `Some(std::slice::from_ref(&s))` and `p->m`
+  is a member of `p.expect("null pointer dereference")[0]`. An initialiser
+  list is a struct expression with every member, `Cell::new(0)` or the
+  struct's `default()` for those it leaves out. Reading a struct, as to
+  initialise, pass or return it, is `.clone()`, and assigning one is `.set`.
+  A bit-field stores the low bits of each value, sign-extended for a signed
+  type as GCC and Clang do, as `(v) & 7` or `((v) << 29) >> 29`. `%u` reads
+  as glibc does, with `strtoul`'s negation modulo 2^64 and saturation, and
+  stores the low 32 bits. Unions, structs with other members or unnamed
+  ones, arrays of structs, static and global structs, `sizeof` of a struct,
+  returning or comparing pointers to structs and compound assignments that
+  C computes in a type other than the bit-field's own stay unsupported
+- Motivation: `g3_033_bitfield` reads its values with `scanf("%u", ...)`,
+  initialises a struct of bit-fields with designators and prints its members
+  through a `const foo_t *`; `g3_023_struct_and_errno` and
+  `g3_024_struct_and_static` change a `house_t` through pointers to it with
+  `->`, `++` and `+=`, and fail now only for a `char *` comparison and a
+  global variable
+- Changes: extends R1's types, variables, assignments and `scanf`, whose
+  reading of `%d` keeps its behaviour, R5's null pointers and tests, R9's
+  compound assignments and R10's cells and pointers, which can now point to
+  a struct or into one

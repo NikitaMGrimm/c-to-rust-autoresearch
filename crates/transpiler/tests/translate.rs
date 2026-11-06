@@ -1275,3 +1275,190 @@ fn rejects_floating_uses_it_cannot_translate() {
     assert!(rust.contains("unsupported C: type long double"), "{rust}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_structs_and_bit_fields() {
+    let c = r#"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+
+struct point { int x; int type; };
+typedef struct point point_t;
+typedef struct { struct point corner; long area; bool filled; } rect;
+typedef struct { unsigned a : 3; int s : 4; unsigned char c : 2; bool b : 1; } bits;
+typedef struct { int v; } Option;
+
+static struct point make(int x, int y) {
+    struct point p = {.type = y, .x = x};
+    return p;
+}
+
+static void shift(point_t *p, int dx) {
+    p->x += dx;
+    (*p).type -= dx;
+}
+
+static int area_of(rect r) {
+    r.area = (long)r.corner.x * r.corner.type;
+    return (int)r.area;
+}
+
+static void bump(int *v) {
+    (*v)++;
+}
+
+static void show(const rect *r) {
+    if (r == NULL) {
+        printf("null\n");
+        return;
+    }
+    printf("%d %d %d %d\n", r->corner.x, r->corner.type, (int)r->area, r->filled);
+}
+
+int main(void) {
+    unsigned u = 0;
+    int n = 0;
+    scanf("%u %d", &u, &n);
+    printf("u=%u\n", u);
+    struct point a = make(n, 3);
+    point_t b = a;
+    b.x = 100;
+    shift(&a, 2);
+    printf("%d %d %d %d\n", a.x, a.type, b.x, b.type);
+    rect r = {{4, 5}, 0, true};
+    rect r2;
+    r2 = r;
+    r2.corner.x = 7;
+    printf("%d %d\n", area_of(r), area_of(r2));
+    show(&r);
+    show(NULL);
+    bump(&r.corner.type);
+    scanf("%d", &r2.corner.type);
+    r.corner = r2.corner;
+    show(&r);
+    show(&r2);
+    Option o;
+    o.v = n;
+    printf("%d\n", o.v);
+    bits k = {0};
+    k.a = u;
+    k.s = n;
+    k.c = 7;
+    k.b = n;
+    printf("%u %d %d %d\n", k.a, k.s, k.c, k.b);
+    for (int i = 0; i < 9; i++) {
+        k.a++;
+        k.s++;
+    }
+    k.s--;
+    printf("%u %d\n", k.a, k.s);
+    k.a = k.a + 6;
+    printf("%u\n", k.a);
+    return a.x;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_structs_and_bit_fields",
+        c,
+        &[
+            "5 9 11",
+            "4294967295 -3 2",
+            "-1 7 0",
+            // `%u` reads as `strtoul` does and keeps the low 32 bits.
+            "9223372036854775808 15 4",
+            "18446744073709551616 -8 3",
+            "-18446744073709551615 2 2",
+            "-9223372036854775809 1 1",
+            "+7 x",
+            "",
+        ],
+    );
+    // Members are cells, so a struct is never `mut`, and only a struct that
+    // is assigned whole, and those inside it, need a `set`.
+    assert!(!rust.contains("let mut a"), "{rust}");
+    assert!(rust.contains("impl rect {"), "{rust}");
+    assert!(rust.contains("impl point {"), "{rust}");
+    assert!(!rust.contains("impl bits {"), "{rust}");
+    assert!(rust.contains("struct Option_ {"), "{rust}");
+}
+
+#[test]
+fn translates_structs_in_a_block_with_labels() {
+    let c = r#"
+#include <stdio.h>
+
+struct acc { int total; unsigned steps : 3; };
+
+static void add(struct acc *a, int v) {
+    a->total += v;
+    a->steps++;
+}
+
+int main(void) {
+    int n = 0;
+    scanf("%d", &n);
+    struct acc a = {0};
+again:
+    add(&a, n);
+    if (a.total < 20) goto again;
+    struct acc b = a;
+    printf("%d %u %d\n", b.total, b.steps, a.total);
+    return 0;
+}
+"#;
+    same_behaviour(
+        "translates_structs_in_a_block_with_labels",
+        c,
+        &["1", "3", "7"],
+    );
+}
+
+#[test]
+fn rejects_struct_uses_it_cannot_translate() {
+    let dir = scratch("rejects_struct_uses_it_cannot_translate");
+    let cases = [
+        (
+            "struct a { int v[2]; }; int main(void) { struct a x; return 0; }",
+            "type struct a",
+        ),
+        (
+            "union u { int a; }; int main(void) { union u x; x.a = 1; return x.a; }",
+            "type union u",
+        ),
+        // An unnamed bit-field has no member to name in Rust.
+        (
+            "struct p { int x : 3; int : 2; }; int main(void) { struct p a = {1}; return a.x; }",
+            "type struct p",
+        ),
+        (
+            "struct p { int x; }; int main(void) { return sizeof(struct p); }",
+            "sizeof struct p",
+        ),
+        (
+            "struct p { int x; }; struct p *f(struct p *q) { return q; }",
+            "return type struct p *",
+        ),
+        (
+            "struct p { int x; }; int f(struct p *a, struct p *b) { return a == b; }",
+            "comparison of struct p *",
+        ),
+        (
+            "struct p { int x; }; int main(void) { struct p a[2]; return 0; }",
+            "type struct p[2]",
+        ),
+        // C computes it in `int`, which the bit-field would need converting.
+        (
+            "struct p { unsigned x : 3; }; int main(void) { struct p a = {1}; a.x += 1; return a.x; }",
+            "+= on unsigned int",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -4,8 +4,8 @@
 //! continues that loop.
 
 use crate::translate::{
-    Translator, c_type, ident, inner, is_bool, kind, null_pointer, number_type, pointer, rust_type,
-    unsupported, value_type, zero,
+    Translator, c_type, ident, inner, is_bool, kind, null_pointer, number_type, rust_type,
+    unsupported,
 };
 use serde_json::Value;
 
@@ -184,7 +184,7 @@ impl Translator {
                 value
             };
         }
-        if pointer(c_type(expr)) {
+        if self.pointer(c_type(expr)) {
             let test = if op == "==" { "is_none" } else { "is_some" };
             return format!("{}.{test}()", self.operand(expr));
         }
@@ -503,7 +503,7 @@ impl Translator {
     fn hoist(&mut self, var: &Value, block: &[Value]) -> Option<(String, Option<String>)> {
         if kind(var) != "VarDecl"
             || !var["storageClass"].is_null()
-            || value_type(c_type(var)).is_none()
+            || self.value_type(c_type(var)).is_none()
         {
             return None;
         }
@@ -512,18 +512,18 @@ impl Translator {
             return None;
         }
         let binding = self.binding(var);
-        let zero = zero(c_type(var));
+        let zero = self.zero(c_type(var));
         match inner(var).first() {
             Some(init) if var["init"].is_string() && self.is_cell(Some(id)) => {
                 let assign = format!("{}.set({})", ident(name), self.expr(init));
-                Some((self.declaration(var, zero), Some(assign)))
+                Some((self.declaration(var, &zero), Some(assign)))
             }
             Some(init) if var["init"].is_string() => {
                 let binding = binding.strip_prefix("mut ").unwrap_or(&binding);
                 let assign = format!("{} = {}", ident(name), self.expr(init));
                 Some((format!("let mut {binding} = {zero};"), Some(assign)))
             }
-            _ => Some((self.declaration(var, zero), None)),
+            _ => Some((self.declaration(var, &zero), None)),
         }
     }
 
