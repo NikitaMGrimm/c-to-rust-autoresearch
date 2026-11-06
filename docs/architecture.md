@@ -51,13 +51,20 @@ space, and the sanitized C program 4 GiB of memory (`run`).
 ## The sandbox
 
 The research agent writes the transpiler and so every translation, and the
-evaluator runs both on the private programs. The transpiler, its build in the
-gate, the compile of a translation and the Rust program therefore run in a
-bubblewrap sandbox (`sandbox`): no network, a read-only file system except the
-translation's directory (the unpacked workspace for the gate's build), and an
-empty home directory apart from the transpiler, its input and the Rust
-toolchain. Scratch directories are new and
-private to the user (`files::Scratch`).
+evaluator runs both on the private programs. The transpiler, its build, the
+compile of a translation and the Rust program therefore run in a bubblewrap
+sandbox (`sandbox`): no network, a read-only file system except the
+translation's directory (the workspace for a build), and an empty home
+directory apart from the transpiler, its input and the Rust toolchain. The
+gate builds from `git archive` of a commit, the `eval` command from a copy of
+its checkout's tracked and unignored files, which leaves out `local/` and keeps
+symlinks as links. Scratch directories are new and private to the user
+(`files::Scratch`).
+
+The transpiler's tests and build scripts are agent code as well. The
+workspace's default members leave the transpiler out, so plain `cargo build`,
+`cargo clippy` and `cargo test` neither build nor run it; CI, which has no
+private data, checks it with `--workspace`.
 
 ## Benchmark data
 

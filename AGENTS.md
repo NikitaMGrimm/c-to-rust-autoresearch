@@ -86,7 +86,10 @@ cargo test
 ```
 
 The tests need the C tools and bubblewrap from the README. If you could not
-run a check, say so. For an evaluator change, compare the output of
+run a check, say so. These commands leave out the transpiler: it is agent
+code, so on a machine with the private directory never build, test or run it
+outside the sandbox, such as with `--workspace` or `-p transpiler`. CI checks
+it. In the loop agent's own clone, `loop/program.md` says what to run. For an evaluator change, compare the output of
 `cargo run -p eval -- --json FILE` before and after; for a bench tool change,
 rerun it and check that both repositories have no changes you did not intend.
 
