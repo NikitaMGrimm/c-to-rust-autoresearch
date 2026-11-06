@@ -83,19 +83,22 @@ bench/README.md. Tools that read private programs print names and counts only.
 
 ## The gate
 
-`cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]`
+`cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev-only] [--run ID]`
 decides whether a loop commit stays. It rejects a candidate that does not
 descend from `BASE`, changes anything outside `crates/transpiler/` and
 `Cargo.lock`, or changes rules without the
 [catalogue](../crates/transpiler/CATALOGUE.md). Otherwise it builds both
 transpilers from `git archive` in the sandbox, after fetching dependencies
 outside it, and evaluates them on the development set, the private validation
-set and the private variants of the development set.
+and held-out sets and the private variants of the development set.
 
 The keep rule is provisional: the development score rises, or does not drop
 for a candidate whose commits are all fixes with a `fix(transpiler)` subject,
-such as for a review comment, and the validation score does not drop. Every result goes to `PRIVATE_DIR/loop/log.jsonl`, with
-the validation score without [near-copies](../bench/README.md#near-copies) and
+such as for a review comment, and the validation score does not drop. With
+`--dev-only`, as in the baseline runs, the development score alone decides
+and validation is only logged. Every result goes to
+`PRIVATE_DIR/loop/log.jsonl`, or with `--run ID` to
+`PRIVATE_DIR/runs/ID/log.jsonl`, with the scores of the private sets without [near-copies](../bench/README.md#near-copies) and
 the passes that fail their fuzzed inputs. The gate prints only the
 development results and the decision. Exit code 0 means keep, 1 reject and 2
 error. The gate trusts its own code and the benchmarks, so it must run from a
@@ -107,8 +110,8 @@ hostile one.
 ## A round
 
 `loop/round PRIVATE_DIR LOOP_DIR [DENIED_DIR...]` ends one iteration, after the
-loop agent's session. It stops if the audit below finds anything or the clone
-has no new commit. Otherwise it fetches the clone's `HEAD` into
+loop agent's session. It stops if the audit below finds anything (exit code 1)
+or the clone has no new commit (3). Otherwise it fetches the clone's `HEAD` into
 `refs/loop/TIME` of the main checkout, runs the gate on it with the
 session's model usage, and on keep fast-forwards main. It then deletes the
 clone and runs `loop/setup` again, so every session starts from a fresh clone
@@ -117,6 +120,18 @@ gate printed. The script reads the clone only through `git fetch`, because
 git run inside it would apply settings and hooks the agent could have
 changed. Its state stays in the main checkout's `local/loop/`, one directory
 for each loop checkout, and a lock there lets only one round run at a time.
+
+With `--run RUN`, the branch `run/RUN` takes main's place: the round judges
+the commit against it, keeps the commit there, and keeps its state in
+`local/runs/RUN/`. It passes `--run RUN` to the gate, and `--dev-only` when
+given. `loop/run` makes that branch from main, with `crates/transpiler/` as
+it was before the loop's first rule (or from `--start COMMIT`), and then
+alternates a headless session (`claude -p`) in a fresh clone with such a
+round, for a fixed number of sessions. The sessions run without permission
+prompts, as the pilot's did in T3 Code; the deny rules and the guard from
+`loop/setup` still apply. A session without a commit is followed by a fresh
+clone all the same. The run stops after a session or round that failed, and
+when the audit finds anything.
 
 With `--github`, the round then runs `loop/github`, which reaches GitHub
 through `gh` and `git` from the main checkout:

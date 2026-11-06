@@ -74,13 +74,14 @@ per commit, each listed in the
 commit stays:
 
 ```sh
-cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]
+cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev-only] [--run ID]
 ```
 
 It keeps a candidate that changes only the transpiler when the development
 score rises, or for a candidate of `fix(transpiler)` commits does not drop,
 and the validation score does not drop, and prints only the development
-results and the decision. Run it from this checkout, which the
+results and the decision. With `--dev-only` the development score alone
+decides. It also evaluates the held-out set, for the private log only. Run it from this checkout, which the
 loop agent cannot write, at a clean main.
 
 The loop agent works in its own clone, which keeps it away from the private
@@ -117,6 +118,20 @@ threads, a check that ended without failing or passing, and commits that
 reach GitHub's `main` or a `loop/` branch some other way. Pull those on
 `main` into this checkout's main between rounds, then make the clone afresh
 with `loop/setup`.
+
+For measured runs, `loop/run` runs the loop unattended for a fixed number of
+sessions, each a headless Claude Code session in a fresh clone followed by a
+round:
+
+```sh
+~/src/c-to-rust-autoresearch/loop/run [--dev-only] [--model MODEL] [--effort LEVEL] RUN SESSIONS PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+```
+
+A run keeps its commits on its own branch `run/RUN`, which starts from main
+with the transpiler as it was before the loop's first rule, and the gate logs
+it to `PRIVATE_DIR/runs/RUN/log.jsonl`. It publishes nothing, and stops early
+after a failed session or round, or when the audit finds contact with the
+private sets.
 
 ## Model usage
 
