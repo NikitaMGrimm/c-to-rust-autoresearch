@@ -24,7 +24,7 @@ Entry format, newest last:
   integer conversions; calls of the program's own functions; `printf` with a
   literal format of `%d`/`%i` with the flags `-`, `+` and `0` and a width,
   and `%%`, whose result is discarded; `scanf` with a literal format of `%d`
-  into `&variable`
+  into `&variable`; either format ends at its first zero byte, as in C
 - Rust: `fn` with `i8`…`u64`, `let` with `mut` only for variables that are
   assigned or whose address is taken, raw identifiers for Rust keywords, the
   last `return` as the tail expression, C's `main` as `c_main` called by

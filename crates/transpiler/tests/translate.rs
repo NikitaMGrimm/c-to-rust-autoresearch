@@ -135,6 +135,26 @@ int main(void) {
 }
 
 #[test]
+fn formats_end_at_their_first_zero_byte() {
+    let c = r#"
+#include <stdio.h>
+
+int main(void) {
+    int x = 7;
+    int n = scanf("%d\0%d", &x);
+    printf("%d %d\n\0hidden %d\n", n, x);
+    printf("a\0b");
+    return x;
+}
+"#;
+    same_behaviour(
+        "formats_end_at_their_first_zero_byte",
+        c,
+        &["5\0 6", "5 6", "", "z"],
+    );
+}
+
+#[test]
 fn reports_unsupported_constructs_as_compile_errors() {
     let dir = scratch("reports_unsupported_constructs_as_compile_errors");
     let rust = translate(

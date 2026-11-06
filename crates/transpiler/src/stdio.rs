@@ -149,7 +149,8 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
     Ok(types)
 }
 
-/// The bytes of a narrow string literal, without its terminating zero.
+/// The bytes of a narrow string literal up to its first zero, where C's
+/// library functions stop reading it, as with the format `"a\0b"`.
 fn string_literal(expr: &Value) -> Option<Vec<u8>> {
     let mut expr = expr;
     while matches!(kind(expr), "ImplicitCastExpr" | "ParenExpr") {
@@ -158,7 +159,11 @@ fn string_literal(expr: &Value) -> Option<Vec<u8>> {
     if kind(expr) != "StringLiteral" {
         return None;
     }
-    unescape(expr["value"].as_str()?)
+    let mut bytes = unescape(expr["value"].as_str()?)?;
+    if let Some(end) = bytes.iter().position(|&byte| byte == 0) {
+        bytes.truncate(end);
+    }
+    Some(bytes)
 }
 
 /// Decodes a string literal as Clang prints it: in double quotes, with C's
