@@ -164,7 +164,7 @@ impl Fixture {
         ] {
             std::fs::create_dir_all(path).unwrap();
         }
-        for script in ["setup", "guard", "round", "github"] {
+        for script in ["setup", "guard", "round", "github", "run"] {
             let source = format!("{}/../../loop/{script}", env!("CARGO_MANIFEST_DIR"));
             std::fs::copy(source, repo.join("loop").join(script)).unwrap();
         }
@@ -225,7 +225,24 @@ esac | jq -r "$filter"
 "#,
         )
         .unwrap();
-        for script in [&cargo, &gh] {
+        // A session writes a rule and commits all it finds, except the
+        // sessions listed in $IDLE.
+        let claude = dir.join("bin/claude");
+        std::fs::write(
+            &claude,
+            r#"#!/usr/bin/env bash
+echo "claude $*" >>"$CALLS"
+session=$(grep -c '^claude ' "$CALLS")
+echo "$session" >"rule$session"
+if [[ " ${IDLE-} " != *" $session "* ]]; then
+  git add -A
+  git -c user.name=t -c user.email=t@t -c commit.gpgsign=false \
+    commit -q -m "feat(transpiler): rule $session"
+fi
+"#,
+        )
+        .unwrap();
+        for script in [&cargo, &gh, &claude] {
             std::fs::set_permissions(script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
                 .unwrap();
         }
@@ -281,6 +298,12 @@ esac | jq -r "$filter"
             .env("GH", self.dir.join("gh"))
             .env("AUDIT", audit.to_string())
             .env("GATE", gate.to_string())
+            .envs([
+                ("GIT_AUTHOR_NAME", "t"),
+                ("GIT_AUTHOR_EMAIL", "t@t"),
+                ("GIT_COMMITTER_NAME", "t"),
+                ("GIT_COMMITTER_EMAIL", "t@t"),
+            ])
             .env_remove("XDG_CACHE_HOME")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -388,6 +411,19 @@ esac | jq -r "$filter"
     fn calls(&self) -> String {
         std::fs::read_to_string(self.dir.join("calls")).unwrap_or_default()
     }
+
+    /// Runs `loop/run` with `args` before the private directory, the loop
+    /// checkout and `notes` as a denied directory, and sessions that make no
+    /// commit when `idle` lists them.
+    fn run_loop(&self, args: &[&str], idle: &str, audit: u8) -> Option<i32> {
+        let mut command = self.command("run", audit, 0);
+        command.env("IDLE", idle).args(args).args([
+            &self.dir.join("private"),
+            &self.loop_dir,
+            &self.home.join("notes"),
+        ]);
+        command.status().unwrap().code()
+    }
 }
 
 #[test]
@@ -492,7 +528,7 @@ fn a_round_keeps_or_drops_the_commit_and_starts_afresh() {
 fn a_round_judges_nothing_without_a_commit_or_after_contact() {
     let fixture = Fixture::new();
     assert_eq!(fixture.run("setup", 0, 0), Some(0));
-    assert_eq!(fixture.run("round", 0, 0), Some(1));
+    assert_eq!(fixture.run("round", 0, 0), Some(3));
     let work = commit(&fixture.loop_dir, "work");
     assert_eq!(fixture.run("round", 1, 0), Some(1));
     assert!(
@@ -562,6 +598,75 @@ fn a_round_fails_with_2_and_runs_alone() {
     holder.kill().unwrap();
     holder.wait().unwrap();
     assert_eq!(fixture.run("round", 0, 0), Some(0));
+}
+
+#[test]
+fn a_run_keeps_its_commits_on_its_own_branch_from_the_start_transpiler() {
+    let fixture = Fixture::new();
+    let repo = &fixture.repo;
+    std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
+    let start = commit(repo, "crates/transpiler/empty");
+    let main = commit(repo, "crates/transpiler/rules");
+    let args = ["--dev-only", "--start", &start, "--model", "m", "r1", "2"];
+    assert_eq!(fixture.run_loop(&args, "", 0), Some(0));
+
+    assert_eq!(git(repo, &["rev-parse", "main"]), main);
+    // The run starts from main with the start's transpiler.
+    let base = git(repo, &["rev-parse", "run/r1~2"]);
+    assert_eq!(git(repo, &["rev-parse", &format!("{base}^")]), main);
+    let changed = git(repo, &["diff", "--name-only", &main, &base]);
+    assert_eq!(changed, "crates/transpiler/rules");
+    // Both sessions' commits were judged for the run and kept on its branch.
+    let calls = fixture.calls();
+    let sessions = calls.lines().filter(|line| line.starts_with("claude "));
+    assert!(
+        sessions.clone().count() == 2
+            && sessions
+                .clone()
+                .all(|line| line.ends_with("--permission-mode bypassPermissions --model m")),
+        "{calls}"
+    );
+    assert_eq!(calls.matches("--dev-only --run r1\n").count(), 2, "{calls}");
+    let kept = git(repo, &["log", "--format=%s", &format!("{base}..run/r1")]);
+    assert_eq!(kept, "feat(transpiler): rule 2\nfeat(transpiler): rule 1");
+    // The next session would start from the run's branch.
+    let head = git(repo, &["rev-parse", "run/r1"]);
+    assert_eq!(git(&fixture.loop_dir, &["rev-parse", "HEAD"]), head);
+    let rounds = std::fs::read_to_string(fixture.loop_dir.join("ROUNDS.md")).unwrap();
+    assert!(
+        rounds.contains("rule 1") && rounds.contains("rule 2"),
+        "{rounds}"
+    );
+}
+
+#[test]
+fn a_run_starts_every_session_afresh_and_stops_at_contact() {
+    let fixture = Fixture::new();
+    let repo = &fixture.repo;
+    std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
+    let start = commit(repo, "crates/transpiler/empty");
+    let run = |sessions: &str, idle: &str, audit: u8| {
+        fixture.run_loop(&["--start", &start, "r1", sessions], idle, audit)
+    };
+    // The first session leaves its rule uncommitted, which the second, in a
+    // fresh checkout, does not see.
+    assert_eq!(run("2", "1", 0), Some(0));
+    let kept = git(repo, &["log", "--format=%s", "main..run/r1"]);
+    assert_eq!(kept.lines().count(), 2, "{kept}");
+    let files = git(repo, &["ls-tree", "--name-only", "run/r1"]);
+    assert!(
+        files.contains("rule2") && !files.contains("rule1"),
+        "{files}"
+    );
+    assert_eq!(run("1", "", 0), Some(2));
+
+    std::fs::remove_dir_all(&fixture.loop_dir).unwrap();
+    let before = git(repo, &["rev-parse", "run/r1"]);
+    assert_eq!(run("3", "", 1), Some(1));
+    let calls = fixture.calls();
+    let sessions = calls.lines().filter(|line| line.starts_with("claude "));
+    assert_eq!(sessions.count(), 3, "{calls}");
+    assert_eq!(git(repo, &["rev-parse", "run/r1"]), before);
 }
 
 /// An open pull request from a loop branch, as fake GitHub lists it.

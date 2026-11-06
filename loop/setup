@@ -4,16 +4,21 @@
 # keep it away from the private programs. See loop/program.md.
 set -euo pipefail
 
-if (($# < 2)); then
+branch=main
+if [[ ${1-} == --branch ]]; then
+  branch=${2-}
+  shift 2 || true
+fi
+if (($# < 2)) || [[ -z $branch ]]; then
   cat >&2 <<'EOF'
-usage: loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
-Clones main into LOOP_DIR and writes its Claude Code settings. The loop agent
-may not read or edit PRIVATE_DIR, the corpus cache, this checkout, its Claude
-Code transcripts or any DENIED_DIR; may not use the web, network commands or
-tools from MCP servers such as T3 Code's; and loop/guard blocks any other tool
-call that names them or Claude Code's files. The agent follows only the
-repository's instructions and the skills in loop/skills: the owner's own
-instructions, skills and auto memory are off.
+usage: loop/setup [--branch BRANCH] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+Clones BRANCH, main by default, into LOOP_DIR and writes its Claude Code
+settings. The loop agent may not read or edit PRIVATE_DIR, the corpus cache,
+this checkout, its Claude Code transcripts or any DENIED_DIR; may not use the
+web, network commands or tools from MCP servers such as T3 Code's; and
+loop/guard blocks any other tool call that names them or Claude Code's files.
+The agent follows only the repository's instructions and the skills in
+loop/skills: the owner's own instructions, skills and auto memory are off.
 EOF
   exit 2
 fi
@@ -49,7 +54,7 @@ json_array() {
   printf '%s\n' "$@" | jq -R . | jq -sc .
 }
 
-git clone -q --branch main "$repo" "$loop"
+git clone -q --branch "$branch" "$repo" "$loop"
 loop=$(cd "$loop" && pwd -P)
 # Instructions outside the repository: the owner's, and any in a directory
 # above the checkout, which Claude Code loads too.

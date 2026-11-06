@@ -2,26 +2,53 @@
 # Ends one iteration of the research loop, after the loop agent's session:
 # audits the agent's transcripts, runs the gate on its commit, keeps the
 # commit on main or drops it, and makes a fresh loop checkout from main for
-# the next iteration. With --github, loop/github then takes main to GitHub
-# and brings the reviews back. Run it by this checkout's path, never the loop
-# checkout's copy, which the agent can change. See docs/architecture.md.
+# the next iteration. With --run, a run's branch takes main's place. With
+# --github, loop/github then takes main to GitHub and brings the reviews back.
+# Run it by this checkout's path, never the loop checkout's copy, which the
+# agent can change. See docs/architecture.md.
 set -euo pipefail
 trap 'exit 2' ERR
 
-github=false
-if [[ ${1-} == --github ]]; then
-  github=true
-  shift
-fi
-if (($# < 2)); then
+usage() {
   cat >&2 <<'EOF'
-usage: loop/round [--github] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+usage: loop/round [--github | --run RUN] [--dev-only] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 Takes the arguments of loop/setup, which it runs again for the next iteration.
-Exits 0 when the gate decided, 1 when there was nothing to judge or the audit
-found contact with the private sets, and 2 on errors. A failed GitHub step
-only prints a warning.
+With --run, the commit is judged against and kept on the branch run/RUN, which
+loop/run made, and the gate logs to PRIVATE_DIR/runs/RUN; --dev-only goes to
+the gate. Exits 0 when the gate decided, 1 when the audit found contact with
+the private sets, 3 when the loop checkout has no new commit, and 2 on errors.
+A failed GitHub step only prints a warning.
 EOF
   exit 2
+}
+github=false
+run=
+gate=()
+while [[ ${1-} == --* ]]; do
+  case $1 in
+    --github) github=true ;;
+    --dev-only) gate+=(--dev-only) ;;
+    --run)
+      run=${2-}
+      [[ -n $run ]] || usage
+      shift
+      ;;
+    *) usage ;;
+  esac
+  shift
+done
+branch=main
+if [[ -n $run ]]; then
+  # The names the gate allows for its log directory, and git for a branch.
+  if $github || [[ ! $run =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] ||
+    ! git check-ref-format "refs/heads/run/$run"; then
+    usage
+  fi
+  branch=run/$run
+  gate+=(--run "$run")
+fi
+if (($# < 2)); then
+  usage
 fi
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 private=$(cd "$1" && pwd -P)
@@ -43,7 +70,10 @@ fi
 name=$(printf %s "$loop" | tr -c 'a-zA-Z0-9' '-')
 transcripts=$HOME/.claude/projects/$name
 state=$repo/local/loop/$name
-mkdir -p "$state"
+if [[ -n $run ]]; then
+  state=$repo/local/runs/$run
+fi
+mkdir -p "$state" "$repo/local/loop"
 # Two rounds at once would judge the same commit and delete each other's clone.
 exec 9>"$repo/local/loop/lock"
 if ! flock -n 9; then
@@ -51,6 +81,10 @@ if ! flock -n 9; then
   exit 2
 fi
 cd "$repo"
+if ! base=$(git rev-parse -q --verify "refs/heads/$branch"); then
+  echo "round stopped: there is no branch $branch; loop/run makes it" >&2
+  exit 2
+fi
 
 # After a look at a private program, the gate's results would mean nothing.
 status=0
@@ -66,12 +100,11 @@ fi
 # apply settings and hooks that the agent could have changed.
 stamp=$(date -u +%Y%m%dT%H%M%S%NZ)
 git fetch -q --no-tags --no-recurse-submodules "$loop" "HEAD:refs/loop/$stamp"
-base=$(git rev-parse main)
 candidate=$(git rev-parse "refs/loop/$stamp")
 if [[ $candidate == "$base" ]]; then
   git update-ref -d "refs/loop/$stamp"
   echo "round stopped: the loop checkout has no new commit" >&2
-  exit 1
+  exit 3
 fi
 
 report=$(mktemp)
@@ -84,7 +117,7 @@ fi
 cargo run -q -p transcripts --bin usage -- "${since[@]}" "$transcripts" >"$report"
 status=0
 cargo run -q -p eval --bin gate -- "$private" "$base" "$candidate" --usage "$report" \
-  >"$printed" || status=$?
+  "${gate[@]}" >"$printed" || status=$?
 cat "$printed"
 if ((status > 1)); then
   echo "round stopped: the gate failed; nothing was changed" >&2
@@ -92,7 +125,12 @@ if ((status > 1)); then
 fi
 decision=reject
 if ((status == 0)); then
-  git merge -q --ff-only "$candidate"
+  # Main is checked out here; a run's branch is not.
+  if [[ $branch == main ]]; then
+    git merge -q --ff-only "$candidate"
+  else
+    git update-ref "refs/heads/$branch" "$candidate" "$base"
+  fi
   decision=keep
 fi
 # The model that wrote most of the session, by its display name, such as
@@ -117,11 +155,11 @@ if $github && [[ -f $loop/REPLIES.json && ! -L $loop/REPLIES.json ]]; then
   cp "$loop/REPLIES.json" "$state/replies.json"
 fi
 rm -rf "$loop"
-"$repo/loop/setup" "$private" "$loop" "${denied[@]}" >/dev/null
+"$repo/loop/setup" --branch "$branch" "$private" "$loop" "${denied[@]}" >/dev/null
 cp "$state/rounds.md" "$loop/ROUNDS.md"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
 if $github; then
   "$repo/loop/github" "$state" "$loop" "$candidate" "$decision" "$model" ||
     echo "round: the GitHub step failed; it runs again after the next round" >&2
 fi
-echo "next iteration: a fresh $loop at $(git log -1 --format='%h %s' main)"
+echo "next iteration: a fresh $loop at $(git log -1 --format='%h %s' "$branch")"

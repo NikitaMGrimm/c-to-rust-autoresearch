@@ -119,6 +119,20 @@ reach GitHub's `main` or a `loop/` branch some other way. Pull those on
 `main` into this checkout's main between rounds, then make the clone afresh
 with `loop/setup`.
 
+For measured runs, `loop/run` runs the loop unattended for a fixed number of
+sessions, each a headless Claude Code session in a fresh clone followed by a
+round:
+
+```sh
+~/src/c-to-rust-autoresearch/loop/run [--dev-only] [--model MODEL] [--effort LEVEL] RUN SESSIONS PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+```
+
+A run keeps its commits on its own branch `run/RUN`, which starts from main
+with the transpiler as it was before the loop's first rule, and the gate logs
+it to `PRIVATE_DIR/runs/RUN/log.jsonl`. It publishes nothing, and stops early
+after a failed session or round, or when the audit finds contact with the
+private sets.
+
 ## Model usage
 
 ```sh
