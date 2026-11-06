@@ -21,14 +21,26 @@ pub(crate) fn c_type(node: &Value) -> &str {
     qual_type(&node["type"])
 }
 
-/// A C type as Clang gives it, with typedefs resolved and qualifiers dropped.
+/// A C type as Clang gives it, with typedefs resolved and qualifiers dropped,
+/// including those of a pointer itself, as in `int *restrict`.
 fn qual_type(ty: &Value) -> &str {
     let ty = ty["desugaredQualType"]
         .as_str()
         .or(ty["qualType"].as_str())
         .unwrap_or("");
-    ty.trim_start_matches("const ")
-        .trim_start_matches("volatile ")
+    let mut ty = ty
+        .trim_start_matches("const ")
+        .trim_start_matches("volatile ");
+    while let Some(rest) = ["restrict", "const", "volatile"]
+        .iter()
+        .find_map(|qualifier| {
+            let rest = ty.strip_suffix(qualifier)?.trim_end();
+            rest.ends_with('*').then_some(rest)
+        })
+    {
+        ty = rest;
+    }
+    ty
 }
 
 /// The Rust type of a C integer type on x86-64 Linux, where `char` is signed.
@@ -54,10 +66,11 @@ pub(crate) fn is_bool(c: &str) -> bool {
 /// The Rust type of a C type that the translation can hold in a variable: an
 /// integer, a `bool`, a `char *` into a string literal or a program
 /// argument, a `char **` into `main`'s `argv`, a pointer to an integer
-/// variable, which the program can only read, or the result of `div`. A
-/// pointer is `None` for null. A `char *` is otherwise the string's bytes
-/// from where it points, through the zero that ends the array, and a pointer
-/// to an integer borrows it. A `char **` is the pointers from where it
+/// variable or array element, or the result of `div`. A pointer is `None`
+/// for null. A `char *` is otherwise the string's bytes from where it
+/// points, through the zero that ends the array, and a pointer to an integer
+/// is the cells from the one it points to through the end of its array, a
+/// variable being an array of one. A `char **` is the pointers from where it
 /// points through the null that ends `argv`.
 pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
@@ -65,12 +78,31 @@ pub(crate) fn value_type(c: &str) -> Option<String> {
         "char *" => Some("Option<&'static [u8]>".to_string()),
         "char **" => Some("&'static [Option<&'static [u8]>]".to_string()),
         c => match c.strip_suffix(" *") {
-            Some(pointee) => rust_type(pointee).map(|ty| format!("Option<&{ty}>")),
+            Some(pointee) => cell_type(pointee).map(|ty| format!("Option<&[{CELL}<{ty}>]>")),
             None => rust_type(c)
                 .map(String::from)
                 .or_else(|| quotient_type(c).map(|ty| format!("({ty}, {ty})"))),
         },
     }
+}
+
+/// Rust's cell, which holds every integer that a C pointer can point to, so
+/// that pointers to the same object can all read and write it, as in C.
+pub(crate) const CELL: &str = "std::cell::Cell";
+
+/// The Rust type of an integer that the translation holds in a cell when the
+/// program points to it: any but `char`, whose pointers R4 holds as string
+/// bytes.
+fn cell_type(c: &str) -> Option<&'static str> {
+    rust_type(c).filter(|_| c != "char")
+}
+
+/// The element type and the length of the C array type `c`: digits for a
+/// fixed length, or the expression of a variable length as Clang prints it.
+/// The element of an array of arrays is an array.
+fn array_type(c: &str) -> Option<(&str, &str)> {
+    let (element, length) = c.strip_suffix(']')?.rsplit_once('[')?;
+    Some((element.trim_end(), length))
 }
 
 /// The Rust type of the members of `div_t`, `ldiv_t` or `lldiv_t`, which
@@ -160,6 +192,9 @@ pub(crate) struct Translator {
     functions: HashSet<String>,
     /// Ids of the variables that are assigned or whose address is taken.
     mutated: HashSet<String>,
+    /// Ids of the integer variables held in a cell, as the program points
+    /// to them.
+    cells: HashSet<String>,
     /// The Rust statics of the static local variables, by id.
     statics: HashMap<String, String>,
     /// The parts of the `crt` runtime the translation calls, in first use.
@@ -189,6 +224,7 @@ pub(crate) fn program(ast: &Value) -> String {
             .filter_map(|f| f["name"].as_str().map(String::from))
             .collect(),
         mutated: HashSet::new(),
+        cells: HashSet::new(),
         statics: HashMap::new(),
         runtime: Vec::new(),
         scopes: Vec::new(),
@@ -253,6 +289,8 @@ impl Translator {
         };
         self.mutated.clear();
         collect_mutated(body, &mut self.mutated);
+        self.cells.clear();
+        collect_pointed_to(body, &mut self.cells);
 
         let mut out = format!("fn {}(", ident(name));
         let argv = ["int", "char **"];
@@ -263,6 +301,15 @@ impl Translator {
             ));
             return out;
         }
+        // A parameter that the program points to moves into a cell.
+        let cells: String = params
+            .iter()
+            .filter(|p| self.is_cell(p["id"].as_str()))
+            .map(|p| {
+                let name = ident(p["name"].as_str().unwrap_or(""));
+                format!("    let {name} = {CELL}::new({name});\n")
+            })
+            .collect();
         let params: Vec<String> = params.iter().map(|p| self.binding(p)).collect();
         out.push_str(&params.join(", "));
         out.push(')');
@@ -281,6 +328,7 @@ impl Translator {
             },
         }
         out.push_str(" {\n");
+        out.push_str(&cells);
         let stmts = inner(body);
         let (last, init) = match stmts.split_last() {
             Some((last, init)) if kind(last) == "ReturnStmt" && !inner(last).is_empty() => {
@@ -311,14 +359,30 @@ impl Translator {
         )
     }
 
+    /// `mut` if the function assigns the variable other than through its cell.
     fn mut_(&self, var: &Value) -> &'static str {
-        if var["id"]
-            .as_str()
-            .is_some_and(|id| self.mutated.contains(id))
-        {
+        let id = var["id"].as_str();
+        if id.is_some_and(|id| self.mutated.contains(id)) && !self.is_cell(id) {
             "mut "
         } else {
             ""
+        }
+    }
+
+    /// Whether the variable with the id `id` is held in a cell.
+    pub(crate) fn is_cell(&self, id: Option<&str>) -> bool {
+        id.is_some_and(|id| self.cells.contains(id))
+    }
+
+    /// The `let` of a local variable that `value_type` translates, with the
+    /// Rust value `init`, in a cell if the program points to it.
+    pub(crate) fn declaration(&self, var: &Value, init: &str) -> String {
+        match rust_type(c_type(var)) {
+            Some(ty) if self.is_cell(var["id"].as_str()) => format!(
+                "let {}: {CELL}<{ty}> = {CELL}::new({init});",
+                ident(var["name"].as_str().unwrap_or(""))
+            ),
+            _ => format!("let {} = {init};", self.binding(var)),
         }
     }
 
@@ -359,12 +423,74 @@ impl Translator {
             Some("extern") => return format!("{};", unsupported("extern local variable")),
             _ => {}
         }
+        if let Some((element, length)) = array_type(c_type(var)) {
+            return self.array(var, element, length);
+        }
         // An uninitialised C variable has no value to read, so any value will do.
         let init = match inner(var).first() {
             Some(init) if var["init"].is_string() => self.expr(init),
             _ => zero(c_type(var)).to_string(),
         };
-        format!("let {} = {init};", self.binding(var))
+        self.declaration(var, &init)
+    }
+
+    /// A local array of integers as cells, which pointers into it share: a
+    /// borrowed Rust array for a fixed length and a `Vec` for a variable
+    /// one. Clang gives a variable length only as the text of its
+    /// expression, so it must be a variable's name. Elements without an
+    /// initialiser are 0, as C gives no value to read.
+    fn array(&mut self, var: &Value, element: &str, length: &str) -> String {
+        let name = ident(var["name"].as_str().unwrap_or(""));
+        let Some(ty) = cell_type(element) else {
+            return format!("{};", unsupported(&format!("type {}", c_type(var))));
+        };
+        let init = inner(var).first().filter(|_| var["init"].is_string());
+        if !length.is_empty() && length.bytes().all(|b| b.is_ascii_digit()) {
+            let array = format!("[const {{ {CELL}::new(0) }}; {length}]");
+            let value = match init {
+                None => array,
+                Some(list) if kind(list) == "InitListExpr" => {
+                    // With a filler for the elements it leaves out, Clang
+                    // lists the filler and then the elements.
+                    let elements = match list["array_filler"].as_array() {
+                        Some(filler) => &filler[1..],
+                        None => inner(list),
+                    };
+                    let mut sets = String::new();
+                    for (i, element) in elements.iter().enumerate() {
+                        if kind(element) != "ImplicitValueInitExpr" {
+                            sets.push_str(&format!(" __array[{i}].set({});", self.expr(element)));
+                        }
+                    }
+                    if sets.is_empty() {
+                        array
+                    } else {
+                        format!("{{ let __array = {array};{sets} __array }}")
+                    }
+                }
+                Some(_) => return format!("{};", unsupported("array initialiser")),
+            };
+            // As a slice, so a constant index out of bounds panics when it
+            // runs, as an array's would fail to compile even where it never
+            // runs.
+            return format!("let {name}: &[{CELL}<{ty}>] = &{value};");
+        }
+        let mut chars = length.chars();
+        let variable = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !variable || init.is_some() {
+            return format!(
+                "{};",
+                unsupported(&format!("variable length array {}", c_type(var)))
+            );
+        }
+        // A negative length converts to one too large to allocate.
+        format!(
+            "let {name}: Vec<{CELL}<{ty}>> = vec![{CELL}::new(0); {} as usize];",
+            ident(length)
+        )
     }
 
     /// A static local variable of an integer type, as a Rust static atomic
@@ -426,6 +552,14 @@ impl Translator {
                 let result = binary(op, ty, &format!("{name}.load({RELAXED})"), &value);
                 format!("{name}.store({result}, {RELAXED})")
             }
+            None if op.is_empty() => {
+                let value = self.expr(value);
+                self.store(target, &value)
+            }
+            None if let Some(cell) = self.cell(target) => {
+                let value = self.right_operand(op, ty, value);
+                update(&cell, |old| binary(op, ty, old, &value))
+            }
             // Rust's `+=` would check what C wraps.
             None if wraps(op, ty) => {
                 let place = self.place(target);
@@ -467,14 +601,19 @@ impl Translator {
                 // check it. Unsigned types wrap, and narrower ones convert
                 // back from `int`, which wraps on x86-64 too.
                 let checked = matches!(ty, "int" | "long" | "long long");
-                if let Some(name) = self.static_var(&args[0]) {
-                    let value = format!("{name}.load({RELAXED})");
-                    let value = if checked {
+                let step = |value: &str| {
+                    if checked {
                         format!("{value} {} 1", &assign[..1])
                     } else {
                         format!("{value}.{method}(1)")
-                    };
+                    }
+                };
+                if let Some(name) = self.static_var(&args[0]) {
+                    let value = step(&format!("{name}.load({RELAXED})"));
                     return format!("{name}.store({value}, {RELAXED})");
+                }
+                if let Some(cell) = self.cell(&args[0]) {
+                    return update(&cell, step);
                 }
                 let place = self.place(&args[0]);
                 if checked {
@@ -494,6 +633,68 @@ impl Translator {
             },
             ("ParenExpr", _) => self.expr_stmt(&args[0]),
             _ => self.expr(expr),
+        }
+    }
+
+    /// Writes the Rust value `value` to the C lvalue `target`.
+    pub(crate) fn store(&mut self, target: &Value, value: &str) -> String {
+        match self.cell(target) {
+            Some(cell) => format!("{cell}.set({value})"),
+            None => format!("{} = {value}", self.place(target)),
+        }
+    }
+
+    /// The Rust cell of a C lvalue that the translation holds in one: an
+    /// integer variable that the program points to, an element of an
+    /// integer array or `*p` of a pointer to an integer.
+    fn cell(&mut self, expr: &Value) -> Option<String> {
+        let args = inner(expr);
+        match kind(expr) {
+            "ParenExpr" => self.cell(&args[0]),
+            "DeclRefExpr"
+                if self.static_var(expr).is_none()
+                    && self.is_cell(expr["referencedDecl"]["id"].as_str()) =>
+            {
+                Some(ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")))
+            }
+            "ArraySubscriptExpr" if rust_type(c_type(&args[1])).is_some() => {
+                let elements = self.elements(&args[0])?;
+                Some(format!("{elements}[{}]", self.index(&args[1])))
+            }
+            "UnaryOperator" if expr["opcode"] == "*" && !errno(expr) => {
+                Some(format!("{}[0]", self.elements(&args[0])?))
+            }
+            _ => None,
+        }
+    }
+
+    /// The cells that a pointer to an integer points to, from the first: the
+    /// array that decays to it, or the pointer's slice, as C has no object
+    /// at null.
+    fn elements(&mut self, pointer: &Value) -> Option<String> {
+        cell_type(c_type(pointer).strip_suffix(" *")?)?;
+        let mut decayed = pointer;
+        while kind(decayed) == "ParenExpr" {
+            decayed = &inner(decayed)[0];
+        }
+        if kind(decayed) == "ImplicitCastExpr"
+            && decayed["castKind"] == "ArrayToPointerDecay"
+            && variable(&inner(decayed)[0])
+        {
+            return Some(self.expr(&inner(decayed)[0]));
+        }
+        Some(format!(
+            "{}.expect(\"null pointer dereference\")",
+            self.operand(pointer)
+        ))
+    }
+
+    /// An integer index into a slice. A negative one converts to one beyond
+    /// any slice, so it panics as an index out of bounds does.
+    fn index(&mut self, index: &Value) -> String {
+        match kind(index) {
+            "IntegerLiteral" => index["value"].as_str().unwrap_or("").to_string(),
+            _ => format!("{} as usize", self.operand(index)),
         }
     }
 
@@ -530,7 +731,10 @@ impl Translator {
             },
             "DeclRefExpr" => match self.static_var(expr) {
                 Some(name) => format!("{name}.load({RELAXED})"),
-                None => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
+                None => match self.cell(expr) {
+                    Some(cell) => format!("{cell}.get()"),
+                    None => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
+                },
             },
             _ if errno(expr) => {
                 self.require(ERRNO_RUNTIME);
@@ -542,11 +746,23 @@ impl Translator {
                     Some(operand) => c_type(operand),
                     None => qual_type(&expr["argType"]),
                 };
-                let size = match rust_type(of) {
-                    _ if of.ends_with('*') => 8,
-                    Some(ty) => ty[1..].parse::<u32>().unwrap_or(0) / 8,
-                    None if is_bool(of) => 1,
-                    None => return unsupported(&format!("sizeof {of}")),
+                let size = |of: &str| match rust_type(of) {
+                    _ if of.ends_with('*') => Some(8),
+                    Some(ty) => ty[1..].parse::<u64>().ok().map(|bits| bits / 8),
+                    None if is_bool(of) => Some(1),
+                    None => None,
+                };
+                // An array of a fixed length holds that many elements.
+                let size = match array_type(of) {
+                    Some((element, length)) => length
+                        .parse::<u64>()
+                        .ok()
+                        .zip(size(element))
+                        .and_then(|(length, size)| length.checked_mul(size)),
+                    None => size(of),
+                };
+                let Some(size) = size else {
+                    return unsupported(&format!("sizeof {of}"));
                 };
                 match rust_type(c_type(expr)) {
                     Some(ty) => format!("{size}_{ty}"),
@@ -559,17 +775,16 @@ impl Translator {
                 self.expr(&args[1]),
                 self.expr(&args[2])
             ),
-            // An element of `argv`. A negative index converts to one beyond
-            // any slice, so it panics as an index out of bounds does.
+            // An element of `argv`.
             "ArraySubscriptExpr"
                 if c_type(&args[0]) == "char **" && rust_type(c_type(&args[1])).is_some() =>
             {
-                let index = match kind(&args[1]) {
-                    "IntegerLiteral" => args[1]["value"].as_str().unwrap_or("").to_string(),
-                    _ => format!("{} as usize", self.operand(&args[1])),
-                };
-                format!("{}[{index}]", self.operand(&args[0]))
+                format!("{}[{}]", self.operand(&args[0]), self.index(&args[1]))
             }
+            "ArraySubscriptExpr" => match self.cell(expr) {
+                Some(cell) => format!("{cell}.get()"),
+                None => unsupported("ArraySubscriptExpr"),
+            },
             "ParenExpr" => self.expr(&args[0]),
             "ImplicitCastExpr" | "CStyleCastExpr" => self.cast(expr),
             // A member of the result of `div`, which is held as `(quot, rem)`.
@@ -594,23 +809,31 @@ impl Translator {
                     format!("!{}", self.operand(&args[0]))
                 }
                 Some("+") => self.expr(&args[0]),
-                // The address of an integer variable, which Rust borrows; a
-                // later write to the variable while it is borrowed fails to
-                // compile.
-                Some("&")
-                    if c_type(expr) != "char *"
-                        && pointer(c_type(expr))
-                        && variable(&args[0])
-                        && self.static_var(&args[0]).is_none() =>
-                {
-                    format!("Some(&{})", self.expr(&args[0]))
+                // The address of an integer variable, the one cell it holds,
+                // or of an array element, the cells from it to the array's
+                // end, which may be none past its last element.
+                Some("&") if c_type(expr) != "char *" && pointer(c_type(expr)) => {
+                    let mut target = &args[0];
+                    while kind(target) == "ParenExpr" {
+                        target = &inner(target)[0];
+                    }
+                    match (kind(target), self.cell(target)) {
+                        ("DeclRefExpr", Some(cell)) => {
+                            format!("Some(std::slice::from_ref(&{cell}))")
+                        }
+                        ("ArraySubscriptExpr", Some(_)) => {
+                            let target = inner(target);
+                            let elements = self.elements(&target[0]).unwrap_or_default();
+                            format!("Some(&{elements}[{}..])", self.index(&target[1]))
+                        }
+                        _ => unsupported("unary &"),
+                    }
                 }
-                // C has no object at a null pointer.
                 Some("*") if c_type(&args[0]) != "char *" && pointer(c_type(&args[0])) => {
-                    format!(
-                        "*{}.expect(\"null pointer dereference\")",
-                        self.operand(&args[0])
-                    )
+                    match self.cell(expr) {
+                        Some(cell) => format!("{cell}.get()"),
+                        None => unsupported("unary *"),
+                    }
                 }
                 // The byte a `char *` points to, the first of its slice; one
                 // past the end of the array has none, and indexing panics.
@@ -711,7 +934,10 @@ impl Translator {
                 }
                 // `%s` prints the bytes as Rust text.
                 Some(_) => unsupported("string literal that is not UTF-8"),
-                None => unsupported("cast ArrayToPointerDecay"),
+                None => match self.elements(expr) {
+                    Some(array) if variable(operand) => format!("Some(&{array}[..])"),
+                    _ => unsupported("cast ArrayToPointerDecay"),
+                },
             },
             // C converts a scalar to `bool` by testing it, as a condition
             // does. A constant, such as `<stdbool.h>`'s `true`, is a literal.
@@ -820,6 +1046,15 @@ fn binary(op: &str, ty: &str, left: &str, right: &str) -> String {
     }
 }
 
+/// Sets `cell` to `new` of its value. The cell is found once, so an index
+/// into an array is computed once, as C computes it.
+fn update(cell: &str, new: impl FnOnce(&str) -> String) -> String {
+    format!(
+        "{{ let __cell = &{cell}; __cell.set({}) }}",
+        new("__cell.get()")
+    )
+}
+
 /// Whether `expr` is C's `errno`, which glibc's `<errno.h>` defines as
 /// `(*__errno_location ())`.
 fn errno(expr: &Value) -> bool {
@@ -862,6 +1097,40 @@ fn collect_mutated(node: &Value, mutated: &mut HashSet<String>) {
     }
     for child in inner(node) {
         collect_mutated(child, mutated);
+    }
+}
+
+/// Records the integer variables whose address `node` takes, which the
+/// translation holds in cells. An address passed straight to `scanf` is only
+/// written through during the call, so its variable needs none.
+fn collect_pointed_to(node: &Value, cells: &mut HashSet<String>) {
+    if kind(node) == "CallExpr" && matches!(callee(node), Some("scanf" | "fscanf")) {
+        for arg in inner(node) {
+            if kind(arg) == "UnaryOperator" && arg["opcode"] == "&" {
+                inner(arg)
+                    .iter()
+                    .flat_map(inner)
+                    .for_each(|child| collect_pointed_to(child, cells));
+            } else {
+                collect_pointed_to(arg, cells);
+            }
+        }
+        return;
+    }
+    if kind(node) == "UnaryOperator" && node["opcode"] == "&" {
+        let mut target = &inner(node)[0];
+        while kind(target) == "ParenExpr" {
+            target = &inner(target)[0];
+        }
+        if variable(target)
+            && cell_type(c_type(target)).is_some()
+            && let Some(id) = target["referencedDecl"]["id"].as_str()
+        {
+            cells.insert(id.to_string());
+        }
+    }
+    for child in inner(node) {
+        collect_pointed_to(child, cells);
     }
 }
 

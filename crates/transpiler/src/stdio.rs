@@ -141,7 +141,8 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
             return unsupported(&format!("scanf of {ty} into {}", c_type(place)));
         }
         let rust = rust_type(ty).unwrap_or_default();
-        arms.push_str(&format!("{i} => {} = __value as {rust}, ", t.place(place)));
+        let store = t.store(place, &format!("__value as {rust}"));
+        arms.push_str(&format!("{i} => {store}, "));
     }
     t.require(SCANF_RUNTIME);
     format!(

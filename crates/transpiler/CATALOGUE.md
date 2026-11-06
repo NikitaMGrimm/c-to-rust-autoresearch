@@ -229,3 +229,45 @@ Entry format, newest last:
   messages from a `switch`; it prints its usage with `fprintf(stderr, ...)`
 - Changes: extends R1's operators, compound assignments and `printf`, R2's
   control flow, R4's `char *` and R7's `strtol`, which now sets `errno`
+
+## R10: integer arrays and pointers into them
+
+- C: local arrays of the integer types other than `char`, of a fixed length,
+  perhaps with an initialiser list, designators included, or of a variable
+  length that is a variable's name; `a[i]` and `p[i]` with an integer index,
+  read, assigned, with the compound assignments that R9 has for variables
+  and with `++` and `--` as statements; an array as a pointer, `&a[i]` and `*p` as a value and as a
+  target; `&` of an integer variable or parameter; `scanf` into `&a[i]`;
+  `sizeof` of a fixed-length array; `restrict`, `const` and `volatile` on a
+  pointer itself, as in `int *restrict`
+- Rust: every integer the program points to is a `std::cell::Cell`, so
+  pointers to the same object, as when one array is passed as the output and
+  the inputs of one function, all read it with `get` and write it with `set`.
+  A `T *` is `Option<&[Cell<T>]>`, the cells from the one it points to
+  through the end of its array; `&x` is `Some(std::slice::from_ref(&x))`,
+  `&a[i]` is `Some(&a[i..])`, and an array decays to `Some(&a[..])`. A
+  fixed-length array is `&[Cell<T>]` borrowing `[const { Cell::new(0) };
+  N]`, so a constant index out of bounds panics when it runs rather than
+  failing to compile where it never runs; its initialiser sets the listed
+  elements, the rest staying 0. A variable-length one is `vec![Cell::new(0);
+  n as usize]`. `p[i]` indexes the slice of
+  `p.expect("null pointer dereference")`, with a negative index converted
+  `as usize` so it panics as out of bounds, and `*p` is element 0. A compound
+  assignment or `++` on a cell finds the cell once, `{ let __cell = &...;
+  __cell.set(...) }`, keeping R1's overflow checks and R9's wrapping. A
+  variable whose address is taken is a cell from its declaration, a
+  parameter from the start of its function; one whose address goes only to
+  `scanf` stays a plain variable. Pointer arithmetic and comparisons between
+  pointers, arrays of `char`, of arrays and of other types, arrays in a block
+  with labels or static, a variable length given by an expression and
+  returning a pointer stay unsupported
+- Motivation: `g3_030_mutable_buffer_overlap_extrahard`,
+  `g3_048_mutable_buffer_overlap2` and `g3_031_disjoint_arrays` read numbers
+  into an `int[100]` with `scanf("%d", &data[i])` and pass it to a function
+  that writes `out[i] = mul1[i] * mul2[i] + add[i]` through `int *`
+  parameters, which the first points all at the same array, the second at a
+  variable-length array and the third, as `int *restrict`, at three of them
+- Changes: replaces R5's `Option<&T>`, a read-only borrow, with the slice of
+  cells, so a program can now write through a pointer and to the variable it
+  points to; extends R1's local variables, assignments and `scanf`, R2's
+  variables declared before a block with labels and R9's `sizeof`

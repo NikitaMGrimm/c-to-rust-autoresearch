@@ -512,12 +512,16 @@ impl Translator {
         let binding = self.binding(var);
         let zero = zero(c_type(var));
         match inner(var).first() {
+            Some(init) if var["init"].is_string() && self.is_cell(Some(id)) => {
+                let assign = format!("{}.set({})", ident(name), self.expr(init));
+                Some((self.declaration(var, zero), Some(assign)))
+            }
             Some(init) if var["init"].is_string() => {
                 let binding = binding.strip_prefix("mut ").unwrap_or(&binding);
                 let assign = format!("{} = {}", ident(name), self.expr(init));
                 Some((format!("let mut {binding} = {zero};"), Some(assign)))
             }
-            _ => Some((format!("let {binding} = {zero};"), None)),
+            _ => Some((self.declaration(var, zero), None)),
         }
     }
 

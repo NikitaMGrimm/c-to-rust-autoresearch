@@ -474,7 +474,7 @@ skip:;
         c,
         &["0", "7", "-3", ""],
     );
-    assert!(rust.contains("Option<&i32>"), "{rust}");
+    assert!(rust.contains("Option<&[std::cell::Cell<i32>]>"), "{rust}");
 }
 
 #[test]
@@ -489,13 +489,13 @@ fn rejects_integer_pointer_uses_it_cannot_translate() {
         rust.contains(r#"compile_error!("unsupported C: return type int *")"#),
         "{rust}"
     );
-    // A pointer is read-only, so it cannot be written through.
+    // A pointer is the cells from where it points, so it cannot move.
     let rust = translate(
         &dir,
-        "int main(void) { int x = 1; int *p = &x; *p = 2; return x; }\n",
+        "int main(void) { int a[2] = {1, 2}; int *p = a + 1; return *p; }\n",
     );
     assert!(
-        rust.contains(r#"compile_error!("unsupported C: assignment to UnaryOperator")"#),
+        rust.contains(r#"compile_error!("unsupported C: binary + on int *")"#),
         "{rust}"
     );
     // A `char *` holds a string literal's bytes, not a character variable.
@@ -887,6 +887,131 @@ fn rejects_switches_it_cannot_translate() {
         (
             "#include <stdio.h>\nint main(void) { FILE *f = stdout; fprintf(f, \"x\"); return 0; }",
             "fprintf to a stream other than stdout or stderr",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_integer_arrays_and_pointers_into_them() {
+    let c = r#"
+#include <stdio.h>
+
+static void bump(int *restrict p, unsigned char *b) {
+    (*p)++;
+    *p += 10;
+    *b = *b + 100;
+    p[0] *= 2;
+}
+
+static long sum(const long *xs, int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++)
+        total += xs[i];
+    return total;
+}
+
+static void fma(int *out, const int *mul, const int *add, int len) {
+    for (int i = 0; i < len; i++) {
+        out[i] = out[i] * mul[i] + add[i];
+    }
+}
+
+static int twice(int v) {
+    int *const p = &v;
+    *p *= 2;
+    return v;
+}
+
+static int skip(int n) {
+    int k = 4;
+    int *pk = &k;
+    if (n == 7) goto done;
+    *pk = 9;
+done:
+    return k;
+}
+
+int main(void) {
+    int n = 0;
+    if (scanf("%d", &n) != 1 || n < 1 || n > 50) {
+        return 1;
+    }
+    int x = n;
+    int *px = &x;
+    unsigned char b = 200;
+    bump(px, &b);
+    printf("%d %d %u\n", x, *px, b);
+    x = 3;
+    printf("%d %d\n", *px + x, twice(x));
+
+    int a[6] = {[4] = 7, 1};
+    long ls[4] = {1, 2, 3};
+    int zeros[5] = {0};
+    printf("%d %d %d %d\n", a[0], a[4], a[5], zeros[4]);
+    printf("%d %d\n", (int)sum(ls, 4), (int)(sizeof a / sizeof a[0]));
+
+    int v[n];
+    for (int i = 0; i < n; i++) {
+        if (scanf("%d", &v[i]) != 1) {
+            v[i] = i;
+        }
+    }
+    fma(v, v, v, n);
+    fma(&a[2], &a[3], zeros, 3);
+    printf("%d %d %d %d\n", v[0], v[n - 1], a[2], a[5]);
+    int *end = &a[6];
+    if (end) {
+        printf("end\n");
+    }
+    unsigned u[3];
+    u[0] = 0;
+    u[0] -= 1;
+    u[1] = 7;
+    u[1]++;
+    printf("%u %u\n", u[0], u[1]);
+    // C leaves these undefined, and Rust panics only if they run.
+    if (n > 1000) {
+        a[6] = 1;
+        printf("%d\n", a[10]);
+    }
+    printf("%d\n", skip(n));
+    return a[0];
+}
+"#;
+    let rust = same_behaviour(
+        "translates_integer_arrays_and_pointers_into_them",
+        c,
+        &["", "0", "1 5", "3 1 2 3", "7 -1 -2", "50"],
+    );
+    assert!(rust.contains("Vec<std::cell::Cell<i32>>"), "{rust}");
+}
+
+#[test]
+fn rejects_array_uses_it_cannot_translate() {
+    let dir = scratch("rejects_array_uses_it_cannot_translate");
+    let cases = [
+        // Clang gives the length only as text, so it must be a name.
+        (
+            "int main(void) { int n = 2; int a[n + 1]; a[0] = 0; return a[0]; }",
+            "variable length array int[n + 1]",
+        ),
+        (
+            "int main(void) { int a[2][3]; return 0; }",
+            "type int[2][3]",
+        ),
+        // A `char *` holds a string literal's bytes.
+        ("int main(void) { char s[4]; return 0; }", "type char[4]"),
+        (
+            "int main(void) { int a[2]; if (a[0]) goto end; int b[2]; end: return 0; }",
+            "declaration in a block with labels",
         ),
     ];
     for (c, error) in cases {
