@@ -5,8 +5,9 @@
 use crate::translate::{Translator, c_type, inner, kind, rust_type, unsupported};
 use serde_json::Value;
 
-/// `printf` with a literal format, whose result the program discards.
-pub(crate) fn printf(t: &mut Translator, args: &[Value]) -> String {
+/// `printf` with a literal format, whose result the program discards, as
+/// the Rust macro `mac`, `print` or `eprint`.
+pub(crate) fn printf(t: &mut Translator, mac: &str, args: &[Value]) -> String {
     let Some(format) = args.first().and_then(string_literal) else {
         return unsupported("printf without a literal format");
     };
@@ -32,13 +33,13 @@ pub(crate) fn printf(t: &mut Translator, args: &[Value]) -> String {
             (arg, ty) => return unsupported(&format!("printf of {arg} as {ty}")),
         }
     }
-    let mac = if format.ends_with('\n') {
+    let line = if format.ends_with('\n') {
         format.pop();
-        "println"
+        "ln"
     } else {
-        "print"
+        ""
     };
-    format!("{mac}!({format:?}{call})")
+    format!("{mac}{line}!({format:?}{call})")
 }
 
 /// Converts a printf format to a Rust one and lists the C types of the
@@ -171,16 +172,16 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
     Ok(types)
 }
 
-/// Whether `expr` is C's `stdin`, as the stream of `fscanf`.
-pub(crate) fn is_stdin(expr: &Value) -> bool {
+/// The name of the standard stream that `expr` names, such as `stdin`.
+pub(crate) fn stream(expr: &Value) -> Option<&str> {
     let mut expr = expr;
     while matches!(kind(expr), "ImplicitCastExpr" | "ParenExpr") {
-        match inner(expr).first() {
-            Some(operand) => expr = operand,
-            None => return false,
-        }
+        expr = inner(expr).first()?;
     }
-    kind(expr) == "DeclRefExpr" && expr["referencedDecl"]["name"] == "stdin"
+    match expr["referencedDecl"]["name"].as_str() {
+        Some(name @ ("stdin" | "stdout" | "stderr")) if kind(expr) == "DeclRefExpr" => Some(name),
+        _ => None,
+    }
 }
 
 /// The bytes of a narrow string literal up to its first zero, where C's

@@ -723,3 +723,178 @@ int main(void) {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_unsigned_and_bitwise_arithmetic_and_switch() {
+    let c = r#"
+#include <stdio.h>
+
+static unsigned int mix(unsigned int a, unsigned int b) {
+    static unsigned int total = 1;
+    unsigned int shift = b % (sizeof(unsigned int) * 8);
+    unsigned long wide = (unsigned long)a * 4294967296u + b;
+    total *= a + 1;
+    total ^= b;
+    total <<= 1;
+    a -= b;
+    a += 7u;
+    a *= 3u;
+    a |= b & 0xf0u;
+    a >>= 1;
+    printf("%u %u %u\n", a << shift, a >> shift, ~a);
+    printf("%u %u %u\n", (unsigned int)(wide >> 32), (unsigned int)wide, -a);
+    return (a ^ b) + total + (b == 0 ? 1 : a / b) + (b != 0 ? a % b : 0u);
+}
+
+static const char *name(int n) {
+    switch (n) {
+    case -1:
+        return "minus one";
+    case 'a':
+    case 'c':
+        return "letter";
+    default:
+        return "other";
+    case 0:
+        return "zero";
+    }
+}
+
+int main(void) {
+    int x, y;
+    while (scanf("%d %d", &x, &y) == 2) {
+        int signed_mix = (x & 0x0f) | (y << 3) ^ (x >> 2);
+        signed_mix ^= ~y;
+        signed_mix &= 0x7fff;
+        printf("%d %u\n", signed_mix, mix((unsigned int)x, (unsigned int)y));
+        printf("%s %s\n", name(x), name(y));
+        for (int i = 0; i < 4; i++) {
+            switch (i + x % 3) {
+            case 1:
+                if (y > 5) {
+                    break;
+                }
+                printf("one");
+                break;
+            case 2:
+                continue;
+            case 3: {
+                switch (y & 1) {
+                case 0:
+                    printf("even");
+                    break;
+                }
+                break;
+            }
+            default:
+                printf("[%d]", i);
+            }
+            printf(" %d;", i);
+        }
+        printf("\n");
+    }
+    switch (x) {
+    }
+    return sizeof x + sizeof(long) + sizeof(char *);
+}
+"#;
+    let rust = same_behaviour(
+        "translates_unsigned_and_bitwise_arithmetic_and_switch",
+        c,
+        &[
+            "0 0\n",
+            "1 2\n97 99\n-1 7\n",
+            "-2147483648 31\n2147483647 -1\n12345 678\n",
+            "4 33\n-7 100\n",
+        ],
+    );
+    assert!(rust.contains("wrapping_mul"), "{rust}");
+    assert!(rust.contains("match"), "{rust}");
+}
+
+#[test]
+fn translates_rand_strtoul_errno_and_fprintf() {
+    let c = r#"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char *argv[]) {
+    printf("%d %d\n", rand(), rand());
+    for (int i = 1; i < argc; i++) {
+        char *end;
+        errno = 0;
+        unsigned long u = strtoul(argv[i], &end, 0);
+        int range = errno;
+        errno = 0;
+        long l = strtol(argv[i], NULL, 0);
+        fprintf(stdout, "%u %u %d %d %d [%s]\n", (unsigned int)(u >> 32), (unsigned int)u, range,
+                (int)(l >> 32), errno, end);
+        if (*end != '\0') {
+            fprintf(stderr, "trailing %s\n", end);
+            continue;
+        }
+        srand((unsigned int)u);
+        printf("%d %d %d\n", rand(), rand(), rand() % 100);
+    }
+    return errno == ERANGE;
+}
+"#;
+    same_behaviour_on(
+        "translates_rand_strtoul_errno_and_fprintf",
+        c,
+        &[
+            (&[], ""),
+            (&["0", "1", "2", "42", "2147483648", "4294967295"], ""),
+            (&["-1", " +17", "0x10x", "", "18446744073709551615"], ""),
+            (
+                &[
+                    "18446744073709551616",
+                    "-18446744073709551616",
+                    "9223372036854775808",
+                ],
+                "",
+            ),
+            (&["-9223372036854775809", "-9223372036854775808"], ""),
+        ],
+    );
+}
+
+#[test]
+fn rejects_switches_it_cannot_translate() {
+    let dir = scratch("rejects_switches_it_cannot_translate");
+    let cases = [
+        (
+            "int main(void) { int x = 1; switch (x) { case 1: x++; case 2: x++; } return x; }",
+            "switch case that falls through",
+        ),
+        (
+            "int main(void) { int x = 1; switch (x) { case 1: if (x) { case 2: x++; } } return x; }",
+            "case label inside another statement",
+        ),
+        (
+            "int main(void) { int x = 1; switch (x) { case 1:; int y = 1; return y; case 2: y = 2; return y; } return x; }",
+            "variable declared in one case and used in another",
+        ),
+        (
+            "int main(void) { int x = 1; switch (x) { x++; case 1: return 1; } return x; }",
+            "statement before the first case of a switch",
+        ),
+        (
+            "int main(void) { int x = 1; switch (x) { case 1 ... 3: return 1; } return x; }",
+            "case range",
+        ),
+        (
+            "#include <stdio.h>\nint main(void) { FILE *f = stdout; fprintf(f, \"x\"); return 0; }",
+            "fprintf to a stream other than stdout or stderr",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

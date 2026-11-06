@@ -190,3 +190,42 @@ Entry format, newest last:
 - Motivation: `g1_011_static_dag` passes `true` and `false` to a function
   with a `bool` parameter that it tests with `if`
 - Changes: extends R1's types and conversions and R2's conditions
+
+## R9: unsigned and bitwise arithmetic, switch, rand, strtoul and errno
+
+- C: `+ - * / %` on the unsigned types and unary `-` on them; `& | ^ << >>`
+  and `~` on every integer type; the compound assignments of all these
+  operators, on local and static local variables; `c ? a : b`; `sizeof` of
+  an integer, `bool` or pointer type or expression; `switch` on an integer
+  whose case labels are integer or character constants, perhaps negated or
+  converted, where no case with statements falls into the next; `errno`,
+  read and assigned; `strtoul` and `strtoull`; `rand` and `srand`;
+  `fprintf` to `stdout` or `stderr`; `*p` of a `char *`
+- Rust: unsigned `+ - *` wrap with `wrapping_add`, `wrapping_sub` and
+  `wrapping_mul`, as C defines them, and unary `-` with `wrapping_neg`; the
+  other operators are Rust's, so overflow checks still catch what C leaves
+  undefined: signed overflow, a zero divisor and a shift count outside the
+  type; `~` is `!`. A compound assignment that wraps becomes `x =
+  x.wrapping_add(v)`, the rest `x op= v`. `?:` is `if c { a } else { b }`.
+  `sizeof` is a literal such as `4_u64` with x86-64 Linux's sizes. A
+  `switch` is a `match` with an arm for each run of labels and `_` last,
+  or `_ => {}` without `default`; a `break` that ends an arm is dropped, any
+  other leaves a labelled block around the `match`, and `continue` still
+  continues the loop around it. `errno` is `crt::ERRNO`, a static
+  `AtomicI32`. `crt::strtol` and `crt::strtoul` share one parser; out of
+  range they saturate and set `errno` to `ERANGE`, and `strtoul` negates a
+  value after `-` modulo 2^64, as glibc does. `crt::rand` and `crt::srand`
+  are glibc's `random`: 31 words seeded by its linear congruential
+  generator, 310 results discarded and each result a sum of two words
+  shifted right by one, seeded with 1 until `srand`. `fprintf` is
+  `print!` or `eprint!` as R1's `printf`. `*p` is the first byte of the
+  slice as `i8`, and panics past the end of the array. Fallthrough between
+  cases, labels inside other statements, case ranges, case values that are
+  not literal constants, a variable declared in one case and used in
+  another and other streams stay unsupported
+- Motivation: `g1_016_switch_arith` parses a seed with `strtoul` and
+  `errno`, draws two numbers with `srand` and `rand`, combines them with
+  every unsigned and bitwise operator and a `?:`, and prints one of ten
+  messages from a `switch`; it prints its usage with `fprintf(stderr, ...)`
+- Changes: extends R1's operators, compound assignments and `printf`, R2's
+  control flow, R4's `char *` and R7's `strtol`, which now sets `errno`

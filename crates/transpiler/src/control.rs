@@ -24,10 +24,11 @@ pub(crate) struct Jump {
     continues: bool,
 }
 
-/// Where a C loop's `break` and `continue` go.
+/// Where a `break` and `continue` go in a C loop or `switch`; a `switch`
+/// outside any loop has nowhere to continue.
 pub(crate) struct CLoop {
     break_: Jump,
-    continue_: Jump,
+    continue_: Option<Jump>,
 }
 
 /// A label in a block being translated: the scope of the block's loop, the
@@ -286,10 +287,10 @@ impl Translator {
                         scope,
                         continues: false,
                     },
-                    continue_: Jump {
+                    continue_: Some(Jump {
                         scope,
                         continues: true,
-                    },
+                    }),
                 });
                 let mut body = String::new();
                 self.body(&args[1], depth + 1, &mut body);
@@ -335,9 +336,9 @@ impl Translator {
             }
             "BreakStmt" | "ContinueStmt" => {
                 let breaks = kind(stmt) == "BreakStmt";
-                let target = self.loops.last().map(|c_loop| {
+                let target = self.loops.last().and_then(|c_loop| {
                     if breaks {
-                        c_loop.break_
+                        Some(c_loop.break_)
                     } else {
                         c_loop.continue_
                     }
@@ -365,6 +366,7 @@ impl Translator {
                     None => out.push_str(&format!("{pad}{};\n", unsupported("goto into a block"))),
                 }
             }
+            "SwitchStmt" => self.switch(stmt, depth, out),
             // A label outside a block's own statements is no goto target.
             "LabelStmt" => self.stmt(&args[0], depth, out),
             _ => return false,
@@ -391,10 +393,10 @@ impl Translator {
                 scope,
                 continues: false,
             },
-            continue_: Jump {
+            continue_: Some(Jump {
                 scope: block,
                 continues: false,
-            },
+            }),
         });
         let mut lines = String::new();
         self.body(body, depth + 1, &mut lines);
@@ -518,6 +520,201 @@ impl Translator {
             _ => Some((format!("let {binding} = {zero};"), None)),
         }
     }
+
+    /// A `switch` whose cases do not fall into each other, as a `match` with
+    /// an arm for each run of labels and the statements after them, and
+    /// `default` last. A `break` that ends an arm is dropped, and any other
+    /// leaves a labelled block around the `match`.
+    fn switch(&mut self, stmt: &Value, depth: usize, out: &mut String) {
+        let pad = "    ".repeat(depth);
+        let arms = match switch_arms(stmt) {
+            Ok(arms) => arms,
+            Err(what) => {
+                out.push_str(&format!("{pad}{};\n", unsupported(&what)));
+                return;
+            }
+        };
+        let value = self.expr(&inner(stmt)[0]);
+        let scope = self.push_scope(false);
+        let continue_ = self.loops.last().and_then(|c_loop| c_loop.continue_);
+        self.loops.push(CLoop {
+            break_: Jump {
+                scope,
+                continues: false,
+            },
+            continue_,
+        });
+        let mut text = format!("match {value} {{\n");
+        let has_default = arms.iter().any(|arm| arm.default);
+        let others = arms.iter().filter(|arm| !arm.default);
+        for arm in others.chain(arms.iter().filter(|arm| arm.default)) {
+            let pattern = if arm.default {
+                "_".to_string()
+            } else {
+                arm.patterns.join(" | ")
+            };
+            let mut body = String::new();
+            let stmts = match arm.stmts.split_last() {
+                Some((last, init)) if kind(last) == "BreakStmt" => init,
+                _ => &arm.stmts[..],
+            };
+            for stmt in stmts {
+                self.stmt(stmt, depth + 2, &mut body);
+            }
+            text.push_str(&format!("{pad}    {pattern} => {{\n{body}{pad}    }}\n"));
+        }
+        if !has_default {
+            text.push_str(&format!("{pad}    _ => {{}}\n"));
+        }
+        text.push_str(&format!("{pad}}}\n"));
+        self.loops.pop();
+        let label = self.pop_scope();
+        if label.is_empty() {
+            out.push_str(&format!("{pad}{text}"));
+        } else {
+            out.push_str(&format!(
+                "{pad}{label}{{\n{pad}    {}{pad}}}\n",
+                indent(&text).trim_start()
+            ));
+        }
+    }
+}
+
+/// The statements of a `switch` body after a run of case labels.
+struct Arm<'a> {
+    patterns: Vec<String>,
+    default: bool,
+    stmts: Vec<&'a Value>,
+}
+
+/// Splits the body of `switch` into arms, or says why the translation
+/// cannot: a statement before the first label, a label inside another
+/// statement, an arm that falls into the next, or a variable declared in
+/// one arm and used in another, which a `match` arm would hide.
+fn switch_arms(switch: &Value) -> Result<Vec<Arm<'_>>, String> {
+    let (value, body) = match inner(switch) {
+        [value, body] if kind(body) == "CompoundStmt" => (value, body),
+        _ => return Err("switch without a block".to_string()),
+    };
+    let ty = c_type(value);
+    if rust_type(ty).is_none() {
+        return Err(format!("switch on {ty}"));
+    }
+    let mut arms: Vec<Arm> = Vec::new();
+    for stmt in inner(body) {
+        let mut stmt = stmt;
+        if matches!(kind(stmt), "CaseStmt" | "DefaultStmt")
+            && arms.last().is_none_or(|arm| !arm.stmts.is_empty())
+        {
+            arms.push(Arm {
+                patterns: Vec::new(),
+                default: false,
+                stmts: Vec::new(),
+            });
+        }
+        let Some(arm) = arms.last_mut() else {
+            return Err("statement before the first case of a switch".to_string());
+        };
+        loop {
+            match (kind(stmt), inner(stmt)) {
+                ("CaseStmt", [value, next]) => {
+                    let pattern = case_value(value)
+                        .and_then(|v| wrap(v, ty))
+                        .ok_or("case value other than an integer constant")?;
+                    arm.patterns.push(pattern.to_string());
+                    stmt = next;
+                }
+                ("CaseStmt", _) => return Err("case range".to_string()),
+                ("DefaultStmt", [next]) => {
+                    arm.default = true;
+                    stmt = next;
+                }
+                _ => break,
+            }
+        }
+        if inner(stmt).iter().any(has_case) {
+            return Err("case label inside another statement".to_string());
+        }
+        arm.stmts.push(stmt);
+    }
+    if let Some((_, init)) = arms.split_last()
+        && init
+            .iter()
+            .any(|arm| !arm.stmts.last().is_some_and(|s| ends_in_jump(s)))
+    {
+        return Err("switch case that falls through".to_string());
+    }
+    for (i, arm) in arms.iter().enumerate() {
+        for stmt in arm.stmts.iter().filter(|s| kind(s) == "DeclStmt") {
+            for var in inner(stmt) {
+                let id = var["id"].as_str().unwrap_or("");
+                let others = arms.iter().enumerate().filter(|&(j, _)| j != i);
+                if others
+                    .flat_map(|(_, other)| &other.stmts)
+                    .any(|stmt| uses(stmt, id))
+                {
+                    return Err("variable declared in one case and used in another".to_string());
+                }
+            }
+        }
+    }
+    Ok(arms)
+}
+
+/// The value of a case label: an integer or character constant, perhaps
+/// negated or converted.
+fn case_value(expr: &Value) -> Option<i128> {
+    let operand = inner(expr).first();
+    match kind(expr) {
+        "ConstantExpr" | "ParenExpr" => case_value(operand?),
+        "ImplicitCastExpr" | "CStyleCastExpr" if expr["castKind"] == "IntegralCast" => {
+            wrap(case_value(operand?)?, c_type(expr))
+        }
+        "IntegerLiteral" => expr["value"].as_str()?.parse().ok(),
+        // Clang gives the value as the bits of an unsigned int.
+        "CharacterLiteral" => Some(i128::from(expr["value"].as_u64()? as u32 as i32)),
+        "UnaryOperator" if expr["opcode"] == "-" => wrap(-case_value(operand?)?, c_type(expr)),
+        _ => None,
+    }
+}
+
+/// Converts `value` to the C integer type `ty` as x86-64 does, modulo its
+/// range.
+fn wrap(value: i128, ty: &str) -> Option<i128> {
+    Some(match rust_type(ty)? {
+        "i8" => i128::from(value as i8),
+        "u8" => i128::from(value as u8),
+        "i16" => i128::from(value as i16),
+        "u16" => i128::from(value as u16),
+        "i32" => i128::from(value as i32),
+        "u32" => i128::from(value as u32),
+        "i64" => i128::from(value as i64),
+        _ => i128::from(value as u64),
+    })
+}
+
+/// Whether `node` holds a case label of the `switch` around it.
+fn has_case(node: &Value) -> bool {
+    match kind(node) {
+        "CaseStmt" | "DefaultStmt" => true,
+        "SwitchStmt" => false,
+        _ => inner(node).iter().any(has_case),
+    }
+}
+
+/// Whether control never reaches the end of `stmt`, nor of a block that ends
+/// with it.
+fn ends_in_jump(stmt: &Value) -> bool {
+    match kind(stmt) {
+        "CompoundStmt" => inner(stmt).last().is_some_and(ends_in_jump),
+        _ => jumps(stmt),
+    }
+}
+
+/// Whether `node` uses the variable with `id`.
+fn uses(node: &Value, id: &str) -> bool {
+    (kind(node) == "DeclRefExpr" && node["referencedDecl"]["id"] == id)
+        || inner(node).iter().any(|child| uses(child, id))
 }
 
 /// Whether `node` uses a variable named `name` other than the one with `id`.
