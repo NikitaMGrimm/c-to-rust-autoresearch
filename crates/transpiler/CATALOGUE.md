@@ -126,3 +126,18 @@ Entry format, newest last:
   through an `int *` variable, to a function with a `const int *` parameter
   that prints `*` of it
 - Changes: extends R1's types and R4's null pointers and pointer conditions
+
+## R6: integer division results
+
+- C: `div`, `ldiv` and `lldiv`; variables, parameters and return values of
+  type `div_t`, `ldiv_t` and `lldiv_t`, uninitialised ones as zero; reading
+  their members `quot` and `rem` with `.`
+- Rust: the pair `(quot, rem)`, `(i32, i32)` for `div_t` and `(i64, i64)`
+  for the others, with `.0` and `.1` for the members; the calls are
+  `crt::div`, a generic runtime part that returns `(numer / denom, numer %
+  denom)`, which round towards zero as C does and panic for a zero divisor
+  or a quotient out of range, which C leaves undefined. Writing a member,
+  `->` and pointers to these types stay unsupported
+- Motivation: `g1_022_stdlib_div` reads two integers, calls `div` and prints
+  the quotient and remainder
+- Changes: extends R1's types and calls

@@ -497,3 +497,36 @@ fn rejects_integer_pointer_uses_it_cannot_translate() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_integer_division_results() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+
+div_t halve(div_t d) {
+    return div(d.quot, 2);
+}
+
+int main(void) {
+    int x = 0, y = 1;
+    long a = 0;
+    scanf("%d %d", &x, &y);
+    div_t r = div(x, y);
+    printf("%d %d %d\n", r.quot, r.rem, r.quot * y + r.rem);
+    ldiv_t l = ldiv(x, y);
+    lldiv_t ll;
+    ll = lldiv(x * 3LL, y);
+    a = l.quot - l.rem + ll.rem;
+    printf("%d %d %d\n", (int)a, (int)ll.quot, div(x, y).rem);
+    printf("%d\n", halve(r).quot);
+    return r.rem < 0;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_integer_division_results",
+        c,
+        &["37 5", "-37 5", "37 -5", "-37 -5", "0 7", "2147483647 -1"],
+    );
+    assert!(rust.contains("(i32, i32)"), "{rust}");
+}

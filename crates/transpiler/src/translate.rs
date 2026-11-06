@@ -43,17 +43,30 @@ pub(crate) fn rust_type(c: &str) -> Option<&'static str> {
 }
 
 /// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, a `char *` into a string literal or a pointer to an integer
-/// variable, which the program can only read. A pointer is `None` for null.
-/// A `char *` is otherwise the literal's bytes from where it points, through
-/// the zero that ends the array, and a pointer to an integer borrows it.
+/// integer, a `char *` into a string literal, a pointer to an integer
+/// variable, which the program can only read, or the result of `div`. A
+/// pointer is `None` for null. A `char *` is otherwise the literal's bytes
+/// from where it points, through the zero that ends the array, and a pointer
+/// to an integer borrows it.
 pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
         "char *" => Some("Option<&'static [u8]>".to_string()),
         c => match c.strip_suffix(" *") {
             Some(pointee) => rust_type(pointee).map(|ty| format!("Option<&{ty}>")),
-            None => rust_type(c).map(String::from),
+            None => rust_type(c)
+                .map(String::from)
+                .or_else(|| quotient_type(c).map(|ty| format!("({ty}, {ty})"))),
         },
+    }
+}
+
+/// The Rust type of the members of `div_t`, `ldiv_t` or `lldiv_t`, which
+/// the translation holds as the pair `(quot, rem)`.
+fn quotient_type(c: &str) -> Option<&'static str> {
+    match c {
+        "div_t" => Some("i32"),
+        "ldiv_t" | "lldiv_t" => Some("i64"),
+        _ => None,
     }
 }
 
@@ -65,7 +78,13 @@ pub(crate) fn pointer(c: &str) -> bool {
 /// The value of an uninitialised variable of a C type that `value_type`
 /// translates, as C gives the program no value to read.
 pub(crate) fn zero(c: &str) -> &'static str {
-    if pointer(c) { "None" } else { "0" }
+    if pointer(c) {
+        "None"
+    } else if quotient_type(c).is_some() {
+        "(0, 0)"
+    } else {
+        "0"
+    }
 }
 
 /// Whether `expr` is a null pointer constant converted to a pointer, such as
@@ -391,6 +410,17 @@ impl Translator {
             "DeclRefExpr" => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
             "ParenExpr" => self.expr(&args[0]),
             "ImplicitCastExpr" | "CStyleCastExpr" => self.cast(expr),
+            // A member of the result of `div`, which is held as `(quot, rem)`.
+            "MemberExpr"
+                if expr["isArrow"] == false && quotient_type(c_type(&args[0])).is_some() =>
+            {
+                let field = match expr["name"].as_str() {
+                    Some("quot") => 0,
+                    Some("rem") => 1,
+                    _ => return unsupported("member of div_t"),
+                };
+                format!("{}.{field}", self.operand(&args[0]))
+            }
             _ if control::boolean(expr) => format!("i32::from({})", self.cond(expr)),
             "UnaryOperator" => match expr["opcode"].as_str() {
                 Some("-") if signed(c_type(expr)) => format!("-{}", self.operand(&args[0])),
@@ -422,6 +452,10 @@ impl Translator {
                 Some(name) if self.functions.contains(name) => {
                     let args: Vec<String> = args[1..].iter().map(|a| self.expr(a)).collect();
                     format!("{}({})", ident(name), args.join(", "))
+                }
+                Some("div" | "ldiv" | "lldiv") => {
+                    self.require(DIV_RUNTIME);
+                    format!("crt::div({}, {})", self.expr(&args[1]), self.expr(&args[2]))
                 }
                 Some("scanf") => stdio::scanf(self, &args[1..]),
                 Some("fscanf") if args.get(1).is_some_and(stdio::is_stdin) => {
@@ -474,7 +508,7 @@ fn atomic(expr: &Value) -> bool {
         "IntegerLiteral" | "DeclRefExpr" | "CallExpr" => true,
         // A negative one is printed with its sign.
         "CharacterLiteral" => expr["value"].as_u64().is_some_and(|v| v <= i32::MAX as u64),
-        "ParenExpr" => atomic(&inner(expr)[0]),
+        "ParenExpr" | "MemberExpr" => atomic(&inner(expr)[0]),
         "ImplicitCastExpr" => {
             matches!(expr["castKind"].as_str(), Some("LValueToRValue" | "NoOp"))
                 && atomic(&inner(expr)[0])
@@ -533,3 +567,16 @@ fn collect_mutated(node: &Value, mutated: &mut HashSet<String>) {
         collect_mutated(child, mutated);
     }
 }
+
+/// The part of the `crt` module that `div`, `ldiv` and `lldiv` call.
+const DIV_RUNTIME: &str = r#"    /// C's `div`, `ldiv` and `lldiv` as `(quot, rem)`: the quotient rounded
+    /// towards zero, as Rust's `/` rounds it, and the remainder. C leaves a
+    /// zero divisor and a quotient out of range undefined, and the division
+    /// panics for them.
+    pub fn div<T>(numer: T, denom: T) -> (T, T)
+    where
+        T: Copy + std::ops::Div<Output = T> + std::ops::Rem<Output = T>,
+    {
+        (numer / denom, numer % denom)
+    }
+"#;
