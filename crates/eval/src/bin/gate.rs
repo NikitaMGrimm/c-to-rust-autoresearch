@@ -1,9 +1,9 @@
 //! Decides whether the research loop keeps a candidate commit. It trusts its
 //! own code, so it runs only from a clean checkout of main outside the loop
 //! agent's clone. It evaluates the base and the candidate transpiler on the
-//! development set, the private validation set and the private variants of the
-//! development set, appends everything to a private log and prints only what
-//! the loop agent may see.
+//! development set, the private validation and held-out sets and the private
+//! variants of the development set, appends everything to a private log and
+//! prints only what the loop agent may see.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -13,8 +13,11 @@ use std::process::{Command, ExitCode};
 use eval::Stage;
 
 const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage FILE]\n\
+     \x20           [--dev-only] [--run ID]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
      --usage adds a report of the transcripts usage tool to the private log.\n\
+     --dev-only keeps CANDIDATE on the development score alone; validation is\n\
+     only logged. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop.\n\
      Run it from a clean checkout of main, not from the loop agent's checkout.";
 
 /// The only paths a loop change may touch; the evaluator and the benchmarks
@@ -38,17 +41,22 @@ struct Args {
     candidate: String,
     jobs: usize,
     usage: Option<PathBuf>,
+    dev_only: bool,
+    run: Option<String>,
 }
 
-fn parse_args() -> Option<Args> {
+/// The gate's arguments, without the program name, or `None` for a usage error.
+fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
     let mut positional = Vec::new();
-    let (mut jobs, mut usage) = (2, None);
-    let mut rest = std::env::args().skip(1);
+    let (mut jobs, mut usage, mut dev_only, mut run) = (2, None, false, None);
+    let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().filter(|value| !value.starts_with('-'));
         match arg.as_str() {
             "--jobs" => jobs = value()?.parse().ok().filter(|&n| n > 0)?,
             "--usage" => usage = Some(value()?.into()),
+            "--dev-only" => dev_only = true,
+            "--run" => run = Some(value().filter(|id| run_id(id))?),
             _ if arg.starts_with('-') => return None,
             _ => positional.push(arg),
         }
@@ -60,11 +68,31 @@ fn parse_args() -> Option<Args> {
         candidate,
         jobs,
         usage,
+        dev_only,
+        run,
     })
 }
 
+/// Where the gate appends its log: the run's directory, or the loop's.
+fn log_dir(args: &Args) -> PathBuf {
+    match &args.run {
+        Some(run) => args.private.join("runs").join(run),
+        None => args.private.join("loop"),
+    }
+}
+
+/// Whether `id` can name a run's log directory: letters, digits, `.`, `-`
+/// and `_`, not starting with a dot.
+fn run_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
 fn main() -> ExitCode {
-    let Some(args) = parse_args() else {
+    let Some(args) = parse_args(std::env::args().skip(1)) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
@@ -99,9 +127,11 @@ fn gate(args: &Args) -> Result<bool, String> {
         "--verify",
         &format!("{}^{{commit}}", args.candidate),
     ])?;
-    let sets: [(&'static str, PathBuf); 3] = [
+    // Held-out results go to the private log only, for the final results.
+    let sets: [(&'static str, PathBuf); 4] = [
         ("dev", eval::dev_dir()),
         ("validation", args.private.join("validation")),
+        ("held-out", args.private.join("held-out")),
         ("dev_variants", args.private.join("variants/dev")),
     ];
 
@@ -117,7 +147,7 @@ fn gate(args: &Args) -> Result<bool, String> {
     let failing_fuzz =
         |failures: &FuzzFailures, set: &str| failures.get(set).map_or(0, BTreeSet::len);
     let fix = is_fix(Path::new(eval::REPO), &base, &candidate)?;
-    let reason = problem.or_else(|| rejection(&before, &after, fix));
+    let reason = problem.or_else(|| rejection(&before, &after, fix, args.dev_only));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -157,12 +187,13 @@ fn gate(args: &Args) -> Result<bool, String> {
         "candidate": candidate,
         "evaluator": eval::versions(),
         "fix": fix,
+        "dev_only": args.dev_only,
         "decision": if reason.is_none() { "keep" } else { "reject" },
         "reason": reason,
         "sets": summary,
         "usage": usage,
     });
-    append_log(&args.private.join("loop"), &entry)?;
+    append_log(&log_dir(args), &entry)?;
 
     // The loop agent sees the development set only, and validation through the
     // decision alone.
@@ -197,6 +228,17 @@ fn near_copies(private: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, Str
     };
     let json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    // A file from before a set existed would drop that set's score without
+    // near-copies from the log.
+    if let Some(set) = ["validation", "held-out"]
+        .into_iter()
+        .find(|set| !json["sets"][set].is_object())
+    {
+        return Err(format!(
+            "{} has no {set} set; run the near-copies tool again",
+            path.display()
+        ));
+    }
     let sets = json["sets"].as_object().into_iter().flatten();
     Ok(sets
         .map(|(set, programs)| {
@@ -223,16 +265,16 @@ fn passes(results: &Results, set: &str) -> usize {
     })
 }
 
-/// The keep rule, provisional: the development score rises, or for a fix does
-/// not drop, and the validation score does not drop. The variants are only
-/// logged.
-fn rejection(before: &Results, after: &Results, fix: bool) -> Option<String> {
+/// The keep rule: the development score rises, or for a fix does not drop,
+/// and, unless `dev_only`, the validation score does not drop. Held-out and
+/// the variants are only logged.
+fn rejection(before: &Results, after: &Results, fix: bool, dev_only: bool) -> Option<String> {
     let (dev_before, dev_after) = (passes(before, "dev"), passes(after, "dev"));
     if fix && dev_after < dev_before {
         Some("the fix lowered the development score".to_owned())
     } else if !fix && dev_after <= dev_before {
         Some("the development score did not rise".to_owned())
-    } else if passes(after, "validation") < passes(before, "validation") {
+    } else if !dev_only && passes(after, "validation") < passes(before, "validation") {
         Some("the validation score dropped".to_owned())
     } else {
         None
@@ -396,17 +438,72 @@ mod tests {
         let gain = results(&[Pass, Pass], &[Pass, Panic]);
         let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
-        assert_eq!(rejection(&before, &gain, false), None);
+        assert_eq!(rejection(&before, &gain, false, false), None);
         assert!(
-            rejection(&before, &trade, false)
+            rejection(&before, &trade, false, false)
                 .unwrap()
                 .contains("development")
         );
         assert!(
-            rejection(&before, &overfit, false)
+            rejection(&before, &overfit, false, false)
                 .unwrap()
                 .contains("validation")
         );
+    }
+
+    #[test]
+    fn dev_only_keeps_a_dev_gain_even_when_validation_drops() {
+        use Stage::{Mismatch, Panic, Pass};
+        let before = results(&[Pass, Mismatch], &[Pass, Panic]);
+        let overfit = results(&[Pass, Pass], &[Panic, Panic]);
+        let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
+        let same_overfit = results(&[Mismatch, Pass], &[Panic, Panic]);
+        assert_eq!(rejection(&before, &overfit, false, true), None);
+        assert_eq!(rejection(&before, &same_overfit, true, true), None);
+        assert!(rejection(&before, &trade, false, true).is_some());
+        assert!(rejection(&before, &overfit, false, false).is_some());
+    }
+
+    fn parsed(args: &[&str]) -> Option<Args> {
+        parse_args(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn a_run_logs_to_its_own_directory() {
+        let args = parsed(&["private", "base", "candidate", "--run", "wp2-a.1_b"]).unwrap();
+        assert_eq!(log_dir(&args), Path::new("private/runs/wp2-a.1_b"));
+        let args = parsed(&["private", "base", "candidate", "--dev-only"]).unwrap();
+        assert!(args.dev_only);
+        assert_eq!(log_dir(&args), Path::new("private/loop"));
+    }
+
+    #[test]
+    fn a_run_id_that_could_leave_its_directory_is_a_usage_error() {
+        for id in ["", ".", "..", ".hidden", "a/b", "../loop", "a b"] {
+            assert!(
+                parsed(&["private", "base", "candidate", "--run", id]).is_none(),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn near_copies_must_list_both_private_sets() {
+        let dir = eval::Scratch::new("gate-near-copies").unwrap();
+        let file = dir.join("near-copies.json");
+        std::fs::write(&file, r#"{"sets": {"validation": {"g1_a": {}}}}"#).unwrap();
+        assert!(near_copies(&dir).unwrap_err().contains("held-out"));
+        std::fs::write(
+            &file,
+            r#"{"sets": {"validation": {"g1_a": {}}, "held-out": {}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            near_copies(&dir).unwrap()["validation"],
+            BTreeSet::from(["g1_a".to_owned()])
+        );
+        std::fs::remove_file(&file).unwrap();
+        assert!(near_copies(&dir).unwrap().is_empty());
     }
 
     #[test]
@@ -417,15 +514,15 @@ mod tests {
         let worse = results(&[Mismatch, Mismatch], &[Pass, Panic]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
         let same_overfit = results(&[Mismatch, Pass], &[Panic, Panic]);
-        assert_eq!(rejection(&before, &same, true), None);
-        assert!(rejection(&before, &same, false).is_some());
+        assert_eq!(rejection(&before, &same, true, false), None);
+        assert!(rejection(&before, &same, false, false).is_some());
         assert!(
-            rejection(&before, &worse, true)
+            rejection(&before, &worse, true, false)
                 .unwrap()
                 .contains("lowered")
         );
         for candidate in [&overfit, &same_overfit] {
-            let reason = rejection(&before, candidate, true).unwrap();
+            let reason = rejection(&before, candidate, true, false).unwrap();
             assert!(reason.contains("validation"), "{reason}");
         }
     }

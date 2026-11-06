@@ -83,19 +83,22 @@ bench/README.md. Tools that read private programs print names and counts only.
 
 ## The gate
 
-`cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE]`
+`cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev-only] [--run ID]`
 decides whether a loop commit stays. It rejects a candidate that does not
 descend from `BASE`, changes anything outside `crates/transpiler/` and
 `Cargo.lock`, or changes rules without the
 [catalogue](../crates/transpiler/CATALOGUE.md). Otherwise it builds both
 transpilers from `git archive` in the sandbox, after fetching dependencies
 outside it, and evaluates them on the development set, the private validation
-set and the private variants of the development set.
+and held-out sets and the private variants of the development set.
 
 The keep rule is provisional: the development score rises, or does not drop
 for a candidate whose commits are all fixes with a `fix(transpiler)` subject,
-such as for a review comment, and the validation score does not drop. Every result goes to `PRIVATE_DIR/loop/log.jsonl`, with
-the validation score without [near-copies](../bench/README.md#near-copies) and
+such as for a review comment, and the validation score does not drop. With
+`--dev-only`, as in the baseline runs, the development score alone decides
+and validation is only logged. Every result goes to
+`PRIVATE_DIR/loop/log.jsonl`, or with `--run ID` to
+`PRIVATE_DIR/runs/ID/log.jsonl`, with the scores of the private sets without [near-copies](../bench/README.md#near-copies) and
 the passes that fail their fuzzed inputs. The gate prints only the
 development results and the decision. Exit code 0 means keep, 1 reject and 2
 error. The gate trusts its own code and the benchmarks, so it must run from a
