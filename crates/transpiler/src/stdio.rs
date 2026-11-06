@@ -38,9 +38,13 @@ pub(crate) fn printf(t: &mut Translator, mac: &str, args: &[Value]) -> String {
                 call.push_str(&format!("crt::c_str({})", t.expr(value)));
             }
             (arg, Argument::Value(ty)) if arg == ty => call.push_str(&t.expr(value)),
-            // glibc reads the bits of an int as unsigned, as Rust's `as` does.
-            ("int", Argument::Value("unsigned int")) => {
-                call.push_str(&format!("{} as u32", t.operand(value)));
+            // glibc reads the bits of an integer of the other signedness, as
+            // Rust's `as` does.
+            (arg, Argument::Value(ty))
+                if let (Some(from), Some(to)) = (rust_type(arg), rust_type(ty))
+                    && from[1..] == to[1..] =>
+            {
+                call.push_str(&format!("{} as {to}", t.operand(value)));
             }
             (arg, Argument::Value(ty)) => {
                 return unsupported(&format!("printf of {arg} as {ty}"));
@@ -101,10 +105,19 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
                     }
                     precision = Some(digits.parse().unwrap_or(0));
                 }
-                // `l` changes nothing for a floating conversion.
-                let long = chars.next_if_eq(&'l').is_some();
+                // `l` changes nothing for a floating conversion; `z` is
+                // `size_t` and `ssize_t`, both `long` on x86-64 Linux.
+                let length = match chars.next_if(|&c| c == 'l' || c == 'z') {
+                    Some('l') if chars.next_if_eq(&'l').is_some() => "ll",
+                    Some('l') => "l",
+                    Some(_) => "z",
+                    None => "",
+                };
                 match chars.next() {
                     // Rust pads strings on the right by default.
+                    Some('f' | 'F' | 'e' | 'E' | 'g' | 'G') if !matches!(length, "" | "l") => {
+                        return Err(format!("printf length {length} on a floating conversion"));
+                    }
                     Some(conversion @ ('f' | 'F' | 'e' | 'E' | 'g' | 'G')) if !(plus || zero) => {
                         if width.is_empty() {
                             out.push_str("{}");
@@ -116,11 +129,14 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
                     Some('f' | 'F' | 'e' | 'E' | 'g' | 'G') => {
                         return Err("printf floating conversion with the flag + or 0".into());
                     }
-                    _ if precision.is_some() || long => {
-                        return Err(
-                            "printf precision or length on a conversion that is not floating"
-                                .into(),
-                        );
+                    _ if precision.is_some() => {
+                        return Err("printf precision on a conversion that is not floating".into());
+                    }
+                    other
+                        if !length.is_empty()
+                            && !matches!(other, Some('d' | 'i' | 'u' | 'o' | 'x' | 'X')) =>
+                    {
+                        return Err(format!("printf length {length} on this conversion"));
                     }
                     Some('%') if !(left || plus || zero) && width.is_empty() => out.push('%'),
                     // A width counts bytes in C but characters in Rust.
@@ -130,19 +146,27 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
                     }
                     Some('s') => return Err("printf conversion %s with flags or a width".into()),
                     Some(conversion @ ('d' | 'i' | 'u' | 'o' | 'x' | 'X')) => {
-                        let (ty, radix) = match conversion {
-                            'd' | 'i' => ("int", ""),
-                            'u' => ("unsigned int", ""),
-                            'o' => ("unsigned int", "o"),
-                            'x' => ("unsigned int", "x"),
-                            _ => ("unsigned int", "X"),
+                        let radix = match conversion {
+                            'o' => "o",
+                            'x' => "x",
+                            'X' => "X",
+                            _ => "",
+                        };
+                        let signed = matches!(conversion, 'd' | 'i');
+                        let ty = match (length, signed) {
+                            ("", true) => "int",
+                            ("", false) => "unsigned int",
+                            ("l" | "z", true) => "long",
+                            ("l" | "z", false) => "unsigned long",
+                            (_, true) => "long long",
+                            (_, false) => "unsigned long long",
                         };
                         // Rust right-aligns numbers already; C ignores 0 with
                         // -, and + on unsigned conversions.
                         let spec = format!(
                             "{}{}{}{width}{radix}",
                             if left { "<" } else { "" },
-                            if plus && ty == "int" { "+" } else { "" },
+                            if plus && signed { "+" } else { "" },
                             if zero && !left { "0" } else { "" },
                         );
                         if spec.is_empty() {

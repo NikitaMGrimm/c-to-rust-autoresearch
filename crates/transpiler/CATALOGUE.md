@@ -506,3 +506,54 @@ Entry format, newest last:
   another, which runs only on input that the benchmark leaves out
 - Changes: lifts R7's rejection of static locals of array types and R11's of
   static `char` arrays and of a function returning its own array
+
+## R18: typedefs, enums, heap structs, member arrays and memcpy
+
+- C: typedefs of numbers and `bool`, such as `uint8_t` and `size_t`, wherever
+  a type names them, as behind a pointer or in a function's type; enum types
+  and their constants; struct members that are pointers or integer arrays of
+  a fixed length, other than of `char`, with a struct that points to itself;
+  such an array as a pointer, indexed, `&` of its elements and moved forwards;
+  `sizeof` of a struct; `malloc` converted to a pointer to an integer or a
+  struct, `free` and `memcpy` between two such pointers of one type; functions
+  that return any pointer the translation holds; `++` and `--` on a variable
+  used as a value; compound assignments that C computes in a type other than
+  the target's, such as `int += size_t`, `char += int` or `float *= double`;
+  `printf`'s lengths `l`, `ll` and `z` on integer conversions, and an integer
+  of the other signedness than the conversion's
+- Rust: before translating, every type the tree gives is spelled with the
+  number type of each such typedef and with each enum's integer type, `unsigned
+  int` without negative constants and `int` with them, as GCC and Clang
+  choose, and each use of a constant becomes its value. A pointer member is a
+  cell of the pointer, borrowing for the whole program; an array member is
+  `[Cell<T>; N]`, with a `Default` of its own for lengths Rust gives none, and
+  a struct's `set` sets each element. `sizeof` lays a struct out as x86-64
+  does, each member at the next multiple of its alignment. `crt::malloc` makes
+  as many zero objects as the bytes hold, leaked to last until the program
+  exits, and null beyond `isize::MAX` bytes; `crt::free` does nothing, as C
+  leaves using the memory afterwards undefined. `crt::memcpy` copies whole
+  objects, cells by value and structs with `set`, and panics for part of one,
+  past an array or for null. Every pointer of a function that returns one
+  borrows for its lifetime `'a`, as R11's `char *` do, and one that stores a
+  pointer other than null or `malloc`'s in a member borrows for `'static`. `x++`
+  as a value is `{ let __value = x; x += 1; __value }` and `++x` is `{ x += 1;
+  x }`. A compound assignment converts the target to C's type with `as`,
+  applies the operator there and converts back, as x86-64 does. `%zu` is
+  `unsigned long`, and an argument of the other signedness is converted `as`
+  the conversion's type, whose bits glibc reads. A pointer member that borrows
+  a local variable fails to compile, as do pointers in a function that stores
+  one and that a caller gives a local. Enums wider than `int`, `char` array
+  members, initialisers of array members, `sizeof` of a struct with
+  bit-fields, `calloc`, `realloc`, `memmove`, `memcpy` of `char` arrays and
+  `malloc` for a `char *` stay unsupported
+- Motivation: `g4_memcpy_fun_buffers` reads byte buffers into `buffer_t`
+  structs of a `uint8_t data[256]`, a `size_t` length and a `uint32_t`
+  checksum, held in an array from `malloc(sizeof(buffer_t) * n)` that a
+  struct points to, copies them with `memcpy`, also through `&dst->data[pos++]`,
+  switches on an `operation_t` enum and prints with `%zu`
+- Changes: extends R1's types, R2's `++` and `--`, R9's compound assignments,
+  `sizeof` and `switch`, R10's arrays and pointers, R11's lifetime of `char *`
+  to every pointer, R12's compound assignments on floating values, which no
+  longer need C's type to be the target's, and R13's structs, which lifts its
+  rejection of `sizeof` of a struct and of returning a pointer to one, and of
+  R5's returning a pointer to an integer

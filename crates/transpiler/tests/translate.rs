@@ -472,15 +472,6 @@ skip:;
 #[test]
 fn rejects_integer_pointer_uses_it_cannot_translate() {
     let dir = scratch("rejects_integer_pointer_uses_it_cannot_translate");
-    // No variable outlives the function for the result to borrow.
-    let rust = translate(
-        &dir,
-        "int *pick(int *p) { return p; }\nint main(void) { int x = 1; return *pick(&x); }\n",
-    );
-    assert!(
-        rust.contains(r#"compile_error!("unsupported C: return type int *")"#),
-        "{rust}"
-    );
     // A pointer is the cells from where it points, so it cannot move back.
     let rust = translate(
         &dir,
@@ -1231,12 +1222,9 @@ int main(int argc, char **argv) {
 #[test]
 fn rejects_floating_uses_it_cannot_translate() {
     let dir = scratch("rejects_floating_uses_it_cannot_translate");
-    let rust = translate(
-        &dir,
-        "int main(void) { float f = 1; f += 0.5; return f; }\n",
-    );
+    let rust = translate(&dir, "int main(void) { float f = 1; f++; return f; }\n");
     assert!(
-        rust.contains(r#"compile_error!("unsupported C: += on float")"#),
+        rust.contains(r#"compile_error!("unsupported C: ++ on float")"#),
         "{rust}"
     );
     let rust = translate(
@@ -1254,9 +1242,7 @@ fn rejects_floating_uses_it_cannot_translate() {
         "#include <stdio.h>\nint main(void) { printf(\"%.2d\\n\", 3); return 0; }\n",
     );
     assert!(
-        rust.contains(
-            "unsupported C: printf precision or length on a conversion that is not floating"
-        ),
+        rust.contains("unsupported C: printf precision on a conversion that is not floating"),
         "{rust}"
     );
     let rust = translate(
@@ -1409,8 +1395,9 @@ again:
 fn rejects_struct_uses_it_cannot_translate() {
     let dir = scratch("rejects_struct_uses_it_cannot_translate");
     let cases = [
+        // A `char` array is bytes, which no cell of a struct holds.
         (
-            "struct a { int v[2]; }; int main(void) { struct a x; return 0; }",
+            "struct a { char v[2]; }; int main(void) { struct a x; return 0; }",
             "type struct a",
         ),
         (
@@ -1422,22 +1409,14 @@ fn rejects_struct_uses_it_cannot_translate() {
             "struct p { int x : 3; int : 2; }; int main(void) { struct p a = {1}; return a.x; }",
             "type struct p",
         ),
+        // GCC and Clang pack bit-fields, which the layout leaves out.
         (
-            "struct p { int x; }; int main(void) { return sizeof(struct p); }",
+            "struct p { int x : 3; }; int main(void) { return sizeof(struct p); }",
             "sizeof struct p",
-        ),
-        (
-            "struct p { int x; }; struct p *f(struct p *q) { return q; }",
-            "return type struct p *",
         ),
         (
             "struct p { int x; }; int main(void) { struct p a[2]; return 0; }",
             "type struct p[2]",
-        ),
-        // C computes it in `int`, which the bit-field would need converting.
-        (
-            "struct p { unsigned x : 3; }; int main(void) { struct p a = {1}; a.x += 1; return a.x; }",
-            "+= on unsigned int",
         ),
     ];
     for (c, error) in cases {
@@ -1748,6 +1727,190 @@ fn rejects_static_local_arrays_it_cannot_translate() {
         (
             "int main(void) { static const char *names[2] = {\"a\", \"b\"}; return 0; }",
             "static local variable of type char *[2]",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn translates_heap_structs_member_arrays_and_memcpy() {
+    let c = r#"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef enum { OP_SUM = 0, OP_COPY, OP_LIST = 5 } op_t;
+enum level { LOW = -2, MID, HIGH };
+
+typedef struct {
+    uint8_t data[40];
+    size_t length;
+    uint32_t checksum;
+} buffer_t;
+
+struct node {
+    int16_t value;
+    struct node *next;
+};
+
+typedef struct {
+    buffer_t *buffers;
+    int count;
+} pool_t;
+
+struct flags { unsigned small : 3; int tiny : 3; };
+
+static pool_t *make_pool(int count) {
+    pool_t *pool = malloc(sizeof(pool_t));
+    if (!pool) return NULL;
+    pool->buffers = malloc(sizeof(buffer_t) * count);
+    if (pool->buffers == NULL) {
+        free(pool);
+        return NULL;
+    }
+    pool->count = count;
+    return pool;
+}
+
+static uint32_t checksum(const uint8_t *data, size_t length) {
+    uint32_t sum = 0;
+    for (size_t i = 0; i < length; i++) sum = (sum << 3) ^ data[i];
+    return sum;
+}
+
+// Storing null borrows nothing, so the node may be a local variable.
+static void clear(struct node *node) {
+    node->value = -1;
+    node->next = NULL;
+}
+
+static struct node *push(struct node *head, int16_t value) {
+    struct node *node = malloc(sizeof(struct node));
+    node->value = value;
+    node->next = head;
+    return node;
+}
+
+int main(void) {
+    int count, op;
+    if (scanf("%d %d", &count, &op) != 2 || count < 1 || count > 4) return 1;
+    pool_t *pool = make_pool(count);
+    for (int i = 0; i < count; i++) {
+        buffer_t *b = &pool->buffers[i];
+        int length;
+        if (scanf("%d", &length) != 1 || length < 0 || length > 40) return 2;
+        b->length = length;
+        for (size_t j = 0; j < b->length; j++) {
+            int byte;
+            scanf("%d", &byte);
+            b->data[j] = (uint8_t)byte;
+        }
+        b->checksum = checksum(b->data, b->length);
+    }
+    buffer_t merged = {.length = 0};
+    size_t at = 0;
+    switch ((op_t)op) {
+    case OP_SUM:
+        for (int i = 0; i < count; i++) printf("%u\n", pool->buffers[i].checksum);
+        break;
+    case OP_COPY:
+        for (int i = 0; i < count && at + pool->buffers[i].length <= 40; i++) {
+            memcpy(merged.data + at, pool->buffers[i].data, pool->buffers[i].length);
+            at += pool->buffers[i].length;
+        }
+        merged.length = at;
+        memcpy(&pool->buffers[0], &merged, sizeof(buffer_t));
+        printf("%zu %u\n", pool->buffers[0].length, checksum(pool->buffers[0].data, at));
+        break;
+    default:
+        printf("op %d of %lu\n", op, (unsigned long)OP_LIST);
+        break;
+    }
+    // Every other byte, through an index that a postfix ++ moves.
+    uint8_t picked[40];
+    size_t n = 0;
+    for (size_t j = 0; j < pool->buffers[0].length; j += 2) memcpy(&picked[n++], &pool->buffers[0].data[j], 1);
+    int up = count++;
+    int down = --count;
+    printf("%zu %u %d %d %d\n", n, n > 0 ? picked[n - 1] : 0u, up, down, count);
+    buffer_t copy = pool->buffers[0];
+    copy.data[0] = 99;
+    pool->buffers[0] = copy;
+    printf("%d %zu %zu\n", pool->buffers[0].data[0], sizeof(buffer_t), sizeof(struct node));
+
+    struct node *list = NULL;
+    for (int16_t v = 1; v <= 3; v++) list = push(list, v * (int16_t)count);
+    long total = 0;
+    for (struct node *p = list; p; p = p->next) total += p->value;
+    struct node last;
+    clear(&last);
+    printf("%ld %d %d %d\n", total, LOW + HIGH, (int)MID, last.value + (last.next == NULL));
+
+    // C computes these in a wider type and converts back.
+    int signed_total = -5;
+    signed_total += pool->buffers[0].length;
+    char c = 'a';
+    c += 300;
+    float f = 1.5f;
+    f *= 0.1;
+    struct flags fl = {7, 3};
+    fl.small += 2;
+    fl.tiny += 1;
+    printf("%d %d %.6f %u %d %lld %d\n", signed_total, c, f, fl.small, fl.tiny, 1LL << 40, 4000000000u);
+    while (list) {
+        struct node *next = list->next;
+        free(list);
+        list = next;
+    }
+    free(pool->buffers);
+    free(pool);
+    free(NULL);
+    return 0;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_heap_structs_member_arrays_and_memcpy",
+        c,
+        &[
+            "1 0 3 1 2 3",
+            "3 1 2 10 20 3 1 2 3 1 255",
+            "2 1 1 7 0",
+            "2 5 4 1 2 3 4 2 9 9",
+            "4 0 0 0 0 0",
+        ],
+    );
+    assert!(rust.contains("data: [std::cell::Cell<u8>; 40]"), "{rust}");
+    assert!(rust.contains("crt::malloc("), "{rust}");
+}
+
+#[test]
+fn rejects_heap_and_memcpy_uses_it_cannot_translate() {
+    let dir = scratch("rejects_heap_and_memcpy_uses_it_cannot_translate");
+    let cases = [
+        // A `char` array is bytes, not cells.
+        (
+            "#include <string.h>\nint main(void) { char a[4] = \"abc\", b[4]; memcpy(b, a, 4); return b[0]; }",
+            "memcpy from char * to char *",
+        ),
+        (
+            "#include <string.h>\nint main(void) { int a[2] = {1, 2}; long b[1]; memcpy(b, a, 8); return 0; }",
+            "memcpy from int * to long *",
+        ),
+        (
+            "struct a { int v[2]; int n; }; int main(void) { struct a x = {{1, 2}, 3}; return x.n; }",
+            "initialiser of the array member of struct a",
+        ),
+        (
+            "#include <stdio.h>\nint main(void) { printf(\"%zf\\n\", 1.0); return 0; }",
+            "printf length z on a floating conversion",
         ),
     ];
     for (c, error) in cases {

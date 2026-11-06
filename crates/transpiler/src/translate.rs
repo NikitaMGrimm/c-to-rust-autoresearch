@@ -203,6 +203,9 @@ struct Record {
     used: std::cell::Cell<bool>,
     /// Whether the translation assigns it whole, so it needs a `set`.
     assigned: std::cell::Cell<bool>,
+    /// Whether `record` is checking its members, so a member that points to
+    /// it can name it.
+    checking: std::cell::Cell<bool>,
 }
 
 /// Names that the translation uses for Rust's own types, values and paths,
@@ -250,6 +253,7 @@ pub(crate) struct Translator {
 }
 
 pub(crate) fn program(ast: &Value) -> String {
+    let ast = &crate::types::resolve(ast);
     let definitions: Vec<&Value> = inner(ast)
         .iter()
         .filter(|decl| {
@@ -353,6 +357,7 @@ impl Translator {
                         members,
                         used: std::cell::Cell::new(false),
                         assigned: std::cell::Cell::new(false),
+                        checking: std::cell::Cell::new(false),
                     });
                 }
                 "TypedefDecl" => {
@@ -399,16 +404,35 @@ impl Translator {
         if record.name.is_empty() || quotient_type(c).is_some() {
             return None;
         }
-        for (_, ty, _) in &record.members {
-            self.member_type(ty)?;
+        // A struct that points to itself holds what it holds.
+        if !record.checking.replace(true) {
+            let complete = record
+                .members
+                .iter()
+                .all(|(_, ty, _)| self.member_type(ty).is_some());
+            record.checking.set(false);
+            if !complete {
+                return None;
+            }
         }
         record.used.set(true);
         Some(record)
     }
 
     /// The Rust type of a struct member of the C type `c`: a cell of a
-    /// number or `bool`, or another struct.
+    /// number, `bool` or pointer, another struct, or an array of a fixed
+    /// length of cells of an integer type other than `char`, as a local one
+    /// holds them. A pointer member borrows for the whole program, as from
+    /// `malloc`, a global or a string literal.
     fn member_type(&self, c: &str) -> Option<String> {
+        if let Some((element, length)) = array_type(c) {
+            let ty = cell_type(element).filter(|_| fixed_length(length))?;
+            return Some(format!("[{CELL}<{ty}>; {length}]"));
+        }
+        if self.pointer(c) {
+            let ty = self.value_type(c)?.replacen('&', "&'static ", 1);
+            return Some(format!("{CELL}<{ty}>"));
+        }
         match number_type(c) {
             Some(ty) => Some(format!("{CELL}<{ty}>")),
             None if is_bool(c) => Some(format!("{CELL}<bool>")),
@@ -443,23 +467,49 @@ impl Translator {
             defined += 1;
             let mut fields = String::new();
             let mut sets = String::new();
+            let mut defaults = String::new();
+            let mut arrays = false;
             for (name, ty, _) in &record.members {
                 let name = ident(name);
+                // A struct that points to itself is named, though it has a
+                // member the translation does not hold.
+                let Some(member) = self.member_type(ty) else {
+                    fields.push_str(&format!(
+                        "    {name}: {},\n",
+                        unsupported(&format!("type {ty}"))
+                    ));
+                    continue;
+                };
+                fields.push_str(&format!("    {name}: {member},\n"));
+                // Rust gives arrays longer than 32 no `Default`.
+                if array_type(ty).is_some() {
+                    arrays = true;
+                    defaults.push_str(&format!(
+                        "            {name}: std::array::from_fn(|_| Default::default()),\n"
+                    ));
+                    sets.push_str(&format!(
+                        "        for (to, from) in self.{name}.iter().zip(&value.{name}) {{\n            to.set(from.get());\n        }}\n"
+                    ));
+                    continue;
+                }
+                defaults.push_str(&format!("            {name}: Default::default(),\n"));
                 let read = if self.record(ty).is_some() {
                     ""
                 } else {
                     ".get()"
                 };
-                fields.push_str(&format!(
-                    "    {name}: {},\n",
-                    self.member_type(ty).unwrap_or_default()
-                ));
                 sets.push_str(&format!("        self.{name}.set(value.{name}{read});\n"));
             }
             let name = &record.name;
-            out.push_str(&format!(
-                "#[derive(Clone, Default)]\nstruct {name} {{\n{fields}}}\n\n"
-            ));
+            if arrays {
+                out.push_str(&format!(
+                    "#[derive(Clone)]\nstruct {name} {{\n{fields}}}\n\nimpl Default for {name} {{\n    fn default() -> {name} {{\n        {name} {{\n{defaults}        }}\n    }}\n}}\n\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "#[derive(Clone, Default)]\nstruct {name} {{\n{fields}}}\n\n"
+                ));
+            }
             if record.assigned.get() {
                 out.push_str(&format!(
                     "impl {name} {{\n    fn set(&self, value: {name}) {{\n{sets}    }}\n}}\n\n"
@@ -483,14 +533,39 @@ impl Translator {
         })
     }
 
-    /// The Rust type of a parameter or return value of the C type `c`. Every
-    /// `char *` of a function borrows for its lifetime `'a`, so one it returns
-    /// may come from a parameter, a string literal or an argument.
-    fn signature_type(&self, c: &str) -> Option<String> {
-        match c {
-            "char *" => Some("Option<&'a [u8]>".to_string()),
-            c => self.value_type(c),
-        }
+    /// The Rust type of a parameter or return value of the C type `c`, a
+    /// pointer borrowing for `lifetime` if the function names one.
+    fn signature_type(&self, c: &str, lifetime: Option<&str>) -> Option<String> {
+        let ty = self.value_type(c)?;
+        Some(match lifetime {
+            Some(lifetime) if self.pointer(c) => ty.replacen('&', &format!("&{lifetime} "), 1),
+            _ => ty,
+        })
+    }
+
+    /// Whether `node` stores a pointer in a struct member, which borrows for
+    /// the whole program, other than null or memory from `malloc`, which
+    /// borrow nothing of the function's.
+    fn stores_pointer(&self, node: &Value) -> bool {
+        let args = inner(node);
+        let stores = kind(node) == "BinaryOperator" && node["opcode"] == "=" && {
+            let mut target = &args[0];
+            while kind(target) == "ParenExpr" {
+                target = &inner(target)[0];
+            }
+            let mut value = &args[1];
+            while matches!(
+                kind(value),
+                "ParenExpr" | "ImplicitCastExpr" | "CStyleCastExpr"
+            ) {
+                value = &inner(value)[0];
+            }
+            kind(target) == "MemberExpr"
+                && self.pointer(c_type(target))
+                && !null_pointer(&args[1])
+                && callee(value) != Some("malloc")
+        };
+        stores || args.iter().any(|child| self.stores_pointer(child))
     }
 
     /// Whether `value_type` translates the C type `c` as a pointer.
@@ -519,6 +594,40 @@ impl Translator {
         zero.to_string()
     }
 
+    /// The size and alignment of the C type `c` on x86-64 Linux: a number,
+    /// `bool` or pointer, an array of a fixed length of them, or a struct of
+    /// them without bit-fields, each member at the next multiple of its
+    /// alignment and the size a multiple of the largest.
+    fn layout(&self, c: &str) -> Option<(u64, u64)> {
+        if let Some((element, length)) = array_type(c) {
+            let (size, align) = self.layout(element)?;
+            return Some((size.checked_mul(length.parse().ok()?)?, align));
+        }
+        if c.ends_with('*') {
+            return Some((8, 8));
+        }
+        if is_bool(c) {
+            return Some((1, 1));
+        }
+        if let Some(ty) = number_type(c) {
+            let size = ty[1..].parse::<u64>().ok()? / 8;
+            return Some((size, size));
+        }
+        let members = self.record(c)?.members.clone();
+        let (mut size, mut align) = (0u64, 1);
+        for (_, ty, width) in &members {
+            if width.is_some() {
+                return None;
+            }
+            let (member_size, member_align) = self.layout(ty)?;
+            size = size
+                .next_multiple_of(member_align)
+                .checked_add(member_size)?;
+            align = align.max(member_align);
+        }
+        Some((size.next_multiple_of(align), align))
+    }
+
     /// Emits `part` of the runtime into the translation.
     pub(crate) fn require(&mut self, part: &'static str) {
         if !self.runtime.contains(&part) {
@@ -544,8 +653,19 @@ impl Translator {
         self.cells.clear();
         collect_pointed_to(body, &mut self.cells);
 
-        let borrows = ret == "char *" || params.iter().any(|p| c_type(p) == "char *");
-        let mut out = format!("fn {}{}(", ident(name), if borrows { "<'a>" } else { "" });
+        // Every pointer of a function borrows for one lifetime, so one it
+        // returns may come from a parameter, a string literal, an argument, a
+        // global or `malloc`. One it stores in a struct must last as long as
+        // the struct's member, the whole program.
+        let lifetime = if self.stores_pointer(body) {
+            Some("'static")
+        } else if self.pointer(ret) || params.iter().any(|p| c_type(p) == "char *") {
+            Some("'a")
+        } else {
+            None
+        };
+        let generic = if lifetime == Some("'a") { "<'a>" } else { "" };
+        let mut out = format!("fn {}{generic}(", ident(name));
         let argv = ["int", "char **"];
         if name == "main" && !params.is_empty() && !params.iter().map(|p| c_type(p)).eq(argv) {
             out.push_str(&format!(
@@ -565,20 +685,13 @@ impl Translator {
             .collect();
         let params: Vec<String> = params
             .iter()
-            .map(|p| self.typed_binding(p, self.signature_type(c_type(p))))
+            .map(|p| self.typed_binding(p, self.signature_type(c_type(p), lifetime)))
             .collect();
         out.push_str(&params.join(", "));
         out.push(')');
         match ret {
             "void" => {}
-            // Rust has no lifetime for the variable such a pointer borrows.
-            ret if self.pointer(ret) && ret != "char *" => {
-                out.push_str(&format!(
-                    " -> {}",
-                    unsupported(&format!("return type {ret}"))
-                ));
-            }
-            ret => match self.signature_type(ret) {
+            ret => match self.signature_type(ret, lifetime) {
                 Some(ty) => out.push_str(&format!(" -> {ty}")),
                 None => out.push_str(&format!(" -> {}", unsupported(&format!("type {ret}")))),
             },
@@ -1029,14 +1142,29 @@ impl Translator {
     }
 
     /// Assigns `value` to `target`, or with a binary operator such as `+`,
-    /// the result of applying it to `target` and `value`.
-    fn assign(&mut self, target: &Value, op: &str, value: &Value) -> String {
+    /// the result of applying it to `target` and `value` in the C type
+    /// `compute`, converted back to the type of `target`.
+    fn assign(&mut self, target: &Value, op: &str, value: &Value, compute: &str) -> String {
         let ty = c_type(target);
+        let converted = ty != compute;
+        // C converts the target to `compute` and the result back, which `as`
+        // does as x86-64 does, modulo the range of an integer type.
+        let result = |old: &str, value: &str| {
+            let (Some(from), Some(to)) = (number_type(ty), number_type(compute)) else {
+                return binary(op, ty, old, value);
+            };
+            if converted {
+                let old = format!("({old} as {to})");
+                format!("({}) as {from}", binary(op, compute, &old, value))
+            } else {
+                binary(op, ty, old, value)
+            }
+        };
         match self.static_var(target) {
             Some(name) if op.is_empty() => format!("{name}.store({}, {RELAXED})", self.expr(value)),
             Some(name) => {
-                let value = self.right_operand(op, ty, value);
-                let result = binary(op, ty, &format!("{name}.load({RELAXED})"), &value);
+                let value = self.right_operand(op, compute, value);
+                let result = result(&format!("{name}.load({RELAXED})"), &value);
                 format!("{name}.store({result}, {RELAXED})")
             }
             None if op.is_empty() => {
@@ -1044,17 +1172,15 @@ impl Translator {
                 self.store(target, &value)
             }
             None if let Some(cell) = self.cell(target) => {
-                let value = self.right_operand(op, ty, value);
+                let value = self.right_operand(op, compute, value);
                 let width = self.bitfield(target);
-                update(&cell, |old| {
-                    truncate(width, ty, &binary(op, ty, old, &value))
-                })
+                update(&cell, |old| truncate(width, ty, &result(old, &value)))
             }
             // Rust's `+=` would check what C wraps.
-            None if wraps(op, ty) => {
+            None if wraps(op, ty) || converted => {
                 let place = self.place(target);
-                let value = self.right_operand(op, ty, value);
-                format!("{place} = {}", binary(op, ty, &place, &value))
+                let value = self.right_operand(op, compute, value);
+                format!("{place} = {}", result(&place, &value))
             }
             None => format!("{} {op}= {}", self.place(target), self.expr(value)),
         }
@@ -1065,7 +1191,10 @@ impl Translator {
     pub(crate) fn expr_stmt(&mut self, expr: &Value) -> String {
         let args = inner(expr);
         match (kind(expr), expr["opcode"].as_str()) {
-            ("BinaryOperator", Some("=")) => self.assign(&args[0], "", &args[1]),
+            ("BinaryOperator", Some("=")) => {
+                let ty = c_type(&args[0]);
+                self.assign(&args[0], "", &args[1], ty)
+            }
             ("CompoundAssignOperator", Some("+=")) if self.pointer(c_type(&args[0])) => {
                 let offset = self.index(&args[1]);
                 let value = self.advance(&args[0], &offset);
@@ -1078,15 +1207,17 @@ impl Translator {
             ("CompoundAssignOperator", Some(op)) => {
                 let ty = c_type(&args[0]);
                 let op = op.trim_end_matches('=');
-                let supported = match float_type(ty) {
+                // C computes in the type that the usual arithmetic
+                // conversions give the target and the value.
+                let compute = qual_type(&expr["computeLHSType"]);
+                let supported = match float_type(compute) {
                     Some(_) => matches!(op, "+" | "-" | "*" | "/"),
-                    None => rust_type(ty).is_some() && ARITHMETIC.contains(&op),
+                    None => rust_type(compute).is_some() && ARITHMETIC.contains(&op),
                 };
-                // A `float` that C computes in `double` would need converting.
-                if ty != expr["computeLHSType"]["qualType"] || !supported {
+                if number_type(ty).is_none() || !supported {
                     return unsupported(&format!("{op}= on {ty}"));
                 }
-                self.assign(&args[0], op, &args[1])
+                self.assign(&args[0], op, &args[1], compute)
             }
             ("UnaryOperator", Some(op @ ("++" | "--"))) => {
                 let (assign, method) = if op == "++" {
@@ -1212,8 +1343,21 @@ impl Translator {
         }
         let mut fields = Vec::new();
         for (i, (member, ty, width)) in members.iter().enumerate() {
-            let value = match elements.get(i) {
-                Some(element) if kind(element) != "ImplicitValueInitExpr" => {
+            let given = elements
+                .get(i)
+                .filter(|element| kind(element) != "ImplicitValueInitExpr");
+            if array_type(ty).is_some() {
+                if given.is_some() {
+                    return unsupported(&format!("initialiser of the array member of {c}"));
+                }
+                fields.push(format!(
+                    "{}: std::array::from_fn(|_| Default::default())",
+                    ident(member)
+                ));
+                continue;
+            }
+            let value = match given {
+                Some(element) => {
                     let value = self.expr(element);
                     truncate(*width, ty, &value)
                 }
@@ -1301,9 +1445,8 @@ impl Translator {
     /// to, from the first: the array that decays to it, or the pointer's
     /// slice, as C has no object at null.
     fn elements(&mut self, pointer: &Value) -> Option<String> {
-        let pointee = c_type(pointer).strip_suffix(" *")?;
-        if cell_type(pointee).is_none() {
-            self.record(pointee)?;
+        if !self.points_to_elements(c_type(pointer)) {
+            return None;
         }
         let mut decayed = pointer;
         while kind(decayed) == "ParenExpr" {
@@ -1311,14 +1454,36 @@ impl Translator {
         }
         if kind(decayed) == "ImplicitCastExpr"
             && decayed["castKind"] == "ArrayToPointerDecay"
-            && variable(&inner(decayed)[0])
+            && let Some(array) = self.array_place(&inner(decayed)[0])
         {
-            return Some(self.expr(&inner(decayed)[0]));
+            return Some(array);
         }
         Some(format!(
             "{}.expect(\"null pointer dereference\")",
             self.operand(pointer)
         ))
+    }
+
+    /// Whether the C type `c` is a pointer to an integer other than `char`
+    /// or to a struct, whose elements the translation holds as cells or
+    /// structs.
+    fn points_to_elements(&self, c: &str) -> bool {
+        c.strip_suffix(" *")
+            .is_some_and(|pointee| cell_type(pointee).is_some() || self.record(pointee).is_some())
+    }
+
+    /// The Rust place of an array of cells or structs that `array` names: a
+    /// variable, which the translation holds as a slice, or a struct member.
+    fn array_place(&mut self, array: &Value) -> Option<String> {
+        let mut array = array;
+        while kind(array) == "ParenExpr" {
+            array = &inner(array)[0];
+        }
+        match kind(array) {
+            _ if variable(array) => Some(self.expr(array)),
+            "MemberExpr" => self.member(array),
+            _ => None,
+        }
     }
 
     /// The pointer `offset`, a Rust index, elements past `pointer`, which the
@@ -1416,28 +1581,12 @@ impl Translator {
                 self.require(ERRNO_RUNTIME);
                 format!("crt::ERRNO.load({RELAXED})")
             }
-            // The size of a number or a pointer on x86-64 Linux.
             "UnaryExprOrTypeTraitExpr" if expr["name"] == "sizeof" => {
                 let of = match args.first() {
                     Some(operand) => c_type(operand),
                     None => qual_type(&expr["argType"]),
                 };
-                let size = |of: &str| match number_type(of) {
-                    _ if of.ends_with('*') => Some(8),
-                    Some(ty) => ty[1..].parse::<u64>().ok().map(|bits| bits / 8),
-                    None if is_bool(of) => Some(1),
-                    None => None,
-                };
-                // An array of a fixed length holds that many elements.
-                let size = match array_type(of) {
-                    Some((element, length)) => length
-                        .parse::<u64>()
-                        .ok()
-                        .zip(size(element))
-                        .and_then(|(length, size)| length.checked_mul(size)),
-                    None => size(of),
-                };
-                let Some(size) = size else {
+                let Some((size, _)) = self.layout(of) else {
                     return unsupported(&format!("sizeof {of}"));
                 };
                 match rust_type(c_type(expr)) {
@@ -1510,6 +1659,17 @@ impl Translator {
                     format!("!{}", self.operand(&args[0]))
                 }
                 Some("+") => self.expr(&args[0]),
+                // The variable's value before the step, or after it for a
+                // prefix one, read back with C's conversion applied.
+                Some("++" | "--") if variable(&args[0]) => {
+                    let step = self.expr_stmt(expr);
+                    let value = self.expr(&args[0]);
+                    if expr["isPostfix"] == true {
+                        format!("{{ let __value = {value}; {step}; __value }}")
+                    } else {
+                        format!("{{ {step}; {value} }}")
+                    }
+                }
                 // The address of an integer variable or member, the one cell
                 // it holds, or of a struct, or of an array element, the cells
                 // or structs from it to the array's end, which may be none
@@ -1564,7 +1724,7 @@ impl Translator {
                 // An assignment's value is the variable's after it; reading
                 // the variable again gives it with C's conversion applied.
                 Some("=") if variable(&args[0]) && self.record(c_type(expr)).is_none() => {
-                    let assign = self.assign(&args[0], "", &args[1]);
+                    let assign = self.assign(&args[0], "", &args[1], c_type(&args[0]));
                     format!("{{ {assign}; {} }}", self.expr(&args[0]))
                 }
                 Some("+") if self.pointer(c_type(expr)) => {
@@ -1652,6 +1812,18 @@ impl Translator {
                         self.expr(&args[2])
                     )
                 }
+                Some("free") => {
+                    let pointer = untyped(&args[1]);
+                    if null_pointer(&args[1]) {
+                        "()".to_string()
+                    } else if self.pointer(c_type(pointer)) {
+                        self.require(FREE_RUNTIME);
+                        format!("crt::free({})", self.expr(pointer))
+                    } else {
+                        unsupported(&format!("free of {}", c_type(pointer)))
+                    }
+                }
+                Some("memcpy") => self.memcpy(&args[1..]),
                 Some(name @ ("fgets" | "fread" | "memset" | "strcpy" | "strncpy")) => {
                     self.write_bytes(name, &args[1..])
                 }
@@ -1671,6 +1843,33 @@ impl Translator {
             },
             other => unsupported(other),
         }
+    }
+
+    /// `memcpy` between two pointers to the same integer type, other than
+    /// `char`, or struct, whose result the program discards. It copies whole
+    /// objects, cells by their values and structs as `=` does.
+    fn memcpy(&mut self, args: &[Value]) -> String {
+        let (dest, src) = (untyped(&args[0]), untyped(&args[1]));
+        let ty = c_type(dest);
+        let pointee = ty.strip_suffix(" *").unwrap_or("");
+        let size = self.layout(pointee).map_or(0, |(size, _)| size);
+        if ty != c_type(src) || !self.points_to_elements(ty) || size == 0 {
+            return unsupported(&format!("memcpy from {} to {ty}", c_type(src)));
+        }
+        let copy = match self.record(pointee) {
+            Some(record) => {
+                record.assigned.set(true);
+                "to.set(from.clone())"
+            }
+            None => "to.set(from.get())",
+        };
+        self.require(MEMCPY_RUNTIME);
+        format!(
+            "crt::memcpy({}, {}, {}, {size}, |to, from| {copy})",
+            self.expr(dest),
+            self.expr(src),
+            self.expr(&args[2])
+        )
     }
 
     /// `strtol` and `strtoll`, which are the same on x86-64 Linux, and
@@ -1765,6 +1964,21 @@ impl Translator {
             "NullToPointer" | "BitCast" if null_pointer(expr) && self.pointer(c_type(expr)) => {
                 "None".to_string()
             }
+            // Memory from `malloc` for the objects that the pointer points to.
+            "BitCast"
+                if kind(operand) == "CallExpr"
+                    && callee(operand) == Some("malloc")
+                    && self.points_to_elements(c_type(expr)) =>
+            {
+                let pointee = c_type(expr).strip_suffix(" *").unwrap_or("");
+                match self.layout(pointee) {
+                    Some((size, _)) if size > 0 => {
+                        self.require(MALLOC_RUNTIME);
+                        format!("crt::malloc({}, {size})", self.expr(&inner(operand)[1]))
+                    }
+                    _ => unsupported(&format!("malloc of {pointee}")),
+                }
+            }
             // A conversion that only drops a qualifier, as Clang makes to
             // compare a `const char *` with a `char *`, keeps the Rust value.
             "BitCast" if c_type(expr) == c_type(operand) && self.pointer(c_type(expr)) => {
@@ -1779,8 +1993,10 @@ impl Translator {
                 None if variable(operand) && char_array(c_type(operand)) => {
                     format!("Some(&{}[..])", self.expr(operand))
                 }
-                None => match self.elements(expr) {
-                    Some(array) if variable(operand) => format!("Some(&{array}[..])"),
+                None => match self.array_place(operand) {
+                    Some(array) if self.points_to_elements(c_type(expr)) => {
+                        format!("Some(&{array}[..])")
+                    }
                     _ => unsupported("cast ArrayToPointerDecay"),
                 },
             },
@@ -1863,6 +2079,20 @@ fn atomic(expr: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+/// The pointer that `expr` converts to `void *` or `const void *`, as Clang
+/// converts the arguments of `free` and `memcpy`.
+fn untyped(expr: &Value) -> &Value {
+    let mut expr = expr;
+    while kind(expr) == "ParenExpr"
+        || (kind(expr) == "ImplicitCastExpr"
+            && matches!(expr["castKind"].as_str(), Some("BitCast" | "NoOp"))
+            && c_type(expr) == "void *")
+    {
+        expr = &inner(expr)[0];
+    }
+    expr
 }
 
 /// Whether `expr` names a variable, perhaps in parentheses.
@@ -2275,6 +2505,47 @@ const STRCHR_RUNTIME: &str = r#"    /// The positions of the bytes of a C string
     pub fn strrchr(s: Option<&[u8]>, c: i32) -> Option<&[u8]> {
         let (i, _) = string(s).filter(|&(_, b)| b == c as u8).last()?;
         Some(&s?[i..])
+    }
+"#;
+
+/// The part of the `crt` module that `malloc` calls.
+const MALLOC_RUNTIME: &str = r#"    /// C's `malloc` of `n` bytes for objects of `size` bytes each: as many
+    /// as fit, each zero, as C gives the program no value to read. It is
+    /// null for more than glibc allocates. The memory lasts until the
+    /// program exits.
+    pub fn malloc<T: Default>(n: u64, size: u64) -> Option<&'static [T]> {
+        if n > isize::MAX as u64 {
+            return None;
+        }
+        let objects: Box<[T]> = (0..n / size).map(|_| T::default()).collect();
+        Some(Box::leak(objects))
+    }
+"#;
+
+/// The part of the `crt` module that `free` calls.
+const FREE_RUNTIME: &str = r#"    /// C's `free`, which leaves the memory to last until the program exits:
+    /// C leaves using it afterwards undefined.
+    pub fn free<T>(_: Option<&[T]>) {}
+"#;
+
+/// The part of the `crt` module that `memcpy` calls.
+const MEMCPY_RUNTIME: &str = r#"    /// C's `memcpy` of `n` bytes between objects of `size` bytes each,
+    /// copying each with `copy`. Copying part of an object, reading or
+    /// writing past an array and null panic.
+    pub fn memcpy<T>(
+        dest: Option<&[T]>,
+        src: Option<&[T]>,
+        n: u64,
+        size: u64,
+        copy: impl Fn(&T, &T),
+    ) {
+        assert!(n % size == 0, "memcpy of part of an object");
+        let count = (n / size) as usize;
+        let dest = &dest.expect("null pointer in memcpy")[..count];
+        let src = &src.expect("null pointer in memcpy")[..count];
+        for (to, from) in dest.iter().zip(src) {
+            copy(to, from);
+        }
     }
 "#;
 
