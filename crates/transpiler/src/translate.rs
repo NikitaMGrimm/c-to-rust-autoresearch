@@ -43,20 +43,29 @@ pub(crate) fn rust_type(c: &str) -> Option<&'static str> {
 }
 
 /// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, or a `char *` into a string literal, which the program can only
-/// read. Such a pointer is `None` for null and otherwise the literal's bytes
-/// from where it points, through the zero that ends the array.
-pub(crate) fn value_type(c: &str) -> Option<&'static str> {
+/// integer, a `char *` into a string literal or a pointer to an integer
+/// variable, which the program can only read. A pointer is `None` for null.
+/// A `char *` is otherwise the literal's bytes from where it points, through
+/// the zero that ends the array, and a pointer to an integer borrows it.
+pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
-        "char *" => Some("Option<&'static [u8]>"),
-        c => rust_type(c),
+        "char *" => Some("Option<&'static [u8]>".to_string()),
+        c => match c.strip_suffix(" *") {
+            Some(pointee) => rust_type(pointee).map(|ty| format!("Option<&{ty}>")),
+            None => rust_type(c).map(String::from),
+        },
     }
+}
+
+/// Whether `value_type` translates the C type `c` as a pointer.
+pub(crate) fn pointer(c: &str) -> bool {
+    c.ends_with(" *") && value_type(c).is_some()
 }
 
 /// The value of an uninitialised variable of a C type that `value_type`
 /// translates, as C gives the program no value to read.
 pub(crate) fn zero(c: &str) -> &'static str {
-    if c == "char *" { "None" } else { "0" }
+    if pointer(c) { "None" } else { "0" }
 }
 
 /// Whether `expr` is a null pointer constant converted to a pointer, such as
@@ -213,6 +222,13 @@ impl Translator {
         out.push(')');
         match ret {
             "void" => {}
+            // Rust has no lifetime for the variable such a pointer borrows.
+            ret if pointer(ret) && ret != "char *" => {
+                out.push_str(&format!(
+                    " -> {}",
+                    unsupported(&format!("return type {ret}"))
+                ));
+            }
             ret => match value_type(ret) {
                 Some(ty) => out.push_str(&format!(" -> {ty}")),
                 None => out.push_str(&format!(" -> {}", unsupported(&format!("type {ret}")))),
@@ -241,7 +257,7 @@ impl Translator {
     /// `name: Type` for a parameter, with `mut` if the function assigns it.
     pub(crate) fn binding(&self, var: &Value) -> String {
         let ty = c_type(var);
-        let ty = value_type(ty).map_or_else(|| unsupported(&format!("type {ty}")), String::from);
+        let ty = value_type(ty).unwrap_or_else(|| unsupported(&format!("type {ty}")));
         format!(
             "{}{}: {ty}",
             self.mut_(var),
@@ -379,6 +395,21 @@ impl Translator {
             "UnaryOperator" => match expr["opcode"].as_str() {
                 Some("-") if signed(c_type(expr)) => format!("-{}", self.operand(&args[0])),
                 Some("+") => self.expr(&args[0]),
+                // The address of an integer variable, which Rust borrows; a
+                // later write to the variable while it is borrowed fails to
+                // compile.
+                Some("&")
+                    if c_type(expr) != "char *" && pointer(c_type(expr)) && variable(&args[0]) =>
+                {
+                    format!("Some(&{})", self.expr(&args[0]))
+                }
+                // C has no object at a null pointer.
+                Some("*") if c_type(&args[0]) != "char *" && pointer(c_type(&args[0])) => {
+                    format!(
+                        "*{}.expect(\"null pointer dereference\")",
+                        self.operand(&args[0])
+                    )
+                }
                 op => unsupported(&format!("unary {}", op.unwrap_or("?"))),
             },
             "BinaryOperator" => match expr["opcode"].as_str() {
@@ -406,7 +437,7 @@ impl Translator {
         let operand = &inner(expr)[0];
         match expr["castKind"].as_str().unwrap_or("") {
             "LValueToRValue" | "NoOp" | "FunctionToPointerDecay" => self.expr(operand),
-            "NullToPointer" | "BitCast" if null_pointer(expr) && c_type(expr) == "char *" => {
+            "NullToPointer" | "BitCast" if null_pointer(expr) && pointer(c_type(expr)) => {
                 "None".to_string()
             }
             "ArrayToPointerDecay" => match stdio::string_array(operand) {
@@ -448,6 +479,18 @@ fn atomic(expr: &Value) -> bool {
             matches!(expr["castKind"].as_str(), Some("LValueToRValue" | "NoOp"))
                 && atomic(&inner(expr)[0])
         }
+        _ => false,
+    }
+}
+
+/// Whether `expr` names a variable, perhaps in parentheses.
+fn variable(expr: &Value) -> bool {
+    match kind(expr) {
+        "ParenExpr" => variable(&inner(expr)[0]),
+        "DeclRefExpr" => matches!(
+            expr["referencedDecl"]["kind"].as_str(),
+            Some("VarDecl" | "ParmVarDecl")
+        ),
         _ => false,
     }
 }

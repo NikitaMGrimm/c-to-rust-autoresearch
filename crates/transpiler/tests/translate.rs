@@ -416,3 +416,84 @@ fn rejects_string_pointer_uses_it_cannot_translate() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_pointers_to_integer_variables() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+
+void show(const int *value, unsigned char *byte) {
+    if (value != NULL && byte) {
+        printf("%d %u\n", *value + 1, *byte);
+    } else if (!value) {
+        printf("no value %d\n", value == 0);
+    }
+}
+
+long twice(long *n) {
+    return 2 * (*n);
+}
+
+int main(void) {
+    int n = 0;
+    scanf("%d", &n);
+    unsigned char b = 200;
+    int *p;
+    int *none = (int *)0;
+    show(none, &b);
+    p = &n;
+    show(p, &(b));
+    long big = 5000000000;
+    printf("%d\n", (int)(twice(&big) / 1000));
+    if (n < 0) {
+        goto skip;
+    }
+    show(&n, 0);
+skip:;
+    int *late = p;
+    if (late)
+        show(late, &b);
+    return *late != 0 || (p == NULL);
+}
+"#;
+    let rust = same_behaviour(
+        "translates_pointers_to_integer_variables",
+        c,
+        &["0", "7", "-3", ""],
+    );
+    assert!(rust.contains("Option<&i32>"), "{rust}");
+}
+
+#[test]
+fn rejects_integer_pointer_uses_it_cannot_translate() {
+    let dir = scratch("rejects_integer_pointer_uses_it_cannot_translate");
+    // No variable outlives the function for the result to borrow.
+    let rust = translate(
+        &dir,
+        "int *pick(int *p) { return p; }\nint main(void) { int x = 1; return *pick(&x); }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: return type int *")"#),
+        "{rust}"
+    );
+    // A pointer is read-only, so it cannot be written through.
+    let rust = translate(
+        &dir,
+        "int main(void) { int x = 1; int *p = &x; *p = 2; return x; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: assignment to UnaryOperator")"#),
+        "{rust}"
+    );
+    // A `char *` holds a string literal's bytes, not a character variable.
+    let rust = translate(
+        &dir,
+        "int main(void) { char c = 'a'; char *p = &c; return 0; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: unary &")"#),
+        "{rust}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -106,3 +106,23 @@ Entry format, newest last:
   first assigns a literal to an uninitialised `char *`
 - Changes: extends R1's types and `printf`, and R2's conditions and the
   variables declared before a block with labels
+
+## R5: pointers to integer variables
+
+- C: pointers to the integer types, `const` or not, as variables and
+  parameters; `&` of an integer variable, perhaps in parentheses; `*` of
+  such a pointer as a value; null pointer constants, uninitialised pointers
+  as null, `==` and `!=` against null and a pointer as a condition, as R4
+  has them for `char *`
+- Rust: `Option<&T>` for a `T *`, `Some(&x)` for `&x` and
+  `*p.expect("null pointer dereference")` for `*p`, since C has no object
+  at null; the tests are `is_none()` and `is_some()`. A pointer only reads:
+  a write through it stays unsupported, and a write to the variable while a
+  pointer borrows it fails to compile. A function returning such a pointer,
+  whose borrow Rust cannot give a lifetime, `&` of anything but an integer
+  variable, `&` of a `char`, whose `char *` R4 holds as a literal's bytes,
+  and comparisons between two pointers stay unsupported
+- Motivation: `g3_012_uninit_int_ptr` passes the address of a local `int`,
+  through an `int *` variable, to a function with a `const int *` parameter
+  that prints `*` of it
+- Changes: extends R1's types and R4's null pointers and pointer conditions

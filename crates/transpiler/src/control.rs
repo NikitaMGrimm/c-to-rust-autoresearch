@@ -4,7 +4,8 @@
 //! continues that loop.
 
 use crate::translate::{
-    Translator, c_type, ident, inner, kind, null_pointer, rust_type, unsupported, value_type, zero,
+    Translator, c_type, ident, inner, kind, null_pointer, pointer, rust_type, unsupported,
+    value_type, zero,
 };
 use serde_json::Value;
 
@@ -139,7 +140,7 @@ impl Translator {
 
     /// Compares an integer to zero, or a pointer to null, with `==` or `!=`.
     fn nonzero(&mut self, expr: &Value, op: &str) -> String {
-        if c_type(expr) == "char *" {
+        if pointer(c_type(expr)) {
             let test = if op == "==" { "is_none" } else { "is_some" };
             return format!("{}.{test}()", self.operand(expr));
         }
