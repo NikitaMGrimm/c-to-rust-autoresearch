@@ -1669,3 +1669,93 @@ fn rejects_pointer_arithmetic_it_cannot_translate() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_static_local_arrays_and_returns_of_local_arrays() {
+    let c = r#"
+#include <stdio.h>
+#include <string.h>
+
+static const char *greeting(void) {
+    static char text[] = "hello";
+    return text;
+}
+
+static const char *pick(int n) {
+    static char empty[4];
+    static char name[8] = {'a', 'b', 'c'};
+    if (n % 2)
+        return name;
+    return empty;
+}
+
+static int next(void) {
+    static int counts[3];
+    static long steps[4] = {10, 20};
+    counts[0] = counts[0] + 1;
+    steps[counts[0] % 4] += counts[0];
+    int *p = counts + 1;
+    *p = *p + 2;
+    return counts[0] * 100 + counts[1] + (int)steps[1];
+}
+
+static const char *kept(int n) {
+    char local[8] = "gone";
+    if (n > 100)
+        return (local);
+    return "kept";
+}
+
+static char *lost(void) {
+    char buf[2] = "x";
+    return buf;
+}
+
+int main(void) {
+    int n = 0;
+    if (scanf("%d", &n) != 1 || n > 100)
+        return 1;
+    for (int i = 0; i < n; i++)
+        printf("%d ", next());
+    printf("\n%s %s %d [%s] [%s]\n", greeting(), kept(n), (int)strlen(greeting()), pick(n), pick(n + 1));
+    return n == 100 && lost() != NULL;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_static_local_arrays_and_returns_of_local_arrays",
+        c,
+        &["0", "1", "6", "x"],
+    );
+    // Both returns of a local array, in a block and at the end, panic.
+    assert_eq!(
+        rust.matches(
+            r#"panic!("returned a pointer to a local array that ends with its function")"#
+        )
+        .count(),
+        2,
+        "{rust}"
+    );
+}
+
+#[test]
+fn rejects_static_local_arrays_it_cannot_translate() {
+    let dir = scratch("rejects_static_local_arrays_it_cannot_translate");
+    let cases = [
+        (
+            "int main(void) { static int a[2][3]; return 0; }",
+            "static local variable of type int[2][3]",
+        ),
+        (
+            "int main(void) { static const char *names[2] = {\"a\", \"b\"}; return 0; }",
+            "static local variable of type char *[2]",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

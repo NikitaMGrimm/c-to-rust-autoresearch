@@ -482,3 +482,27 @@ Entry format, newest last:
 - Changes: lifts R10's rejection of pointer arithmetic for moving forwards,
   extends R1's assignments, which were statements only, and R11's functions
   that write a `char` array
+
+## R17: static local arrays and returns of a local array
+
+- C: `static` local arrays of a fixed length of `char` or of R10's integer
+  types, uninitialised or with a string literal or a list; `return` of a
+  function's own local array that is not static, perhaps in parentheses
+- Rust: the array is made on its block's first run, from the value R10 and
+  R11 give a local array, in a `thread_local!` that leaks it with
+  `Box::leak`, as R14 holds a global one, and the C name is a `let` that
+  borrows it for the whole program: `&[std::cell::Cell<T>]` for integers,
+  as a local integer array, and `&[u8]` for `char`, so a `char *` may borrow
+  it past the function's return; the static is named `__NAME_N`, as R7's. A
+  `return` of a local array that is not static is `panic!`, as the pointer
+  points to nothing once the function returns and C leaves using it
+  undefined; a call whose result C discards panics too. Writing to a static
+  `char` array fails to compile, as safe Rust cannot lend the same bytes
+  mutably on every run; static arrays of other types, of arrays and of
+  pointers stay unsupported, as do other ways to return a local array, such
+  as through a pointer variable or `a + n`
+- Motivation: `g2_015_return_stack_buffer` returns a `static char[]`
+  initialised with a literal from one helper and a local `char[]` from
+  another, which runs only on input that the benchmark leaves out
+- Changes: lifts R7's rejection of static locals of array types and R11's of
+  static `char` arrays and of a function returning its own array

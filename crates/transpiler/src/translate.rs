@@ -230,6 +230,9 @@ pub(crate) struct Translator {
     cells: HashSet<String>,
     /// The Rust statics of the static local variables, by id.
     statics: HashMap<String, String>,
+    /// Ids of the local arrays that end with their block, as they are not
+    /// static.
+    automatic_arrays: HashSet<String>,
     /// The Rust functions that give the global variables the translation
     /// holds, by the id of each of their declarations, and whether each is
     /// an array.
@@ -266,6 +269,7 @@ pub(crate) fn program(ast: &Value) -> String {
         mutated: HashSet::new(),
         cells: HashSet::new(),
         statics: HashMap::new(),
+        automatic_arrays: HashSet::new(),
         globals: HashMap::new(),
         runtime: Vec::new(),
         scopes: Vec::new(),
@@ -592,7 +596,7 @@ impl Translator {
         // The last `return` is the tail expression, and `main` returns 0 when
         // it runs off its end.
         match last {
-            Some(value) => out.push_str(&format!("    {}\n", self.expr(value))),
+            Some(value) => out.push_str(&format!("    {}\n", self.return_value(value))),
             None if name == "main" => out.push_str("    0\n"),
             None => {}
         }
@@ -661,7 +665,9 @@ impl Translator {
                 }
             }
             "ReturnStmt" => match inner(stmt).first() {
-                Some(value) => out.push_str(&format!("{pad}return {};\n", self.expr(value))),
+                Some(value) => {
+                    out.push_str(&format!("{pad}return {};\n", self.return_value(value)))
+                }
                 None => out.push_str(&format!("{pad}return;\n")),
             },
             "NullStmt" => {}
@@ -698,6 +704,9 @@ impl Translator {
     /// is bytes borrowed mutably instead, which `char *` borrows to read.
     fn array(&mut self, var: &Value, element: &str, length: &str) -> String {
         let name = ident(var["name"].as_str().unwrap_or(""));
+        if let Some(id) = var["id"].as_str() {
+            self.automatic_arrays.insert(id.to_string());
+        }
         let bytes = element == "char";
         let (slice, borrow, zero) = match cell_type(element) {
             _ if bytes => ("&mut [u8]".to_string(), "&mut ", "0".to_string()),
@@ -906,23 +915,20 @@ impl Translator {
 
     /// A static local variable of an integer type, as a Rust static atomic
     /// that only its block sees. C initialises it once, to zero if the
-    /// program gives no value, and the atomic lets safe Rust change it.
+    /// program gives no value, and the atomic lets safe Rust change it. An
+    /// array is `static_array`'s.
     fn static_local(&mut self, var: &Value) -> String {
         let ty = c_type(var);
+        if let Some((element, length)) = array_type(ty) {
+            return self.static_array(var, element, length);
+        }
         let Some(rust) = rust_type(ty) else {
             return format!(
                 "{};",
                 unsupported(&format!("static local variable of type {ty}"))
             );
         };
-        // C reserves names that start with `__`, so no C name meets it, and
-        // Rust lets no `let` bind the name of a static in scope.
-        let name = format!(
-            "__{}_{}",
-            var["name"].as_str().unwrap_or("").to_uppercase(),
-            self.fresh
-        );
-        self.fresh += 1;
+        let name = self.static_name(var);
         let init = match inner(var).first() {
             Some(init) if var["init"].is_string() => self.expr(init),
             _ => self.zero(ty),
@@ -932,6 +938,76 @@ impl Translator {
         }
         let atomic = format!("std::sync::atomic::Atomic{}", rust.to_uppercase());
         format!("static {name}: {atomic} = {atomic}::new({init});")
+    }
+
+    /// The name of the Rust static that holds the static local `var`. C
+    /// reserves names that start with `__`, so no C name meets it, and Rust
+    /// lets no `let` bind the name of a static in scope.
+    fn static_name(&mut self, var: &Value) -> String {
+        let name = format!(
+            "__{}_{}",
+            var["name"].as_str().unwrap_or("").to_uppercase(),
+            self.fresh
+        );
+        self.fresh += 1;
+        name
+    }
+
+    /// A static local array of a fixed length, which C initialises once, as
+    /// R14 holds a global array: made on the block's first run in a
+    /// `thread_local!` and leaked, so the local name borrows it for the whole
+    /// program. An integer array is a slice of cells, as a local one is; a
+    /// `char` array is bytes that only `char *` reads, as safe Rust cannot
+    /// lend the same bytes mutably on every run.
+    fn static_array(&mut self, var: &Value, element: &str, length: &str) -> String {
+        let bytes = element == "char";
+        let rejected = format!(
+            "{};",
+            unsupported(&format!("static local variable of type {}", c_type(var)))
+        );
+        let (slice, zero) = match cell_type(element) {
+            _ if !fixed_length(length) => return rejected,
+            _ if bytes => ("[u8]".to_string(), "0".to_string()),
+            Some(ty) => (format!("[{CELL}<{ty}>]"), format!("{CELL}::new(0)")),
+            None => return rejected,
+        };
+        let value = match self.fixed_array(var, bytes, &zero, length) {
+            Ok(value) => value,
+            Err(err) => return format!("{err};"),
+        };
+        let name = self.static_name(var);
+        let local = ident(var["name"].as_str().unwrap_or(""));
+        format!(
+            "thread_local! {{ static {name}: &'static {slice} = Box::leak(Box::new({value})); }} let {local}: &{slice} = {name}.with(|array| *array);"
+        )
+    }
+
+    /// The value that a `return` gives. A pointer to the function's own
+    /// array, which is not static, points to nothing once the function
+    /// returns, and C leaves using it undefined; Rust cannot return the
+    /// borrow, so the `return` panics.
+    fn return_value(&mut self, value: &Value) -> String {
+        let mut expr = value;
+        while kind(expr) == "ParenExpr"
+            || matches!(expr["castKind"].as_str(), Some("NoOp" | "BitCast"))
+        {
+            expr = &inner(expr)[0];
+        }
+        if expr["castKind"] == "ArrayToPointerDecay" {
+            let mut array = &inner(expr)[0];
+            while kind(array) == "ParenExpr" {
+                array = &inner(array)[0];
+            }
+            if kind(array) == "DeclRefExpr"
+                && array["referencedDecl"]["id"]
+                    .as_str()
+                    .is_some_and(|id| self.automatic_arrays.contains(id))
+            {
+                return "panic!(\"returned a pointer to a local array that ends with its function\")"
+                    .to_string();
+            }
+        }
+        self.expr(value)
     }
 
     /// The Rust static of a static local variable that `expr` names, or of
