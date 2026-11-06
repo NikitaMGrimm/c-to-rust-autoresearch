@@ -745,6 +745,18 @@ fn library_input(
     if vector["stdout"]["is_regex"] == true {
         return Err("output_pattern");
     }
+    // The program prints only the result field. A string passed as a pointer
+    // could still change, which TRACTOR would see and the program would not.
+    let (state_in, state_out) = (&vector["lib_state_in"], &vector["lib_state_out"]);
+    let unchecked = runner.fields.iter().any(|(field, _)| {
+        Some(field) != runner.result.as_ref()
+            && state_out
+                .get(field)
+                .is_some_and(|out| *out != state_in[field])
+    });
+    if unchecked {
+        return Err("unchecked_state_change");
+    }
     let args = runner
         .fields
         .iter()
@@ -1291,6 +1303,10 @@ harness! {
                 "test_vectors/test4.json",
                 r#"{"stdout": {"pattern": "other\n"}, "lib_state_in": {"factor": 1, "value": 1, "returns": 0}, "lib_state_out": {"factor": 1, "value": 1, "returns": 1}}"#,
             ),
+            (
+                "test_vectors/test5.json",
+                r#"{"lib_state_in": {"factor": 1, "value": 1, "returns": 0}, "lib_state_out": {"factor": 2, "value": 1, "returns": 1}}"#,
+            ),
         ];
         for (path, text) in files {
             let path = case_dir.join(path);
@@ -1324,7 +1340,13 @@ harness! {
         let names: Vec<&str> = program.inputs.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["test1", "test2"]);
         assert_eq!(program.inputs[0].args, ["3", "0.1", "0"]);
-        assert_eq!(dropped, BTreeMap::from([("c_differs_from_expected", 2)]));
+        assert_eq!(
+            dropped,
+            BTreeMap::from([
+                ("c_differs_from_expected", 2),
+                ("unchecked_state_change", 1)
+            ])
+        );
         let source = source.unwrap();
         assert!(source.contains("#define SCALE_H\n"));
         assert!(!source.contains("#include \"scale.h\""));
