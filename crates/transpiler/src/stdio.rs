@@ -1,12 +1,13 @@
 //! C's formatted input and output: `printf` becomes `print!` with the format
-//! converted when the program is translated, and `scanf` calls a small
-//! runtime that reads standard input as glibc does.
+//! converted when the program is translated, and `scanf` and `fgets` call a
+//! small runtime that reads standard input as glibc does.
 
-use crate::translate::{Translator, c_type, inner, kind, unsupported};
+use crate::translate::{Translator, c_type, inner, kind, rust_type, unsupported};
 use serde_json::Value;
 
-/// `printf` with a literal format, whose result the program discards.
-pub(crate) fn printf(t: &mut Translator, args: &[Value]) -> String {
+/// `printf` with a literal format, whose result the program discards, as
+/// the Rust macro `mac`, `print` or `eprint`.
+pub(crate) fn printf(t: &mut Translator, mac: &str, args: &[Value]) -> String {
     let Some(format) = args.first().and_then(string_literal) else {
         return unsupported("printf without a literal format");
     };
@@ -20,24 +21,52 @@ pub(crate) fn printf(t: &mut Translator, args: &[Value]) -> String {
     }
     let mut call = String::new();
     for (value, ty) in values.iter().zip(types) {
-        if c_type(value) != ty {
-            return unsupported(&format!("printf of {} as {ty}", c_type(value)));
-        }
         call.push_str(", ");
-        call.push_str(&t.expr(value));
+        match (c_type(value), ty) {
+            ("double", Argument::Float(conversion, precision)) => {
+                t.require(FLOAT_RUNTIME);
+                call.push_str(&format!(
+                    "crt::float({}, b'{conversion}', {precision})",
+                    t.expr(value)
+                ));
+            }
+            (arg, Argument::Float(..)) => {
+                return unsupported(&format!("printf of {arg} as double"));
+            }
+            ("char *", Argument::Value("char *")) => {
+                t.require(C_STR_RUNTIME);
+                call.push_str(&format!("crt::c_str({})", t.expr(value)));
+            }
+            (arg, Argument::Value(ty)) if arg == ty => call.push_str(&t.expr(value)),
+            // glibc reads the bits of an int as unsigned, as Rust's `as` does.
+            ("int", Argument::Value("unsigned int")) => {
+                call.push_str(&format!("{} as u32", t.operand(value)));
+            }
+            (arg, Argument::Value(ty)) => {
+                return unsupported(&format!("printf of {arg} as {ty}"));
+            }
+        }
     }
-    let mac = if format.ends_with('\n') {
+    let line = if format.ends_with('\n') {
         format.pop();
-        "println"
+        "ln"
     } else {
-        "print"
+        ""
     };
-    format!("{mac}!({format:?}{call})")
+    format!("{mac}{line}!({format:?}{call})")
 }
 
-/// Converts a printf format to a Rust one and lists the C types of the
-/// arguments it reads.
-fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
+/// What a printf conversion reads.
+enum Argument {
+    /// A value of this C type, which Rust formats itself.
+    Value(&'static str),
+    /// A `double` that `crt::float` formats with this conversion, such as
+    /// `f`, and this precision.
+    Float(char, usize),
+}
+
+/// Converts a printf format to a Rust one and lists the arguments it reads.
+fn printf_format(format: &[u8]) -> Result<(String, Vec<Argument>), String> {
     let Ok(format) = std::str::from_utf8(format) else {
         return Err("printf format that is not UTF-8".to_string());
     };
@@ -63,14 +92,57 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                     chars.next();
                     width.push(digit);
                 }
+                // A point without digits is the precision 0.
+                let mut precision = None;
+                if chars.next_if_eq(&'.').is_some() {
+                    let mut digits = String::new();
+                    while let Some(digit) = chars.next_if(char::is_ascii_digit) {
+                        digits.push(digit);
+                    }
+                    precision = Some(digits.parse().unwrap_or(0));
+                }
+                // `l` changes nothing for a floating conversion.
+                let long = chars.next_if_eq(&'l').is_some();
                 match chars.next() {
+                    // Rust pads strings on the right by default.
+                    Some(conversion @ ('f' | 'F' | 'e' | 'E' | 'g' | 'G')) if !(plus || zero) => {
+                        if width.is_empty() {
+                            out.push_str("{}");
+                        } else {
+                            out.push_str(&format!("{{:{}{width}}}", if left { "<" } else { ">" }));
+                        }
+                        types.push(Argument::Float(conversion, precision.unwrap_or(6)));
+                    }
+                    Some('f' | 'F' | 'e' | 'E' | 'g' | 'G') => {
+                        return Err("printf floating conversion with the flag + or 0".into());
+                    }
+                    _ if precision.is_some() || long => {
+                        return Err(
+                            "printf precision or length on a conversion that is not floating"
+                                .into(),
+                        );
+                    }
                     Some('%') if !(left || plus || zero) && width.is_empty() => out.push('%'),
-                    Some('d' | 'i') => {
-                        // Rust right-aligns numbers already; C ignores 0 with -.
+                    // A width counts bytes in C but characters in Rust.
+                    Some('s') if !(left || plus || zero) && width.is_empty() => {
+                        out.push_str("{}");
+                        types.push(Argument::Value("char *"));
+                    }
+                    Some('s') => return Err("printf conversion %s with flags or a width".into()),
+                    Some(conversion @ ('d' | 'i' | 'u' | 'o' | 'x' | 'X')) => {
+                        let (ty, radix) = match conversion {
+                            'd' | 'i' => ("int", ""),
+                            'u' => ("unsigned int", ""),
+                            'o' => ("unsigned int", "o"),
+                            'x' => ("unsigned int", "x"),
+                            _ => ("unsigned int", "X"),
+                        };
+                        // Rust right-aligns numbers already; C ignores 0 with
+                        // -, and + on unsigned conversions.
                         let spec = format!(
-                            "{}{}{}{width}",
+                            "{}{}{}{width}{radix}",
                             if left { "<" } else { "" },
-                            if plus { "+" } else { "" },
+                            if plus && ty == "int" { "+" } else { "" },
                             if zero && !left { "0" } else { "" },
                         );
                         if spec.is_empty() {
@@ -78,7 +150,7 @@ fn printf_format(format: &[u8]) -> Result<(String, Vec<&'static str>), String> {
                         } else {
                             out.push_str(&format!("{{:{spec}}}"));
                         }
-                        types.push("int");
+                        types.push(Argument::Value(ty));
                     }
                     other => {
                         return Err(format!(
@@ -107,8 +179,11 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
     if targets.len() != types.len() {
         return unsupported("scanf with the wrong number of arguments");
     }
-    let mut dests = Vec::new();
-    for (target, ty) in targets.iter().zip(types) {
+    // One closure stores every value, so a variable named twice, as in
+    // `scanf("%d%d", &x, &x)`, is borrowed once and written in order. Its
+    // parameters have names that C reserves, so no C variable hides them.
+    let mut arms = String::new();
+    for (i, (target, ty)) in targets.iter().zip(types).enumerate() {
         if kind(target) != "UnaryOperator" || target["opcode"] != "&" {
             return unsupported("scanf into a pointer variable");
         }
@@ -116,13 +191,14 @@ pub(crate) fn scanf(t: &mut Translator, args: &[Value]) -> String {
         if c_type(place) != ty {
             return unsupported(&format!("scanf of {ty} into {}", c_type(place)));
         }
-        dests.push(format!("crt::Scan::Int(&mut {})", t.place(place)));
+        let rust = rust_type(ty).unwrap_or_default();
+        let store = t.store(place, &format!("__value as {rust}"));
+        arms.push_str(&format!("{i} => {store}, "));
     }
-    t.uses_scanf = true;
+    t.require(SCANF_RUNTIME);
     format!(
-        "crt::scanf({}, &mut [{}])",
+        "crt::scanf({}, |__arg, __value| match __arg {{ {arms}_ => {{}} }})",
         byte_string(&format),
-        dests.join(", ")
     )
 }
 
@@ -135,6 +211,7 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
             match bytes.next() {
                 Some(b'%') => {}
                 Some(b'd') => types.push("int"),
+                Some(b'c') => types.push("char"),
                 other => {
                     return Err(format!(
                         "scanf conversion %{}",
@@ -147,16 +224,45 @@ fn scanf_format(format: &[u8]) -> Result<Vec<&'static str>, String> {
     Ok(types)
 }
 
-/// The bytes of a narrow string literal, without its terminating zero.
-fn string_literal(expr: &Value) -> Option<Vec<u8>> {
+/// The name of the standard stream that `expr` names, such as `stdin`.
+pub(crate) fn stream(expr: &Value) -> Option<&str> {
     let mut expr = expr;
     while matches!(kind(expr), "ImplicitCastExpr" | "ParenExpr") {
         expr = inner(expr).first()?;
     }
-    if kind(expr) != "StringLiteral" {
+    match expr["referencedDecl"]["name"].as_str() {
+        Some(name @ ("stdin" | "stdout" | "stderr")) if kind(expr) == "DeclRefExpr" => Some(name),
+        _ => None,
+    }
+}
+
+/// The bytes of a narrow string literal up to its first zero, where C's
+/// library functions stop reading it, as with the format `"a\0b"`.
+fn string_literal(expr: &Value) -> Option<Vec<u8>> {
+    let mut expr = expr;
+    while kind(expr) == "ImplicitCastExpr" {
+        expr = inner(expr).first()?;
+    }
+    let mut bytes = string_array(expr)?;
+    if let Some(end) = bytes.iter().position(|&byte| byte == 0) {
+        bytes.truncate(end);
+    }
+    Some(bytes)
+}
+
+/// The bytes of the array that a narrow string literal makes, through the
+/// zero that C adds at its end.
+pub(crate) fn string_array(expr: &Value) -> Option<Vec<u8>> {
+    let mut expr = expr;
+    while kind(expr) == "ParenExpr" {
+        expr = inner(expr).first()?;
+    }
+    if kind(expr) != "StringLiteral" || !c_type(expr).starts_with("char[") {
         return None;
     }
-    unescape(expr["value"].as_str()?)
+    let mut bytes = unescape(expr["value"].as_str()?)?;
+    bytes.push(0);
+    Some(bytes)
 }
 
 /// Decodes a string literal as Clang prints it: in double quotes, with C's
@@ -210,7 +316,7 @@ fn unescape(literal: &str) -> Option<Vec<u8>> {
 }
 
 /// A Rust byte string literal holding `bytes`.
-fn byte_string(bytes: &[u8]) -> String {
+pub(crate) fn byte_string(bytes: &[u8]) -> String {
     let mut out = String::from("b\"");
     for &byte in bytes {
         out.extend(std::ascii::escape_default(byte).map(char::from));
@@ -219,15 +325,76 @@ fn byte_string(bytes: &[u8]) -> String {
     out
 }
 
-/// Emitted once into a translation that calls `scanf`.
-pub(crate) const SCANF_RUNTIME: &str = r#"/// C library functions that Rust's standard library does not match.
-mod crt {
-    use std::io::BufRead;
-
-    /// Where a scanf conversion stores its value.
-    pub enum Scan<'a> {
-        Int(&'a mut i32),
+/// The part of the `crt` module that `printf`'s `%s` calls. The strings come
+/// from literals, which the translation takes only when they are UTF-8.
+pub(crate) const C_STR_RUNTIME: &str = r#"    /// The text of a C string, its bytes before the zero that ends it. C
+    /// has no string at a null pointer.
+    pub fn c_str(s: Option<&[u8]>) -> &str {
+        let s = s.expect("null pointer as a C string");
+        let end = s.iter().position(|&byte| byte == 0).unwrap_or(s.len());
+        std::str::from_utf8(&s[..end]).expect("C string that is not UTF-8")
     }
+"#;
+
+/// The part of the `crt` module that `printf`'s floating conversions call.
+pub(crate) const FLOAT_RUNTIME: &str = r#"    /// `printf`'s `%f`, `%e` or `%g` of `value` with `precision` as glibc
+    /// formats it, or `%F`, `%E` or `%G` in capitals. Rust rounds the exact
+    /// value to the nearest decimal, ties to even, as glibc does.
+    pub fn float(value: f64, conversion: u8, precision: usize) -> String {
+        let text = if value.is_nan() {
+            String::from(if value.is_sign_negative() { "-nan" } else { "nan" })
+        } else if value.is_infinite() {
+            String::from(if value < 0.0 { "-inf" } else { "inf" })
+        } else {
+            match conversion.to_ascii_lowercase() {
+                b'f' => format!("{value:.precision$}"),
+                b'e' => {
+                    let e = format!("{value:.precision$e}");
+                    let (mantissa, power) = e.split_once('e').unwrap();
+                    exponent(mantissa, power.parse().unwrap())
+                }
+                // `%e`'s exponent with `precision` significant digits picks
+                // `%f` from -4 to below `precision`, and trailing zeros go.
+                _ => {
+                    let digits = precision.max(1) as i64;
+                    let e = format!("{value:.*e}", digits as usize - 1);
+                    let (mantissa, power) = e.split_once('e').unwrap();
+                    let power: i64 = power.parse().unwrap();
+                    if (-4..digits).contains(&power) {
+                        let fixed = format!("{value:.*}", (digits - 1 - power) as usize);
+                        trim(&fixed).to_string()
+                    } else {
+                        exponent(trim(mantissa), power)
+                    }
+                }
+            }
+        };
+        if conversion.is_ascii_uppercase() {
+            text.to_ascii_uppercase()
+        } else {
+            text
+        }
+    }
+
+    /// C's exponent after `mantissa`: a sign and at least two digits.
+    fn exponent(mantissa: &str, power: i64) -> String {
+        let sign = if power < 0 { '-' } else { '+' };
+        format!("{mantissa}e{sign}{:02}", power.unsigned_abs())
+    }
+
+    /// A number without the zeros that end its fraction, nor its point if
+    /// they are all of it, as `%g` prints it.
+    fn trim(number: &str) -> &str {
+        if number.contains('.') {
+            number.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            number
+        }
+    }
+"#;
+
+/// The part of the `crt` module that `scanf` calls.
+pub(crate) const SCANF_RUNTIME: &str = r#"    use std::io::BufRead;
 
     /// C's `isspace` in the C locale.
     fn is_space(byte: u8) -> bool {
@@ -274,11 +441,11 @@ mod crt {
         })
     }
 
-    /// Reads standard input as C's `scanf` does. Returns the number of
-    /// values stored, or -1 if input ended before the first.
-    pub fn scanf(format: &[u8], args: &mut [Scan]) -> i32 {
+    /// Reads standard input as C's `scanf` does, passing each converted
+    /// value to `store` with the index of its argument. Returns the number
+    /// of values stored, or -1 if input ended before the first.
+    pub fn scanf(format: &[u8], mut store: impl FnMut(usize, i64)) -> i32 {
         let mut input = std::io::stdin().lock();
-        let mut args = args.iter_mut();
         let mut stored = 0;
         let ended = |stored| if stored == 0 { -1 } else { stored };
         let mut format = format.iter();
@@ -288,18 +455,24 @@ mod crt {
                 continue;
             }
             if byte == b'%' {
-                if format.next() != Some(&b'%') {
-                    skip_space(&mut input);
-                    if peek(&mut input).is_none() {
-                        return ended(stored);
+                let conversion = format.next();
+                if conversion != Some(&b'%') {
+                    // `%c` takes the next byte, even a space.
+                    if conversion != Some(&b'c') {
+                        skip_space(&mut input);
                     }
-                    let Some(value) = read_int(&mut input) else {
-                        return stored;
+                    let value = match peek(&mut input) {
+                        None => return ended(stored),
+                        Some(byte) if conversion == Some(&b'c') => {
+                            input.consume(1);
+                            i64::from(byte)
+                        }
+                        Some(_) => match read_int(&mut input) {
+                            Some(value) => value,
+                            None => return stored,
+                        },
                     };
-                    match args.next() {
-                        Some(Scan::Int(dest)) => **dest = value as i32,
-                        None => return stored,
-                    }
+                    store(stored as usize, value);
                     stored += 1;
                     continue;
                 }
@@ -313,5 +486,34 @@ mod crt {
         }
         stored
     }
-}
+"#;
+
+/// The part of the `crt` module that `fgets` calls.
+pub(crate) const FGETS_RUNTIME: &str = r#"    /// C's `fgets` on standard input as glibc has it: reads bytes into `s`
+    /// up to and including a newline, at most `n - 1`, and a zero after
+    /// them. Returns None, leaving `s` as it was, when `n` is not positive
+    /// or input ends or fails before a byte; `n` of 1 reads nothing and
+    /// stores the zero. Writing past the array panics.
+    pub fn fgets(s: &mut [u8], n: i32) -> Option<()> {
+        use std::io::BufRead;
+        let room = usize::try_from(n).ok().filter(|&n| n > 0)? - 1;
+        let mut input = std::io::stdin().lock();
+        let mut read = 0;
+        while read < room {
+            let Some(&byte) = input.fill_buf().ok()?.first() else {
+                break;
+            };
+            input.consume(1);
+            s[read] = byte;
+            read += 1;
+            if byte == b'\n' {
+                break;
+            }
+        }
+        if read == 0 && room > 0 {
+            return None;
+        }
+        s[read] = 0;
+        Some(())
+    }
 "#;
