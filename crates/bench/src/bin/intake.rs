@@ -1013,9 +1013,11 @@ fn write_program(program: &Program, dir: &Path) -> Result<(), String> {
     let base = dir.join(&program.file_name);
     std::fs::copy(&program.c_file, base.with_extension("c"))
         .map_err(|err| format!("cannot copy {}: {err}", program.c_file.display()))?;
+    // Git stores the text with LF line endings, so a CRLF copy would show as
+    // changed after every rerun.
     if let Some(licence) = &program.licence {
-        std::fs::copy(licence, base.with_extension("LICENSE"))
-            .map_err(|err| format!("cannot copy {}: {err}", licence.display()))?;
+        let text = read(licence)?.replace("\r\n", "\n");
+        write(&base.with_extension("LICENSE"), &text)?;
     }
     let inputs: Vec<_> = program
         .inputs
@@ -1096,6 +1098,26 @@ mod tests {
             signals: Vec::new(),
             inputs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_licence_is_written_with_lf_line_endings() {
+        let dir = std::env::temp_dir().join(format!("intake-licence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let (c_file, licence) = (dir.join("in.c"), dir.join("LICENSE"));
+        std::fs::write(&c_file, "int main(void) { return 0; }\n").unwrap();
+        std::fs::write(&licence, "MIT License\r\n\r\nCopyright\r\n").unwrap();
+        let program = Program {
+            file_name: "g1_x".to_owned(),
+            c_file,
+            licence: Some(licence),
+            ..program("B01/x", 1)
+        };
+        write_program(&program, &dir).unwrap();
+        let written = std::fs::read_to_string(dir.join("g1_x.LICENSE")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(written, "MIT License\n\nCopyright\n");
     }
 
     #[test]
