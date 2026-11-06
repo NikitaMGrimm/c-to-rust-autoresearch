@@ -1,5 +1,8 @@
 //! Mechanical C-to-Rust transpiler. Translation rules are added by the research
-//! loop; for now it reads Clang's syntax tree and emits an empty Rust file.
+//! loop and listed in CATALOGUE.md; it reads Clang's syntax tree and emits Rust.
+
+mod stdio;
+mod translate;
 
 use std::path::Path;
 use std::process::Command;
@@ -25,6 +28,6 @@ pub fn clang_ast(input: &Path) -> Result<serde_json::Value, String> {
 }
 
 /// Translates a C syntax tree into Rust source.
-pub fn translate(_ast: &serde_json::Value) -> String {
-    String::new()
+pub fn translate(ast: &serde_json::Value) -> String {
+    translate::program(ast)
 }
