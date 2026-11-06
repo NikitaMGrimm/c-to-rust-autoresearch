@@ -25,8 +25,9 @@ fn build(command: &mut Command) {
     );
 }
 
-fn run(program: &Path, stdin: &str) -> Output {
+fn run(program: &Path, args: &[&str], stdin: &str) -> Output {
     let mut child = Command::new(program)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -43,6 +44,12 @@ fn run(program: &Path, stdin: &str) -> Output {
 /// Checks that the translation of `c` prints and exits as the C program does
 /// on each standard input, with overflow checks on as in the evaluator.
 fn same_behaviour(test: &str, c: &str, stdins: &[&str]) -> String {
+    let runs: Vec<(&[&str], &str)> = stdins.iter().map(|&stdin| (&[][..], stdin)).collect();
+    same_behaviour_on(test, c, &runs)
+}
+
+/// `same_behaviour` on each pair of program arguments and standard input.
+fn same_behaviour_on(test: &str, c: &str, runs: &[(&[&str], &str)]) -> String {
     let dir = scratch(test);
     let rust = translate(&dir, c);
     std::fs::write(dir.join("translation.rs"), &rust).unwrap();
@@ -58,14 +65,19 @@ fn same_behaviour(test: &str, c: &str, stdins: &[&str]) -> String {
             .arg(dir.join("rust"))
             .arg(dir.join("translation.rs")),
     );
-    for stdin in stdins {
-        let (c, rust) = (run(&dir.join("c"), stdin), run(&dir.join("rust"), stdin));
+    for (args, stdin) in runs {
+        let c = run(&dir.join("c"), args, stdin);
+        let rust = run(&dir.join("rust"), args, stdin);
         assert_eq!(
             String::from_utf8_lossy(&rust.stdout),
             String::from_utf8_lossy(&c.stdout),
-            "stdin {stdin:?}"
+            "args {args:?}, stdin {stdin:?}"
         );
-        assert_eq!(rust.status.code(), c.status.code(), "stdin {stdin:?}");
+        assert_eq!(
+            rust.status.code(),
+            c.status.code(),
+            "args {args:?}, stdin {stdin:?}"
+        );
     }
     std::fs::remove_dir_all(&dir).unwrap();
     rust
@@ -529,4 +541,122 @@ int main(void) {
         &["37 5", "-37 5", "37 -5", "-37 -5", "0 7", "2147483647 -1"],
     );
     assert!(rust.contains("(i32, i32)"), "{rust}");
+}
+
+#[test]
+fn translates_program_arguments_strtol_and_static_locals() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+
+int counter(int step) {
+    static int total;
+    static unsigned char wraps = 250;
+    total += step;
+    wraps++;
+    if (total > 100) {
+        total = 0;
+    }
+    return total * 1000 + wraps;
+}
+
+int other(void) {
+    static long total = -5;
+    total--;
+    {
+        int total = 7;
+        {
+            static int total = 1;
+            total *= 3;
+            printf("inner %d\n", total);
+        }
+        printf("shadow %d\n", total);
+    }
+    return (int)total;
+}
+
+int main(int argc, char *argv[]) {
+    printf("argc %d\n", argc);
+    for (int i = 1; i < argc; i++) {
+        char *end;
+        long value = strtol(argv[i], &end, 10);
+        long long any = strtoll(argv[i], NULL, 0);
+        int hex = strtol(argv[i], (char **)0, 16);
+        printf("%s: %d %d %d %d\n", argv[i], (int)value, (int)any, hex, end == argv[i]);
+        if (end != argv[i]) {
+            printf("rest [%s]\n", end);
+        }
+        printf("%d %d\n", counter((int)value), other());
+    }
+    return argv[argc] == NULL;
+}
+"#;
+    let rust = same_behaviour_on(
+        "translates_program_arguments_strtol_and_static_locals",
+        c,
+        &[
+            (&[], ""),
+            (&["12", "abc", ""], ""),
+            (&["  -42xyz", "0x1F", "077", "0x", "+", "-0XfG", "\t7 "], ""),
+            (
+                &[
+                    "99999999999999999999",
+                    "-99999999999999999999",
+                    "9223372036854775807",
+                    "-9223372036854775808",
+                ],
+                "",
+            ),
+        ],
+    );
+    assert!(rust.contains("AtomicU8"), "{rust}");
+}
+
+#[test]
+fn rejects_static_and_argument_uses_it_cannot_translate() {
+    let dir = scratch("rejects_static_and_argument_uses_it_cannot_translate");
+    // A borrow of the atomic would not see later writes.
+    let rust = translate(
+        &dir,
+        "int main(void) { static int x = 1; int *p = &x; return *p; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: unary &")"#),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "#include <stdio.h>\nint main(void) { static int x; scanf(\"%d\", &x); return x; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: static local variable in this position")"#),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "int main(void) { static char *s = \"a\"; return s == 0; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: static local variable of type char *")"#),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "#include <stdlib.h>\nint main(int argc, char **argv) { char **p = argv; return strtol(\"1\", p, 10); }\n",
+    );
+    assert!(
+        rust.contains(
+            r#"compile_error!("unsupported C: strtol with an end pointer other than &variable")"#
+        ),
+        "{rust}"
+    );
+    let rust = translate(
+        &dir,
+        "int main(int argc, char **argv, char **envp) { return 0; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: main with parameters")"#),
+        "{rust}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -141,3 +141,35 @@ Entry format, newest last:
 - Motivation: `g1_022_stdlib_div` reads two integers, calls `div` and prints
   the quotient and remainder
 - Changes: extends R1's types and calls
+
+## R7: program arguments, strtol and static local variables
+
+- C: `int main(int argc, char **argv)`, also with `char *argv[]`; `argv[i]`
+  with an integer index; `strtol` and `strtoll` with a null end pointer or
+  the address of a `char *` variable; `==` and `!=` between two `char *`
+  when one is an element of `argv`; `static` local variables of the integer
+  types, read, assigned, with `+=`, `-=`, `*=`, `/=` and `%=`, and with
+  `++` and `--` as statements
+- Rust: `argv` is `&'static [Option<&'static [u8]>]`, built once by
+  `crt::args`, a runtime part that leaks each argument's bytes with a final
+  zero and ends the slice with `None`; Rust's `main` passes `argc` as its
+  length less one. `argv[i]` indexes the slice, a negative index converted
+  `as usize` so that it panics as out of bounds. `crt::strtol` skips white
+  space, reads a sign, a base-0 or `0x` prefix and digits as glibc does,
+  saturates out of range and stores where the number ends, or the start of
+  the string without one, through `Option<&mut Option<&[u8]>>`; `errno` is
+  not set. The comparison tests the slices' start addresses with
+  `.map(<[u8]>::as_ptr)`: an argument is never a string literal, which C
+  may or may not merge, so other pointer comparisons stay unsupported. A
+  static local is a Rust static `AtomicI8`…`AtomicU64` in the block that
+  declares it, named `__NAME_N`, which C reserves, initialised once, to 0
+  without an initialiser; reads are `load` and writes `store`, with
+  `Relaxed` order, keeping R1's overflow checks and R2's wrapping. `&` of a
+  static local, writing one through `scanf`, static locals of other types,
+  `main` with other parameters and other uses of `char **` stay unsupported
+- Motivation: `g1_005_static_loop` parses its argument with `strtol`, tests
+  `end == argv[1]` and keeps a running total in a `static int`; the static
+  locals of `g1_011_static_dag` and the `argv` of most programs that read
+  their arguments failed as well
+- Changes: extends R1's types, `main` and local variables, and R4's pointer
+  comparisons

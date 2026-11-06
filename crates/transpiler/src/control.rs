@@ -64,6 +64,18 @@ pub(crate) fn boolean(expr: &Value) -> bool {
     }
 }
 
+/// Whether `expr` is an element of `main`'s `argv`, the only `char **`.
+fn argument(expr: &Value) -> bool {
+    let mut expr = expr;
+    while kind(expr) == "ParenExpr"
+        || (kind(expr) == "ImplicitCastExpr"
+            && matches!(expr["castKind"].as_str(), Some("LValueToRValue" | "NoOp")))
+    {
+        expr = &inner(expr)[0];
+    }
+    kind(expr) == "ArraySubscriptExpr" && c_type(&inner(expr)[0]) == "char **"
+}
+
 /// A nonzero integer constant as a condition, as in `while (1)`.
 fn always(cond: &Value) -> bool {
     let cond = strip_parens(cond);
@@ -99,6 +111,21 @@ impl Translator {
                     &args[1]
                 };
                 self.nonzero(pointer, op)
+            }
+            // Two `char *` are equal where they point to the same byte. Each
+            // slice runs to the end of its array, so its start says where.
+            // One must be a program argument: C may or may not give equal
+            // string literals one address, but never an argument.
+            ("BinaryOperator", Some(op @ ("==" | "!=")))
+                if c_type(&args[0]) == "char *"
+                    && c_type(&args[1]) == "char *"
+                    && (argument(&args[0]) || argument(&args[1])) =>
+            {
+                format!(
+                    "{}.map(<[u8]>::as_ptr) {op} {}.map(<[u8]>::as_ptr)",
+                    self.operand(&args[0]),
+                    self.operand(&args[1])
+                )
             }
             ("BinaryOperator", Some(op)) if comparison(op) => {
                 match (rust_type(c_type(&args[0])), rust_type(c_type(&args[1]))) {

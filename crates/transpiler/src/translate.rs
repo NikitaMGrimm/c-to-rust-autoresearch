@@ -43,14 +43,17 @@ pub(crate) fn rust_type(c: &str) -> Option<&'static str> {
 }
 
 /// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, a `char *` into a string literal, a pointer to an integer
-/// variable, which the program can only read, or the result of `div`. A
-/// pointer is `None` for null. A `char *` is otherwise the literal's bytes
-/// from where it points, through the zero that ends the array, and a pointer
-/// to an integer borrows it.
+/// integer, a `char *` into a string literal or a program argument, a
+/// `char **` into `main`'s `argv`, a pointer to an integer variable, which
+/// the program can only read, or the result of `div`. A pointer is `None`
+/// for null. A `char *` is otherwise the string's bytes from where it
+/// points, through the zero that ends the array, and a pointer to an
+/// integer borrows it. A `char **` is the pointers from where it points
+/// through the null that ends `argv`.
 pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
         "char *" => Some("Option<&'static [u8]>".to_string()),
+        "char **" => Some("&'static [Option<&'static [u8]>]".to_string()),
         c => match c.strip_suffix(" *") {
             Some(pointee) => rust_type(pointee).map(|ty| format!("Option<&{ty}>")),
             None => rust_type(c)
@@ -80,6 +83,8 @@ pub(crate) fn pointer(c: &str) -> bool {
 pub(crate) fn zero(c: &str) -> &'static str {
     if pointer(c) {
         "None"
+    } else if c == "char **" {
+        "&[]"
     } else if quotient_type(c).is_some() {
         "(0, 0)"
     } else {
@@ -143,6 +148,8 @@ pub(crate) struct Translator {
     functions: HashSet<String>,
     /// Ids of the variables that are assigned or whose address is taken.
     mutated: HashSet<String>,
+    /// The Rust statics of the static local variables, by id.
+    statics: HashMap<String, String>,
     /// The parts of the `crt` runtime the translation calls, in first use.
     runtime: Vec<&'static str>,
     /// Rust loops and labelled blocks around the current statement.
@@ -170,6 +177,7 @@ pub(crate) fn program(ast: &Value) -> String {
             .filter_map(|f| f["name"].as_str().map(String::from))
             .collect(),
         mutated: HashSet::new(),
+        statics: HashMap::new(),
         runtime: Vec::new(),
         scopes: Vec::new(),
         loops: Vec::new(),
@@ -188,12 +196,18 @@ pub(crate) fn program(ast: &Value) -> String {
         out.push_str(&translator.function(function));
         out.push('\n');
     }
-    if translator.functions.contains("main") {
+    if let Some(main) = definitions.iter().find(|f| f["name"] == "main") {
         // Rust's own `main` calls the C one and exits with its result.
-        out.push_str(&format!(
-            "fn main() {{\n    std::process::exit({}());\n}}\n",
-            ident("main")
-        ));
+        let call = if inner(main).iter().any(|n| kind(n) == "ParmVarDecl") {
+            translator.require(ARGS_RUNTIME);
+            format!(
+                "let argv = crt::args();\n    std::process::exit({}(argv.len() as i32 - 1, argv));",
+                ident("main")
+            )
+        } else {
+            format!("std::process::exit({}());", ident("main"))
+        };
+        out.push_str(&format!("fn main() {{\n    {call}\n}}\n"));
     }
     if !translator.runtime.is_empty() {
         out.push_str(
@@ -229,7 +243,8 @@ impl Translator {
         collect_mutated(body, &mut self.mutated);
 
         let mut out = format!("fn {}(", ident(name));
-        if name == "main" && !params.is_empty() {
+        let argv = ["int", "char **"];
+        if name == "main" && !params.is_empty() && !params.iter().map(|p| c_type(p)).eq(argv) {
             out.push_str(&format!(
                 ") {{\n    {};\n}}\n",
                 unsupported("main with parameters")
@@ -327,7 +342,7 @@ impl Translator {
             return format!("{};", unsupported(&format!("declaration {}", kind(var))));
         }
         match var["storageClass"].as_str() {
-            Some("static") => return format!("{};", unsupported("static local variable")),
+            Some("static") => return self.static_local(var),
             // It names an object defined elsewhere, not a fresh zero.
             Some("extern") => return format!("{};", unsupported("extern local variable")),
             _ => {}
@@ -340,35 +355,103 @@ impl Translator {
         format!("let {} = {init};", self.binding(var))
     }
 
+    /// A static local variable of an integer type, as a Rust static atomic
+    /// that only its block sees. C initialises it once, to zero if the
+    /// program gives no value, and the atomic lets safe Rust change it.
+    fn static_local(&mut self, var: &Value) -> String {
+        let ty = c_type(var);
+        let Some(rust) = rust_type(ty) else {
+            return format!(
+                "{};",
+                unsupported(&format!("static local variable of type {ty}"))
+            );
+        };
+        // C reserves names that start with `__`, so no C name meets it, and
+        // Rust lets no `let` bind the name of a static in scope.
+        let name = format!(
+            "__{}_{}",
+            var["name"].as_str().unwrap_or("").to_uppercase(),
+            self.fresh
+        );
+        self.fresh += 1;
+        let init = match inner(var).first() {
+            Some(init) if var["init"].is_string() => self.expr(init),
+            _ => zero(ty).to_string(),
+        };
+        if let Some(id) = var["id"].as_str() {
+            self.statics.insert(id.to_string(), name.clone());
+        }
+        let atomic = format!("std::sync::atomic::Atomic{}", rust.to_uppercase());
+        format!("static {name}: {atomic} = {atomic}::new({init});")
+    }
+
+    /// The Rust static of a static local variable that `expr` names.
+    fn static_var(&self, expr: &Value) -> Option<String> {
+        let mut expr = expr;
+        while kind(expr) == "ParenExpr" {
+            expr = &inner(expr)[0];
+        }
+        if kind(expr) != "DeclRefExpr" {
+            return None;
+        }
+        let id = expr["referencedDecl"]["id"].as_str()?;
+        self.statics.get(id).cloned()
+    }
+
+    /// Assigns `value` to `target`, or with an operator such as `+`, the
+    /// result of applying it to `target` and `value`.
+    fn assign(&mut self, target: &Value, op: &str, value: &Value) -> String {
+        match self.static_var(target) {
+            Some(name) if op.is_empty() => format!("{name}.store({}, {RELAXED})", self.expr(value)),
+            Some(name) => format!(
+                "{name}.store({name}.load({RELAXED}) {op} {}, {RELAXED})",
+                self.operand(value)
+            ),
+            None => format!("{} {op}= {}", self.place(target), self.expr(value)),
+        }
+    }
+
     /// An expression whose value C discards, where assignments and output
     /// calls have their Rust statement forms.
     pub(crate) fn expr_stmt(&mut self, expr: &Value) -> String {
         let args = inner(expr);
         match (kind(expr), expr["opcode"].as_str()) {
-            ("BinaryOperator", Some("=")) => {
-                format!("{} = {}", self.place(&args[0]), self.expr(&args[1]))
-            }
+            ("BinaryOperator", Some("=")) => self.assign(&args[0], "", &args[1]),
             ("CompoundAssignOperator", Some(op @ ("+=" | "-=" | "*=" | "/=" | "%="))) => {
                 let ty = c_type(&args[0]);
                 if ty != expr["computeLHSType"]["qualType"] || !signed(ty) {
                     return unsupported(&format!("{op} on {ty}"));
                 }
-                format!("{} {op} {}", self.place(&args[0]), self.expr(&args[1]))
+                self.assign(&args[0], &op[..1], &args[1])
             }
             ("UnaryOperator", Some(op @ ("++" | "--"))) => {
-                let place = self.place(&args[0]);
                 let (assign, method) = if op == "++" {
                     ("+=", "wrapping_add")
                 } else {
                     ("-=", "wrapping_sub")
                 };
-                match c_type(&args[0]) {
-                    // Overflow is undefined for these, so Rust may check it.
-                    "int" | "long" | "long long" => format!("{place} {assign} 1"),
-                    // Unsigned types wrap, and narrower ones convert back
-                    // from `int`, which wraps on x86-64 too.
-                    ty if rust_type(ty).is_some() => format!("{place} = {place}.{method}(1)"),
-                    ty => unsupported(&format!("{op} on {ty}")),
+                let ty = c_type(&args[0]);
+                if rust_type(ty).is_none() {
+                    return unsupported(&format!("{op} on {ty}"));
+                }
+                // Overflow is undefined for `int` and `long`, so Rust may
+                // check it. Unsigned types wrap, and narrower ones convert
+                // back from `int`, which wraps on x86-64 too.
+                let checked = matches!(ty, "int" | "long" | "long long");
+                if let Some(name) = self.static_var(&args[0]) {
+                    let value = format!("{name}.load({RELAXED})");
+                    let value = if checked {
+                        format!("{value} {} 1", &assign[..1])
+                    } else {
+                        format!("{value}.{method}(1)")
+                    };
+                    return format!("{name}.store({value}, {RELAXED})");
+                }
+                let place = self.place(&args[0]);
+                if checked {
+                    format!("{place} {assign} 1")
+                } else {
+                    format!("{place} = {place}.{method}(1)")
                 }
             }
             ("CallExpr", _) => match callee(expr) {
@@ -383,6 +466,10 @@ impl Translator {
     /// An lvalue in a position Rust writes to.
     pub(crate) fn place(&mut self, expr: &Value) -> String {
         match kind(expr) {
+            // Rust writes a static atomic with `store`.
+            "DeclRefExpr" if self.static_var(expr).is_some() => {
+                unsupported("static local variable in this position")
+            }
             "DeclRefExpr" => self.expr(expr),
             "ParenExpr" => self.place(&inner(expr)[0]),
             other => unsupported(&format!("assignment to {other}")),
@@ -407,7 +494,21 @@ impl Translator {
                 Some(value) => format!("{}_i32", value as u32 as i32),
                 None => unsupported("character literal"),
             },
-            "DeclRefExpr" => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
+            "DeclRefExpr" => match self.static_var(expr) {
+                Some(name) => format!("{name}.load({RELAXED})"),
+                None => ident(expr["referencedDecl"]["name"].as_str().unwrap_or("")),
+            },
+            // An element of `argv`. A negative index converts to one beyond
+            // any slice, so it panics as an index out of bounds does.
+            "ArraySubscriptExpr"
+                if c_type(&args[0]) == "char **" && rust_type(c_type(&args[1])).is_some() =>
+            {
+                let index = match kind(&args[1]) {
+                    "IntegerLiteral" => args[1]["value"].as_str().unwrap_or("").to_string(),
+                    _ => format!("{} as usize", self.operand(&args[1])),
+                };
+                format!("{}[{index}]", self.operand(&args[0]))
+            }
             "ParenExpr" => self.expr(&args[0]),
             "ImplicitCastExpr" | "CStyleCastExpr" => self.cast(expr),
             // A member of the result of `div`, which is held as `(quot, rem)`.
@@ -429,7 +530,10 @@ impl Translator {
                 // later write to the variable while it is borrowed fails to
                 // compile.
                 Some("&")
-                    if c_type(expr) != "char *" && pointer(c_type(expr)) && variable(&args[0]) =>
+                    if c_type(expr) != "char *"
+                        && pointer(c_type(expr))
+                        && variable(&args[0])
+                        && self.static_var(&args[0]).is_none() =>
                 {
                     format!("Some(&{})", self.expr(&args[0]))
                 }
@@ -457,6 +561,7 @@ impl Translator {
                     self.require(DIV_RUNTIME);
                     format!("crt::div({}, {})", self.expr(&args[1]), self.expr(&args[2]))
                 }
+                Some("strtol" | "strtoll") => self.strtol(&args[1..]),
                 Some("scanf") => stdio::scanf(self, &args[1..]),
                 Some("fscanf") if args.get(1).is_some_and(stdio::is_stdin) => {
                     stdio::scanf(self, &args[2..])
@@ -465,6 +570,37 @@ impl Translator {
             },
             other => unsupported(other),
         }
+    }
+
+    /// `strtol` and `strtoll`, which are the same on x86-64 Linux, with a
+    /// null end pointer or the address of a `char *` variable.
+    fn strtol(&mut self, args: &[Value]) -> String {
+        let end = if null_pointer(&args[1]) {
+            "None".to_string()
+        } else {
+            let mut end = &args[1];
+            while kind(end) == "ParenExpr" {
+                end = &inner(end)[0];
+            }
+            let target = inner(end).first();
+            match target {
+                Some(target)
+                    if kind(end) == "UnaryOperator"
+                        && end["opcode"] == "&"
+                        && c_type(target) == "char *"
+                        && variable(target) =>
+                {
+                    format!("Some(&mut {})", self.place(target))
+                }
+                _ => return unsupported("strtol with an end pointer other than &variable"),
+            }
+        };
+        self.require(STRTOL_RUNTIME);
+        format!(
+            "crt::strtol({}, {end}, {})",
+            self.expr(&args[0]),
+            self.expr(&args[2])
+        )
     }
 
     fn cast(&mut self, expr: &Value) -> String {
@@ -505,7 +641,7 @@ impl Translator {
 
 fn atomic(expr: &Value) -> bool {
     match kind(expr) {
-        "IntegerLiteral" | "DeclRefExpr" | "CallExpr" => true,
+        "IntegerLiteral" | "DeclRefExpr" | "CallExpr" | "ArraySubscriptExpr" => true,
         // A negative one is printed with its sign.
         "CharacterLiteral" => expr["value"].as_u64().is_some_and(|v| v <= i32::MAX as u64),
         "ParenExpr" | "MemberExpr" => atomic(&inner(expr)[0]),
@@ -567,6 +703,92 @@ fn collect_mutated(node: &Value, mutated: &mut HashSet<String>) {
         collect_mutated(child, mutated);
     }
 }
+
+/// The memory order of every access to a static local variable, which only
+/// the program's one thread reads and writes.
+const RELAXED: &str = "std::sync::atomic::Ordering::Relaxed";
+
+/// The part of the `crt` module that builds `main`'s `argv`.
+const ARGS_RUNTIME: &str = r#"    /// The program's arguments as C's `argv`: the bytes of each, through a
+    /// zero that ends it, and then a null pointer.
+    pub fn args() -> &'static [Option<&'static [u8]>] {
+        use std::os::unix::ffi::OsStringExt;
+        let args: Vec<Option<&'static [u8]>> = std::env::args_os()
+            .map(|arg| {
+                let mut bytes = arg.into_vec();
+                bytes.push(0);
+                let bytes: &'static [u8] = bytes.leak();
+                Some(bytes)
+            })
+            .chain([None])
+            .collect();
+        args.leak()
+    }
+"#;
+
+/// The part of the `crt` module that `strtol` and `strtoll` call.
+const STRTOL_RUNTIME: &str = r#"    /// C's `strtol` as glibc has it: skips white space, reads a sign and a
+    /// number in `base`, or in the base its prefix gives for 0, and
+    /// saturates a value out of range. Stores where the number ends, or
+    /// the start of the string if there is none, through `end`. C has no
+    /// string at a null pointer.
+    pub fn strtol(
+        s: Option<&'static [u8]>,
+        end: Option<&mut Option<&'static [u8]>>,
+        base: i32,
+    ) -> i64 {
+        let bytes = s.expect("null pointer as a C string");
+        let digit = |i: usize| match bytes.get(i) {
+            Some(&d @ b'0'..=b'9') => u32::from(d - b'0'),
+            Some(&d @ b'a'..=b'z') => u32::from(d - b'a') + 10,
+            Some(&d @ b'A'..=b'Z') => u32::from(d - b'A') + 10,
+            _ => u32::MAX,
+        };
+        let mut i = 0;
+        while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')) {
+            i += 1;
+        }
+        let negative = match bytes.get(i) {
+            Some(&sign @ (b'+' | b'-')) => {
+                i += 1;
+                sign == b'-'
+            }
+            _ => false,
+        };
+        let mut radix = u32::try_from(base).unwrap_or(1);
+        // A `0x` without a hex digit after it is the number 0.
+        if (radix == 0 || radix == 16)
+            && bytes.get(i) == Some(&b'0')
+            && matches!(bytes.get(i + 1), Some(b'x' | b'X'))
+            && digit(i + 2) < 16
+        {
+            i += 2;
+            radix = 16;
+        } else if radix == 0 {
+            radix = if bytes.get(i) == Some(&b'0') { 8 } else { 10 };
+        }
+        let start = i;
+        // Counts down, since i64::MIN has no positive counterpart.
+        let mut value: i64 = 0;
+        if (2..=36).contains(&radix) {
+            while digit(i) < radix {
+                value = value
+                    .saturating_mul(i64::from(radix))
+                    .saturating_sub(i64::from(digit(i)));
+                i += 1;
+            }
+        }
+        let parsed = i > start;
+        if let Some(end) = end {
+            *end = if parsed { Some(&bytes[i..]) } else { s };
+        }
+        if !parsed || negative {
+            value
+        } else {
+            value.checked_neg().unwrap_or(i64::MAX)
+        }
+    }
+"#;
 
 /// The part of the `crt` module that `div`, `ldiv` and `lldiv` call.
 const DIV_RUNTIME: &str = r#"    /// C's `div`, `ldiv` and `lldiv` as `(quot, rem)`: the quotient rounded
