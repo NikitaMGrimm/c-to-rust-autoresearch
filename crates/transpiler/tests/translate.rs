@@ -660,3 +660,66 @@ fn rejects_static_and_argument_uses_it_cannot_translate() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn translates_booleans() {
+    let c = r#"
+#include <stdbool.h>
+#include <stdio.h>
+
+bool odd(int x) {
+    return x % 2;
+}
+
+_Bool both(bool a, _Bool b) {
+    return a && b;
+}
+
+int main(void) {
+    int x = 0;
+    unsigned char small = 0;
+    bool seen;
+    char *name = "set";
+    scanf("%d", &x);
+    small = (unsigned char)x;
+    seen = false;
+    bool any = x;
+    bool narrow = small;
+    bool named = name;
+    bool cast = (bool)(x - 2);
+    if (odd(x)) {
+        seen = true;
+    }
+    while (!seen && x > 0) {
+        x--;
+        seen = odd(x);
+    }
+    printf("%d %d %d %d %d\n", seen, any, narrow, named, cast);
+    printf("%d %d %d\n", both(any, cast), seen + any * 2, seen == true);
+    long wide = narrow;
+    return !any + (int)wide;
+}
+"#;
+    let rust = same_behaviour(
+        "translates_booleans",
+        c,
+        &["0", "1", "2", "4", "-3", "256", "2147483647"],
+    );
+    assert!(rust.contains("-> bool"), "{rust}");
+
+    let dir = scratch("translates_booleans_rejected");
+    // `++` sets a `bool` to true, and `+=` stores the sum's truth.
+    let rust = translate(
+        &dir,
+        "#include <stdbool.h>\nint main(void) { bool b = false; b++; b += 2; return b; }\n",
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: ++ on _Bool")"#),
+        "{rust}"
+    );
+    assert!(
+        rust.contains(r#"compile_error!("unsupported C: += on _Bool")"#),
+        "{rust}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

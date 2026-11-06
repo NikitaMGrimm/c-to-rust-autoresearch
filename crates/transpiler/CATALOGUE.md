@@ -173,3 +173,20 @@ Entry format, newest last:
   their arguments failed as well
 - Changes: extends R1's types, `main` and local variables, and R4's pointer
   comparisons
+
+## R8: booleans
+
+- C: `bool` and `_Bool` variables, parameters and return values,
+  uninitialised ones as false; conversions to `bool` of an integer or a
+  pointer, implicit or by a cast; a `bool` promoted to an integer type; a
+  `bool` as a condition
+- Rust: `bool`; a conversion to `bool` is the test of a condition, so `x !=
+  0`, `p.is_some()` or a comparison itself, and a constant such as
+  `<stdbool.h>`'s `true` and `false` is `true` or `false`; a promotion is
+  `i32::from(b)` or the target type's `from`, and a promoted `bool` that C
+  tests is the `bool` itself, with `!b` for `!`. `++`, `--` and compound
+  assignments on a `bool`, static `bool` locals and pointers to `bool` stay
+  unsupported
+- Motivation: `g1_011_static_dag` passes `true` and `false` to a function
+  with a `bool` parameter that it tests with `if`
+- Changes: extends R1's types and conversions and R2's conditions

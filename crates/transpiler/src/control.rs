@@ -4,7 +4,7 @@
 //! continues that loop.
 
 use crate::translate::{
-    Translator, c_type, ident, inner, kind, null_pointer, pointer, rust_type, unsupported,
+    Translator, c_type, ident, inner, is_bool, kind, null_pointer, pointer, rust_type, unsupported,
     value_type, zero,
 };
 use serde_json::Value;
@@ -100,6 +100,13 @@ impl Translator {
     pub(crate) fn cond(&mut self, expr: &Value) -> String {
         let expr = strip_parens(expr);
         let args = inner(expr);
+        // A `bool` promoted to `int` is nonzero where the `bool` is true.
+        if kind(expr) == "ImplicitCastExpr"
+            && expr["castKind"] == "IntegralCast"
+            && is_bool(c_type(&args[0]))
+        {
+            return self.cond(&args[0]);
+        }
         match (kind(expr), expr["opcode"].as_str()) {
             // A pointer equals only null, whatever the integer constant.
             ("BinaryOperator", Some(op @ ("==" | "!=")))
@@ -165,8 +172,17 @@ impl Translator {
         }
     }
 
-    /// Compares an integer to zero, or a pointer to null, with `==` or `!=`.
+    /// Compares an integer to zero, or a pointer to null, with `==` or `!=`;
+    /// a `bool` is its own test.
     fn nonzero(&mut self, expr: &Value, op: &str) -> String {
+        if is_bool(c_type(expr)) {
+            let value = self.operand(expr);
+            return if op == "==" {
+                format!("!{value}")
+            } else {
+                value
+            };
+        }
         if pointer(c_type(expr)) {
             let test = if op == "==" { "is_none" } else { "is_some" };
             return format!("{}.{test}()", self.operand(expr));

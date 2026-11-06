@@ -42,16 +42,22 @@ pub(crate) fn rust_type(c: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether `c` is C's boolean type, which `<stdbool.h>` spells `bool`.
+pub(crate) fn is_bool(c: &str) -> bool {
+    matches!(c, "bool" | "_Bool")
+}
+
 /// The Rust type of a C type that the translation can hold in a variable: an
-/// integer, a `char *` into a string literal or a program argument, a
-/// `char **` into `main`'s `argv`, a pointer to an integer variable, which
-/// the program can only read, or the result of `div`. A pointer is `None`
-/// for null. A `char *` is otherwise the string's bytes from where it
-/// points, through the zero that ends the array, and a pointer to an
-/// integer borrows it. A `char **` is the pointers from where it points
-/// through the null that ends `argv`.
+/// integer, a `bool`, a `char *` into a string literal or a program
+/// argument, a `char **` into `main`'s `argv`, a pointer to an integer
+/// variable, which the program can only read, or the result of `div`. A
+/// pointer is `None` for null. A `char *` is otherwise the string's bytes
+/// from where it points, through the zero that ends the array, and a pointer
+/// to an integer borrows it. A `char **` is the pointers from where it
+/// points through the null that ends `argv`.
 pub(crate) fn value_type(c: &str) -> Option<String> {
     match c {
+        c if is_bool(c) => Some("bool".to_string()),
         "char *" => Some("Option<&'static [u8]>".to_string()),
         "char **" => Some("&'static [Option<&'static [u8]>]".to_string()),
         c => match c.strip_suffix(" *") {
@@ -83,6 +89,8 @@ pub(crate) fn pointer(c: &str) -> bool {
 pub(crate) fn zero(c: &str) -> &'static str {
     if pointer(c) {
         "None"
+    } else if is_bool(c) {
+        "false"
     } else if c == "char **" {
         "&[]"
     } else if quotient_type(c).is_some() {
@@ -617,6 +625,23 @@ impl Translator {
                 // `%s` prints the bytes as Rust text.
                 Some(_) => unsupported("string literal that is not UTF-8"),
                 None => unsupported("cast ArrayToPointerDecay"),
+            },
+            // C converts a scalar to `bool` by testing it, as a condition
+            // does. A constant, such as `<stdbool.h>`'s `true`, is a literal.
+            "IntegralToBoolean" | "PointerToBoolean" => {
+                let mut value = operand;
+                while kind(value) == "ParenExpr" {
+                    value = &inner(value)[0];
+                }
+                match (kind(value), value["value"].as_str()) {
+                    ("IntegerLiteral", Some(v)) => (v != "0").to_string(),
+                    _ => self.cond(operand),
+                }
+            }
+            // `false` and `true` convert to 0 and 1.
+            "IntegralCast" if is_bool(c_type(operand)) => match rust_type(c_type(expr)) {
+                Some(to) => format!("{to}::from({})", self.expr(operand)),
+                None => unsupported(&format!("cast to {}", c_type(expr))),
             },
             "IntegralCast" => match (rust_type(c_type(operand)), rust_type(c_type(expr))) {
                 (Some(from), Some(to)) if from == to => self.expr(operand),
