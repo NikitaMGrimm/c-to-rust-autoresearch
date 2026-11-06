@@ -449,3 +449,36 @@ Entry format, newest last:
 - Changes: replaces R7's comparison of `char *`, which needed an element of
   `argv`, and lifts R5's and R13's rejection of comparisons between pointers
   to integers and to structs
+
+## R16: pointers moving forwards, assignments as values, strchr and fread
+
+- C: `p + n` and `n + p` of an integer `n` and a `char *`, a pointer to an
+  integer or a pointer to a struct, or an array that decays to one; `p += n`
+  and `++` on such a pointer as statements; an assignment to a variable,
+  not of a struct type, used as a value, as in `while ((s = strchr(s, c)))`
+  or `a = b = 0`; `strchr` and `strrchr`; `fread(a, size, n, stdin)` into a
+  local `char` array, its result discarded or used as a `size_t`
+- Rust: each pointer is the slice from where it points to the end of its
+  array, so `p + n` is `Some(&p.expect("null pointer arithmetic")[n as
+  usize..])`, or of the array's own slice; one past the last element is the
+  empty slice, and beyond it, a negative `n` and null panic, as C leaves them
+  undefined. `p += n` and `++` assign that value. An assignment as a value is
+  `{ x = v; x }`, which reads the variable back after R1's, R7's or R14's
+  store, so a narrower type gives the converted value as C does.
+  `crt::strchr` and `crt::strrchr` return the rest of the string from the
+  first or last byte equal to `c` converted to `char`, the final zero
+  included, or `None`; a string without a zero panics where the search reads
+  past its array. `crt::fread` reads `size * n` bytes, the product wrapping
+  as glibc's does, from standard input with `scanf`'s buffer into `&mut
+  a[..]`, or as many as input holds, and returns `n` when it read them all
+  and otherwise the whole items read, as glibc does; writing past the array
+  panics. `p - n`, `p -= n`, `--` on a pointer, the difference of two
+  pointers, arithmetic on `char **`, an assignment to anything but a variable
+  used as a value, `fread` into other objects or from other streams stay
+  unsupported
+- Motivation: `g2_028_strchr` reads its input with `fread` into a
+  `char[1000]` and counts a character with `for (const char *s = in; s =
+  strchr(s, c); s++)`
+- Changes: lifts R10's rejection of pointer arithmetic for moving forwards,
+  extends R1's assignments, which were statements only, and R11's functions
+  that write a `char` array

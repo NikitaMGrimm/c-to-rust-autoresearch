@@ -523,3 +523,32 @@ pub(crate) const FGETS_RUNTIME: &str = r#"    /// C's `fgets` on standard input 
         Some(())
     }
 "#;
+
+/// The part of the `crt` module that `fread` calls.
+pub(crate) const FREAD_RUNTIME: &str = r#"    /// C's `fread` from standard input into bytes as glibc has it: reads
+    /// `size * n` bytes, the product wrapping as `size_t` does, or as many as
+    /// input holds. Returns `n` when it read them all and otherwise the
+    /// number of whole items of `size` bytes. Writing past the array panics.
+    pub fn fread(s: &mut [u8], size: u64, n: u64) -> u64 {
+        use std::io::BufRead;
+        let wanted = size.wrapping_mul(n);
+        if wanted == 0 {
+            return 0;
+        }
+        let mut input = std::io::stdin().lock();
+        let mut read = 0;
+        while read < wanted {
+            let Ok(available) = input.fill_buf() else {
+                break;
+            };
+            if available.is_empty() {
+                break;
+            }
+            let count = available.len().min((wanted - read) as usize);
+            s[read as usize..read as usize + count].copy_from_slice(&available[..count]);
+            input.consume(count);
+            read += count as u64;
+        }
+        if read == wanted { n } else { read / size }
+    }
+"#;

@@ -481,13 +481,13 @@ fn rejects_integer_pointer_uses_it_cannot_translate() {
         rust.contains(r#"compile_error!("unsupported C: return type int *")"#),
         "{rust}"
     );
-    // A pointer is the cells from where it points, so it cannot move.
+    // A pointer is the cells from where it points, so it cannot move back.
     let rust = translate(
         &dir,
-        "int main(void) { int a[2] = {1, 2}; int *p = a + 1; return *p; }\n",
+        "int main(void) { int a[2] = {1, 2}; int *p = a + 1; return *(p - 1); }\n",
     );
     assert!(
-        rust.contains(r#"compile_error!("unsupported C: binary + on int *")"#),
+        rust.contains(r#"compile_error!("unsupported C: binary - on int *")"#),
         "{rust}"
     );
     // A `char *` holds a string literal's bytes, not a character variable.
@@ -1570,4 +1570,102 @@ int main(void) {
 "#;
     let rust = same_behaviour("compares_pointers_by_address", c, &["12", "x", "-3", ""]);
     assert!(rust.contains(".map(<[_]>::as_ptr) != "), "{rust}");
+}
+
+#[test]
+fn moves_pointers_forwards_and_searches_strings() {
+    let c = r#"
+#include <stdio.h>
+#include <string.h>
+
+struct item { int v; };
+
+static int count(const char *text, char c) {
+    int n = 0;
+    for (const char *s = text; (s = strchr(s, c)); s++)
+        n++;
+    return n;
+}
+
+static int sum(const int *p, int n) {
+    int total = 0;
+    for (; n > 0; n--) {
+        total += *p;
+        p++;
+    }
+    return total;
+}
+
+static int counter;
+
+int main(void) {
+    char buf[32] = "";
+    size_t items = fread(buf, 2, 7, stdin);
+    printf("%d [%s]\n", (int)items, buf);
+    printf("%d %d\n", count(buf, 'a'), count(buf, 'z'));
+    const char *last = strrchr(buf, 'a');
+    printf("%s|%s|%d\n", last ? last : "-", strchr(buf, '\0'), strrchr(buf, 0) == buf + strlen(buf));
+    char *rest = buf + 2;
+    rest += 1;
+    printf("[%s] [%s] %d\n", rest, 1 + rest, *(rest + 1));
+    char *end = buf;
+    end += strlen(buf);
+    printf("%d\n", end == buf + strlen(buf));
+    int a[4] = {1, 2, 3, 4};
+    int *p = a + 1;
+    p += 2;
+    printf("%d %d %d\n", sum(a, 4), sum(a + 2, 2), *p);
+    struct item one = {5};
+    struct item *it = &one, *past = it;
+    past++;
+    printf("%d %d %d\n", it->v, past != it, it + 1 == past);
+    int x, y;
+    static int s;
+    char narrow;
+    x = y = 3;
+    int z = (s = x + y) + (counter = 2) + (narrow = x * 50);
+    a[0] = (y = 9);
+    printf("%d %d %d %d %d %d %d\n", x, y, z, s, counter, narrow, a[0]);
+    int m = 4;
+    while ((m = m - 1) > 0)
+        printf("%d", m);
+    printf("\n");
+    return 0;
+}
+"#;
+    same_behaviour(
+        "moves_pointers_forwards_and_searches_strings",
+        c,
+        &["banana bread", "abc", "", "aaaaaaaaaaaaaaaaaaaaaaaaa"],
+    );
+}
+
+#[test]
+fn rejects_pointer_arithmetic_it_cannot_translate() {
+    let dir = scratch("rejects_pointer_arithmetic_it_cannot_translate");
+    let cases = [
+        // A pointer is the slice from where it points, so it cannot go back.
+        ("int f(const char *s) { s--; return 0; }", "-- on char *"),
+        ("int f(const char *s) { s -= 1; return 0; }", "-= on char *"),
+        (
+            "int f(const char *s) { return *(s - 1); }",
+            "binary - on char *",
+        ),
+        (
+            "int main(int argc, char **argv) { char **rest = argv + 1; return 0; }",
+            "binary + on char **",
+        ),
+        (
+            "#include <stdio.h>\nint main(void) { char s[4]; fread(s, 1, 4, stderr); return 0; }",
+            "fread from a stream other than stdin",
+        ),
+    ];
+    for (c, error) in cases {
+        let rust = translate(&dir, c);
+        assert!(
+            rust.contains(&format!(r#"compile_error!("unsupported C: {error}")"#)),
+            "{c}\n{rust}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

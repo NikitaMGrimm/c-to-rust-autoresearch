@@ -990,6 +990,15 @@ impl Translator {
         let args = inner(expr);
         match (kind(expr), expr["opcode"].as_str()) {
             ("BinaryOperator", Some("=")) => self.assign(&args[0], "", &args[1]),
+            ("CompoundAssignOperator", Some("+=")) if self.pointer(c_type(&args[0])) => {
+                let offset = self.index(&args[1]);
+                let value = self.advance(&args[0], &offset);
+                self.store(&args[0], &value)
+            }
+            ("UnaryOperator", Some("++")) if self.pointer(c_type(&args[0])) => {
+                let value = self.advance(&args[0], "1");
+                self.store(&args[0], &value)
+            }
             ("CompoundAssignOperator", Some(op)) => {
                 let ty = c_type(&args[0]);
                 let op = op.trim_end_matches('=');
@@ -1236,6 +1245,28 @@ impl Translator {
         ))
     }
 
+    /// The pointer `offset`, a Rust index, elements past `pointer`, which the
+    /// translation holds as the slice from where it points to the end of its
+    /// array: the rest of that slice. One past the last element is the empty
+    /// rest; further, before the start or from null panics, as C leaves those
+    /// undefined.
+    fn advance(&mut self, pointer: &Value, offset: &str) -> String {
+        let ty = c_type(pointer);
+        let elements = match self.buffer(pointer) {
+            Some(array) => array,
+            None if ty == "char *" => format!(
+                "{}.expect(\"null pointer arithmetic\")",
+                self.operand(pointer)
+            ),
+            None if self.pointer(ty) => match self.elements(pointer) {
+                Some(elements) => elements,
+                None => return unsupported(&format!("arithmetic on {ty}")),
+            },
+            None => return unsupported(&format!("arithmetic on {ty}")),
+        };
+        format!("Some(&{elements}[{offset}..])")
+    }
+
     /// An integer index into a slice. A negative one converts to one beyond
     /// any slice, so it panics as an index out of bounds does.
     fn index(&mut self, index: &Value) -> String {
@@ -1454,6 +1485,21 @@ impl Translator {
                     let left = self.operand(&args[0]);
                     format!("{left} {op} {}", self.operand(&args[1]))
                 }
+                // An assignment's value is the variable's after it; reading
+                // the variable again gives it with C's conversion applied.
+                Some("=") if variable(&args[0]) && self.record(c_type(expr)).is_none() => {
+                    let assign = self.assign(&args[0], "", &args[1]);
+                    format!("{{ {assign}; {} }}", self.expr(&args[0]))
+                }
+                Some("+") if self.pointer(c_type(expr)) => {
+                    let (pointer, offset) = if self.pointer(c_type(&args[0])) {
+                        (&args[0], &args[1])
+                    } else {
+                        (&args[1], &args[0])
+                    };
+                    let offset = self.index(offset);
+                    self.advance(pointer, &offset)
+                }
                 op => unsupported(&format!("binary {} on {}", op.unwrap_or("?"), c_type(expr))),
             },
             "CallExpr" => match callee(expr) {
@@ -1522,7 +1568,15 @@ impl Translator {
                     self.require(STRLEN_RUNTIME);
                     format!("crt::strlen({})", self.expr(&args[1]))
                 }
-                Some(name @ ("fgets" | "memset" | "strcpy" | "strncpy")) => {
+                Some(name @ ("strchr" | "strrchr")) => {
+                    self.require(STRCHR_RUNTIME);
+                    format!(
+                        "crt::{name}({}, {})",
+                        self.expr(&args[1]),
+                        self.expr(&args[2])
+                    )
+                }
+                Some(name @ ("fgets" | "fread" | "memset" | "strcpy" | "strncpy")) => {
                     self.write_bytes(name, &args[1..])
                 }
                 Some("rand") if args.len() == 1 => {
@@ -1593,10 +1647,11 @@ impl Translator {
         }
     }
 
-    /// `fgets` from `stdin`, `memset`, `strcpy` and `strncpy`, which write
-    /// the bytes of a local `char` array that their first argument decays
-    /// from, borrowing it mutably during the call. Their result, the array,
-    /// is not a `char *`: `fgets` returns whether it read, as `Some(())`.
+    /// `fgets` and `fread` from `stdin`, `memset`, `strcpy` and `strncpy`,
+    /// which write the bytes of a local `char` array that their first
+    /// argument decays from, borrowing it mutably during the call. Their
+    /// result, the array, is not a `char *`: `fgets` returns whether it read,
+    /// as `Some(())`; `fread` returns its count, as C's does.
     fn write_bytes(&mut self, name: &str, args: &[Value]) -> String {
         let Some(array) = self.buffer(&args[0]) else {
             return unsupported(&format!("{name} into anything but a local char array"));
@@ -1606,10 +1661,15 @@ impl Translator {
                 return unsupported("fgets from a stream other than stdin");
             }
             "fgets" => vec![self.expr(&args[1])],
+            "fread" if args.get(3).and_then(stdio::stream) != Some("stdin") => {
+                return unsupported("fread from a stream other than stdin");
+            }
+            "fread" => vec![self.expr(&args[1]), self.expr(&args[2])],
             _ => args[1..].iter().map(|arg| self.expr(arg)).collect(),
         };
         let part = match name {
             "fgets" => stdio::FGETS_RUNTIME,
+            "fread" => stdio::FREAD_RUNTIME,
             "memset" => MEMSET_RUNTIME,
             "strcpy" => STRCPY_RUNTIME,
             _ => STRNCPY_RUNTIME,
@@ -2115,6 +2175,30 @@ const STRLEN_RUNTIME: &str = r#"    /// C's `strlen`: the number of bytes before
             n += 1;
         }
         n as u64
+    }
+"#;
+
+/// The part of the `crt` module that `strchr` and `strrchr` call.
+const STRCHR_RUNTIME: &str = r#"    /// The positions of the bytes of a C string through its first zero. A
+    /// string without one reads past its array, which panics.
+    fn string(s: Option<&[u8]>) -> impl Iterator<Item = (usize, u8)> + '_ {
+        let s = s.expect("null pointer as a C string");
+        let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+        (0..=end).map(move |i| (i, s[i]))
+    }
+
+    /// C's `strchr`: the first `c`, converted to `char`, in `s`, the final
+    /// zero included, or null.
+    pub fn strchr(s: Option<&[u8]>, c: i32) -> Option<&[u8]> {
+        let (i, _) = string(s).find(|&(_, b)| b == c as u8)?;
+        Some(&s?[i..])
+    }
+
+    /// C's `strrchr`: the last `c`, converted to `char`, in `s`, the final
+    /// zero included, or null.
+    pub fn strrchr(s: Option<&[u8]>, c: i32) -> Option<&[u8]> {
+        let (i, _) = string(s).filter(|&(_, b)| b == c as u8).last()?;
+        Some(&s?[i..])
     }
 "#;
 
