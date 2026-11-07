@@ -95,9 +95,9 @@ loop/setup PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 ~/src/c-to-rust-autoresearch/loop/round [--github] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 ```
 
-Run `loop/round` by this checkout's absolute path, never the clone's copy. In
-T3 Code, the clone is a project whose threads run in the clone itself, not in
-worktrees, on Claude only, with `loop/round` as a project script.
+Run `loop/round` by this checkout's absolute path, never the clone's copy.
+Each session runs in the clone itself, not in a worktree of it, and in Claude
+Code, whose transcripts the audit reads.
 [docs/architecture.md](docs/architecture.md#keeping-the-loop-agent-out) says
 what the scripts do; the audit runs on its own too:
 
@@ -161,10 +161,9 @@ cargo run -p transcripts --bin usage -- --since 2026-11-04T20:00:00Z --until 202
 ```
 
 `usage` sums the tokens that Claude Code records in its session transcripts,
-per model and per session, and counts requests by reasoning effort. T3 Code
-runs Claude through Claude Code, so its Claude chats are included; Codex runs
-are not. Claude Code names the transcript directory after the working
-directory, so a worktree has its own directory. `--since` and `--until` limit
+per model and per session, and counts requests by reasoning effort. Claude
+Code names the transcript directory after the working directory, so a
+worktree has its own directory. `--since` and `--until` limit
 the sums to one loop iteration or another time window.
 
 ## Acknowledgements

@@ -1,6 +1,5 @@
 //! Sums the model usage that Claude Code records in its session transcripts,
-//! per session and model, optionally within a time window. T3 Code runs Claude
-//! through Claude Code, so this also covers T3 chats.
+//! per session and model, optionally within a time window.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

@@ -168,8 +168,8 @@ given. `loop/run` makes that branch from main, with `crates/transpiler/` as
 it was before the loop's first rule (or from `--start COMMIT`), and then
 alternates a headless session (`claude -p`) in a fresh clone with such a
 round, for a fixed number of sessions. The sessions run without permission
-prompts, as the pilot's did in T3 Code, in the sandbox above; the deny rules
-and the guard from `loop/setup` still apply. A session without a commit is
+prompts, in the sandbox above; the deny rules and the guard from
+`loop/setup` still apply. A session without a commit is
 followed by a fresh clone all the same. So is one whose audit findings are
 only calls that name the private directory or the corpus cache, which the
 sandbox hid, or Claude Code's files, which are the sandbox's own: the round
