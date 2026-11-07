@@ -135,9 +135,11 @@ mistaken checkout, but the gate is built before it checks, so it cannot stop a
 hostile one.
 
 `cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--jobs N]` evaluates the
-transfer set after a run: on the run's start and on every candidate its gate
-kept, in the order of `PRIVATE_DIR/runs/RUN/log.jsonl`, which must hold one
-run's rounds. It trusts the same checkout as the gate and builds and
+transfer set after a run: on the run's start and on every candidate that its
+gate kept, in the order of `PRIVATE_DIR/runs/RUN/log.jsonl`, and that
+`run/RUN` holds. The gate logs before the round moves the branch, so a round
+stopped in between leaves a kept candidate that never joined the run; the
+branch's tip must be among the commits. It trusts the same checkout as the gate and builds and
 evaluates each commit the same way. It appends one entry per commit to
 `PRIVATE_DIR/runs/RUN/transfer.jsonl`: each program's stage, the passes that
 fail their fuzzed inputs and the tool versions. It skips commits already
