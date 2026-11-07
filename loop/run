@@ -203,14 +203,22 @@ if [[ ! -f $state/sessions ]]; then
   printf 'session\tstart\tend\tclaude\tround\n' >"$state/sessions"
 fi
 before=$(($(wc -l <"$state/sessions") - 1))
-"$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
+# A fresh loop checkout of the run's branch, with the rounds judged so far.
+fresh() {
+  "$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
+  if [[ -f $state/rounds.md ]]; then
+    cp "$state/rounds.md" "$loop/ROUNDS.md"
+  fi
+}
+fresh "$@"
 for ((session = 1; session <= sessions; session++)); do
   echo "run $run: session $session of $sessions"
   mkdir -p "$transcripts"
   # The session's transcripts go to a directory of its own, so that it cannot
   # read what an earlier session left there, such as one the round set aside.
-  own=$(mktemp -d)
-  temporary+=("$own")
+  # It is kept if the run stops before they are handed over, since a round
+  # must audit them.
+  own=$(mktemp -d "$state/session.XXXXXX")
   began=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Permission prompts cannot be answered here. The deny rules and the hook
   # that loop/setup wrote still apply. claude -p would add piped input to the
@@ -234,9 +242,10 @@ for ((session = 1; session <= sessions; session++)); do
   # The round audits them with all earlier ones.
   find "$own" -mindepth 1 -maxdepth 1 -exec mv -n -t "$transcripts" -- {} + || true
   if [[ -n $(ls -A "$own") ]]; then
-    echo "run $run stopped after session $session: its transcripts would overwrite earlier ones in $transcripts" >&2
+    echo "run $run stopped after session $session: its transcripts in $own would overwrite earlier ones in $transcripts" >&2
     exit 2
   fi
+  rmdir "$own"
   status=0
   "$repo/loop/round" --run "$run" "${round[@]}" "$private" "$loop" "$@" || status=$?
   printf '%s\t%s\t%s\t%s\t%s\n' "$((before + session))" "$began" "$ended" "$failed" "$status" \
@@ -245,10 +254,7 @@ for ((session = 1; session <= sessions; session++)); do
     # Without a commit, or set aside unjudged, the session leaves the checkout
     # as it was; the next session starts afresh all the same.
     rm -rf -- "$loop"
-    "$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
-    if [[ -f $state/rounds.md ]]; then
-      cp "$state/rounds.md" "$loop/ROUNDS.md"
-    fi
+    fresh "$@"
   elif ((status)); then
     echo "run $run stopped after session $session: the round failed" >&2
     exit "$status"

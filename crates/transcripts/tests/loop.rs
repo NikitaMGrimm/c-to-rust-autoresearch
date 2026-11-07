@@ -741,6 +741,44 @@ fn a_run_starts_every_session_afresh_and_stops_at_contact() {
     let rounds: Vec<&str> = sessions.iter().map(|row| row[4].as_str()).collect();
     assert_eq!(rounds, ["3", "0", "3", "1"]);
     assert_eq!(git(repo, &["rev-parse", "run/r1"]), before);
+    // The first checkout of a run started again has the rounds so far.
+    assert!(fixture.loop_dir.join("ROUNDS.md").exists());
+}
+
+#[test]
+fn an_interrupted_run_keeps_the_transcripts_of_its_session() {
+    let fixture = Fixture::new();
+    let repo = &fixture.repo;
+    std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
+    let start = commit(repo, "crates/transpiler/empty");
+    let claude = r#"#!/usr/bin/env bash
+transcripts=$HOME/.claude/projects/$(printf %s "$PWD" | tr -c 'a-zA-Z0-9' '-')
+echo "claude $*" >"$transcripts/s1.jsonl"
+exec sleep 60
+"#;
+    let args = ["--start", &start, "r1", "1"];
+    let mut run = fixture.loop_command(claude, &args, 0).spawn().unwrap();
+    // The session's transcript, which the round has not audited yet.
+    let state = repo.join("local/runs/r1");
+    let written = || {
+        let mut entries = std::fs::read_dir(&state).into_iter().flatten().flatten();
+        entries.any(|entry| entry.path().join("s1.jsonl").exists())
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !written() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(written());
+    let pid = run.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    run.wait().unwrap();
+    assert!(written());
 }
 
 #[test]

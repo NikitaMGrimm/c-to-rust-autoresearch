@@ -71,7 +71,9 @@ The loop agent runs that code in its own session too. In an unattended run
 a read-only file system without the home directory, `/tmp`, `/mnt` (the
 Windows drives under WSL), `/run`, other processes or network. `/run` holds
 the sockets of the user's systemd and D-Bus, Docker and WSL's interop, each
-of which would start a process outside the sandbox. The private directory,
+of which would start a process outside the sandbox. A socket kept elsewhere,
+such as that of LXD installed as a snap, under `/var/snap`, would stay
+reachable, so the machine must run no such service. The private directory,
 the main checkout, the corpus cache, `TMPDIR` and the denied directories are
 hidden wherever they are. The session sees its clone and a transcript
 directory of its own, both writable, and the Rust toolchain without
