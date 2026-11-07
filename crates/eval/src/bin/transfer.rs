@@ -7,14 +7,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use eval::Stage;
 
 const USAGE: &str = "usage: transfer PRIVATE_DIR RUN [--jobs N]\n\
      Evaluates PRIVATE_DIR/transfer on the start of run RUN and on every commit\n\
-     the gate kept in it, as PRIVATE_DIR/runs/RUN/log.jsonl lists them, and\n\
-     appends the results to PRIVATE_DIR/runs/RUN/transfer.jsonl, skipping\n\
+     that PRIVATE_DIR/runs/RUN/log.jsonl shows kept and the branch run/RUN holds,\n\
+     and appends the results to PRIVATE_DIR/runs/RUN/transfer.jsonl, skipping\n\
      commits already there. Prints no results. Run it from a clean checkout of\n\
      main while no run is going: its load would change a gate's timings.";
 
@@ -66,7 +66,10 @@ fn transfer(args: &Args) -> Result<(), String> {
     let log = dir.join("log.jsonl");
     let text = std::fs::read_to_string(&log)
         .map_err(|err| format!("cannot read the gate's log {}: {err}", log.display()))?;
-    let commits = kept_commits(&text).map_err(|err| format!("{}: {err}", log.display()))?;
+    let branch = format!("refs/heads/run/{}", args.run);
+    let tip = eval::git(&["rev-parse", "--verify", &format!("{branch}^{{commit}}")])?;
+    let commits = kept_commits(&text, &tip, |commit| is_on(commit, &branch))
+        .map_err(|err| format!("{}: {err}", log.display()))?;
     let out = dir.join("transfer.jsonl");
     let done = match std::fs::read_to_string(&out) {
         Ok(text) => evaluated(&text).map_err(|err| format!("{}: {err}", out.display()))?,
@@ -111,9 +114,16 @@ fn transfer(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The commits to evaluate, in the gate's log `text`: the run's start, the
-/// base of its first round, and every candidate the gate kept, in order.
-fn kept_commits(text: &str) -> Result<Vec<String>, String> {
+/// The commits to evaluate: the run's start, the base of the first round in
+/// the gate's log `text`, and every candidate the gate kept that the run's
+/// branch, at `tip`, holds, in order. The gate logs before the round moves the
+/// branch, so a round stopped in between leaves a kept candidate that never
+/// joined the run, and a round run again judges the same base twice.
+fn kept_commits(
+    text: &str,
+    tip: &str,
+    on_branch: impl Fn(&str) -> Result<bool, String>,
+) -> Result<Vec<String>, String> {
     let mut commits: Vec<String> = Vec::new();
     for (number, line) in text.lines().enumerate() {
         let at = |problem: &str| format!("line {}: {problem}", number + 1);
@@ -125,22 +135,43 @@ fn kept_commits(text: &str) -> Result<Vec<String>, String> {
             hex.then(|| value.to_owned())
                 .ok_or_else(|| at(&format!("no commit in {field}")))
         };
-        let base = commit("base")?;
         if commits.is_empty() {
-            commits.push(base);
-        } else if commits.last() != Some(&base) {
-            // Each round judges against the last kept commit, so a log that
-            // does not is not a single run's.
-            return Err(at("the base is not the last kept commit"));
+            let start = commit("base")?;
+            if !on_branch(&start)? {
+                return Err(at("the run's start is not on its branch"));
+            }
+            commits.push(start);
         }
         if entry["decision"] == "keep" {
-            commits.push(commit("candidate")?);
+            let candidate = commit("candidate")?;
+            if !commits.contains(&candidate) && on_branch(&candidate)? {
+                commits.push(candidate);
+            }
         }
     }
     if commits.is_empty() {
         return Err("the log is empty".to_owned());
     }
+    if !commits.iter().any(|commit| commit == tip) {
+        return Err(format!(
+            "the run's branch is at {tip}, which the log does not show kept"
+        ));
+    }
     Ok(commits)
+}
+
+/// Whether `commit` is `branch` or one of its ancestors.
+fn is_on(commit: &str, branch: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["merge-base", "--is-ancestor", commit, branch])
+        .current_dir(eval::REPO)
+        .output()
+        .map_err(|err| format!("cannot run git: {err}"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!("cannot tell whether {commit} is on {branch}")),
+    }
 }
 
 /// The commits that the transfer log `text` already holds.
@@ -196,6 +227,12 @@ mod tests {
             .to_string()
     }
 
+    /// Commits 0 to 9 with those in `branch` on the run's branch.
+    fn on(branch: &[u8]) -> impl Fn(&str) -> Result<bool, String> {
+        let branch: Vec<String> = branch.iter().map(|&n| hash(n)).collect();
+        move |commit| Ok(branch.iter().any(|on| on == commit))
+    }
+
     #[test]
     fn evaluates_the_start_and_each_kept_commit() {
         let log = [
@@ -206,24 +243,72 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(
-            kept_commits(&log),
+            kept_commits(&log, &hash(4), on(&[0, 1, 3, 4])),
             Ok(vec![hash(0), hash(1), hash(3), hash(4)])
         );
         // A run whose rounds all rejected still has its start.
-        assert_eq!(kept_commits(&round(0, 1, "reject")), Ok(vec![hash(0)]));
+        assert_eq!(
+            kept_commits(&round(0, 1, "reject"), &hash(0), on(&[0])),
+            Ok(vec![hash(0)])
+        );
     }
 
     #[test]
-    fn refuses_a_log_that_is_not_one_runs() {
-        let mixed = [round(0, 1, "keep"), round(0, 2, "keep")].join("\n");
-        assert!(kept_commits(&mixed).unwrap_err().contains("line 2"));
-        assert!(kept_commits("").unwrap_err().contains("empty"));
-        assert!(kept_commits("not json").unwrap_err().contains("line 1"));
+    fn leaves_out_a_kept_candidate_that_never_joined_the_run() {
+        // The round stopped after the gate kept 1; the run went on from 0.
+        let resumed = [round(0, 1, "keep"), round(0, 2, "keep")].join("\n");
+        assert_eq!(
+            kept_commits(&resumed, &hash(2), on(&[0, 2])),
+            Ok(vec![hash(0), hash(2)])
+        );
+        // The same round, finished by hand, judged and kept 1 again.
+        let again = [round(0, 1, "keep"), round(0, 1, "keep")].join("\n");
+        assert_eq!(
+            kept_commits(&again, &hash(1), on(&[0, 1])),
+            Ok(vec![hash(0), hash(1)])
+        );
+        // The last round stopped after the gate kept 2.
+        let last = [round(0, 1, "keep"), round(1, 2, "keep")].join("\n");
+        assert_eq!(
+            kept_commits(&last, &hash(1), on(&[0, 1])),
+            Ok(vec![hash(0), hash(1)])
+        );
+        // A gate run by hand on an earlier round adds nothing.
+        let checked = [
+            round(0, 1, "keep"),
+            round(1, 2, "keep"),
+            round(0, 1, "keep"),
+        ]
+        .join("\n");
+        assert_eq!(
+            kept_commits(&checked, &hash(2), on(&[0, 1, 2])),
+            Ok(vec![hash(0), hash(1), hash(2)])
+        );
+    }
+
+    #[test]
+    fn refuses_a_log_that_does_not_match_the_branch() {
+        let log = round(0, 1, "keep");
+        let tip = kept_commits(&log, &hash(2), on(&[0, 1, 2])).unwrap_err();
+        assert!(tip.contains("does not show kept"), "{tip}");
+        let start = kept_commits(&log, &hash(1), on(&[1])).unwrap_err();
+        assert!(start.contains("start"), "{start}");
+        assert!(
+            kept_commits("", &hash(0), on(&[0]))
+                .unwrap_err()
+                .contains("empty")
+        );
+        let malformed = kept_commits("not json", &hash(0), on(&[0])).unwrap_err();
+        assert!(malformed.contains("line 1"), "{malformed}");
         let short = r#"{"base": "abc", "candidate": "def", "decision": "keep"}"#;
-        assert!(kept_commits(short).unwrap_err().contains("base"));
+        assert!(
+            kept_commits(short, &hash(0), on(&[0]))
+                .unwrap_err()
+                .contains("base")
+        );
         let kept_nothing = format!(r#"{{"base": "{}", "decision": "keep"}}"#, hash(0));
         assert!(
-            kept_commits(&kept_nothing)
+            kept_commits(&kept_nothing, &hash(0), on(&[0]))
                 .unwrap_err()
                 .contains("candidate")
         );

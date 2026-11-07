@@ -115,7 +115,10 @@ pub fn append_log(path: &Path, entry: &serde_json::Value) -> Result<(), String> 
         .append(true)
         .open(path)
         .map_err(|err| format!("cannot open {}: {err}", path.display()))?;
-    writeln!(log, "{entry}").map_err(|err| format!("cannot write {}: {err}", path.display()))
+    // In one write, so that a process stopped while it writes leaves no part
+    // of a line.
+    log.write_all(format!("{entry}\n").as_bytes())
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))
 }
 
 #[cfg(test)]
