@@ -40,13 +40,13 @@ deleting code is welcome. A new dependency needs a reason.
 
 ## Ways to hurt yourself
 
-1. **Opening a private program.** Never read, copy or reference validation or
-   held-out programs, their variants or their fuzzed inputs. They live in a
-   separate private repository on purpose, and seeing them invalidates the
-   results. The TRACTOR corpus that `intake` fetches and the CodeNet archive
-   that `codenet` reads contain them as well; open only programs in
-   `bench/dev`. Tools that read the private sets print
-   names and counts only, and so must your own commands.
+1. **Opening a private program.** Never read, copy or reference validation,
+   held-out or transfer programs, their variants or their fuzzed inputs. They
+   live in a separate private repository on purpose, and seeing them
+   invalidates the results. The TRACTOR corpus that `intake` fetches and the
+   CodeNet archive that `codenet` reads contain them as well; open only
+   programs in `bench/dev`. Tools that read the private sets print names and
+   counts only, and so must your own commands.
 2. **Publishing private data.** This repository is public. Do not add
    credentials, private notes, thesis drafts, supervisor correspondence or
    anything from the private holdout repository. Keep unpublished benchmarks

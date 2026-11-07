@@ -44,7 +44,9 @@ if [[ $tool == Skill ]]; then
   fi
 fi
 
-for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus Project_CodeNet; do
+# A name runs on into a dot, so CodeNet's archive and repository are named in full.
+for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus Project_CodeNet \
+  Project_CodeNet.tar.gz Project_CodeNet.git; do
   if names "$text" "$marker"; then
     block "the call names $marker"
   fi

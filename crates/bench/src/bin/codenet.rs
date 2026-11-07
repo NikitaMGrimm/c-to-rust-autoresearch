@@ -137,10 +137,10 @@ fn families(codenet: &Path) -> Result<BTreeMap<String, Vec<Solution>>, String> {
     let io = codenet.join("derived/input_output");
     let unverified: BTreeSet<String> = read(&io.join("unverified_accepted_solutions.txt"))?
         .split_whitespace()
-        .map(str::to_owned)
-        .collect();
+        .map(problem_id)
+        .collect::<Result<_, _>>()?;
     let clusters = read(&codenet.join("derived/duplicates/identical_problem_clusters"))?;
-    let family = family_names(&clusters);
+    let family = family_names(&clusters)?;
     let mut families: BTreeMap<String, Vec<Solution>> = BTreeMap::new();
     for dir in eval::entries(&codenet.join("data"))? {
         let problem = file_name(&dir);
@@ -188,9 +188,20 @@ fn families(codenet: &Path) -> Result<BTreeMap<String, Vec<Solution>>, String> {
     Ok(families)
 }
 
+/// A problem ID such as `p02345`, so that a file in another format fails
+/// instead of filtering or merging nothing.
+fn problem_id(id: &str) -> Result<String, String> {
+    match id.strip_prefix('p') {
+        Some(digits) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            Ok(id.to_owned())
+        }
+        _ => Err(format!("{id:?} is not a CodeNet problem ID")),
+    }
+}
+
 /// For each problem in a cluster of identical problems, the cluster's
 /// smallest problem ID.
-fn family_names(clusters: &str) -> BTreeMap<String, String> {
+fn family_names(clusters: &str) -> Result<BTreeMap<String, String>, String> {
     let mut parent: BTreeMap<String, String> = BTreeMap::new();
     fn root(parent: &BTreeMap<String, String>, mut id: String) -> String {
         while let Some(next) = parent.get(&id) {
@@ -199,7 +210,12 @@ fn family_names(clusters: &str) -> BTreeMap<String, String> {
         id
     }
     for line in clusters.lines() {
-        let ids: Vec<String> = line.split(',').map(|id| id.trim().to_owned()).collect();
+        let ids: Vec<String> = line
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(problem_id)
+            .collect::<Result<_, _>>()?;
         for pair in ids.windows(2) {
             let (a, b) = (
                 root(&parent, pair[0].clone()),
@@ -214,9 +230,10 @@ fn family_names(clusters: &str) -> BTreeMap<String, String> {
         }
     }
     let ids: Vec<String> = parent.keys().cloned().collect();
-    ids.into_iter()
+    Ok(ids
+        .into_iter()
         .map(|id| (id.clone(), root(&parent, id)))
-        .collect()
+        .collect())
 }
 
 /// Each problem's dataset, AIZU or AtCoder, for the report.
@@ -285,8 +302,12 @@ fn check(
     let c_file = work.join("main.c");
     std::fs::write(&c_file, &source)
         .map_err(|err| format!("cannot write {}: {err}", c_file.display()))?;
-    let Ok(references) = eval::References::build(&c_file, &[], work) else {
-        return Ok(Err("c_build"));
+    // Only a compiler's failure excludes the solution; any other error would
+    // change the set without a reason.
+    let references = match eval::References::build(&c_file, &[], work) {
+        Ok(references) => references,
+        Err(err) if err.starts_with("c_build:") => return Ok(Err("c_build")),
+        Err(err) => return Err(err),
     };
     let run = match references.check(&input) {
         Ok(run) => run,
@@ -381,10 +402,13 @@ mod tests {
 
     #[test]
     fn identical_problems_are_named_after_the_smallest() {
-        let names = family_names("p3,p2\np5,p3\np7\n");
+        let names = family_names("p3,p2\np5,p3,\np7\n").unwrap();
         assert_eq!(names["p3"], "p2");
         assert_eq!(names["p5"], "p2");
         assert!(!names.contains_key("p7"));
+        assert!(!names.contains_key(""));
+        assert!(family_names("p3;p2\n").is_err());
+        assert!(family_names("s1,p2\n").is_err());
     }
 
     #[test]

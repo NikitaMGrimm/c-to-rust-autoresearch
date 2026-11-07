@@ -16,10 +16,14 @@ const USAGE: &str = "usage: audit PRIVATE_DIR PATH...\n\
 /// Text in a tool call that reaches for a corpus that holds private programs
 /// too: TRACTOR's repository, CodeNet's archive and the cache that `intake`
 /// and `codenet` read them from.
-const CORPUS: [&str; 4] = [
+/// A name runs on into a dot, so CodeNet's archive and repository are named in
+/// full.
+const CORPUS: [&str; 6] = [
     "DARPA-TRACTOR-Program",
     "PUBLIC-Test-Corpus",
     "Project_CodeNet",
+    "Project_CodeNet.tar.gz",
+    "Project_CodeNet.git",
     ".cache/c-to-rust-autoresearch",
 ];
 
@@ -325,6 +329,10 @@ mod tests {
                 "Bash",
                 serde_json::json!({"command": "ls Project_CodeNet/data"}),
             ),
+            tool_use(
+                "Bash",
+                serde_json::json!({"command": "curl -O https://x.org/1.0.0/Project_CodeNet.tar.gz"}),
+            ),
         ];
         let want = expected(&[
             (1, "private program g1_secret"),
@@ -344,6 +352,7 @@ mod tests {
             (11, "Bash names PUBLIC-Test-Corpus"),
             (12, "WebSearch looks for CodeNet"),
             (13, "Bash names Project_CodeNet"),
+            (14, "Bash names Project_CodeNet.tar.gz"),
         ]);
         assert_eq!(found(&lines), want);
     }
