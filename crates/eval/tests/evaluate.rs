@@ -211,7 +211,7 @@ fn scratch_is_hidden() -> bool {
 }
 
 #[test]
-fn agent_code_cannot_read_home_keep_files_or_connect() {
+fn agent_code_cannot_read_home_keep_files_connect_or_reach_run() {
     let rust = r#"fn main() {
     let exe = std::env::current_exe().unwrap();
     let dir = exe.ancestors().nth(3).unwrap();
@@ -220,12 +220,13 @@ fn agent_code_cannot_read_home_keep_files_or_connect() {
     let address = std::net::SocketAddr::from(([1, 1, 1, 1], 53));
     let timeout = std::time::Duration::from_secs(2);
     let connected = std::net::TcpStream::connect_timeout(&address, timeout).is_ok();
-    println!("{read} {connected}");
+    let run = std::fs::read_dir("/run").map_or(0, |entries| entries.count());
+    println!("{read} {connected} {run}");
 }
 "#;
     let hidden = scratch_is_hidden();
     let c = format!(
-        "#include <stdio.h>\nint main(void) {{ puts(\"{} false\"); return 0; }}\n",
+        "#include <stdio.h>\nint main(void) {{ puts(\"{} false 0\"); return 0; }}\n",
         !hidden
     );
     let (dir, transpiler) = setup("sandbox", &c, None, rust);

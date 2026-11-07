@@ -6,11 +6,13 @@ use std::process::Command;
 
 /// Wraps agent-written code: no network, a read-only file system except
 /// `writable`, and a hidden home directory, where the private benchmarks and
-/// credentials live, except `readable`. Paths must be absolute.
+/// credentials live, except `readable`. Paths must be absolute. /run is
+/// hidden too: the sockets of the user's systemd and D-Bus, Docker and WSL's
+/// interop there would each start a process outside the sandbox.
 pub(crate) fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) -> Command {
     let mut command = Command::new("bwrap");
     command.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
-    command.args(["--tmpfs", "/tmp"]);
+    command.args(["--tmpfs", "/tmp", "--tmpfs", "/run"]);
     if let Some(home) = std::env::var_os("HOME") {
         command.arg("--tmpfs").arg(home);
     }

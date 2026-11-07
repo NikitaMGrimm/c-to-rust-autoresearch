@@ -54,8 +54,10 @@ The research agent writes the transpiler and so every translation, and the
 evaluator runs both on the private programs. The transpiler, its build, the
 compile of a translation and the Rust program therefore run in a bubblewrap
 sandbox (`sandbox`): no network, a read-only file system except the
-translation's directory (the workspace for a build), and an empty home
-directory apart from the transpiler, its input and the Rust toolchain. The
+translation's directory (the workspace for a build), an empty home
+directory apart from the transpiler, its input and the Rust toolchain, and
+an empty `/run`, whose sockets for the user's systemd and D-Bus, Docker and
+WSL's interop would each start a process outside the sandbox. The
 gate builds from `git archive` of a commit, the `eval` command from a copy of
 its checkout's tracked and unignored files, which leaves out `local/` and keeps
 symlinks as links. Scratch directories are new and private to the user
