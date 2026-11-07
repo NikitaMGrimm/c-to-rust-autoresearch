@@ -161,10 +161,16 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
         {
             let tool = call["name"].as_str().unwrap_or_default();
             let input = strings(&call["input"]);
-            // The private directory's path contains its name; one finding a call.
+            // Every place a call names, since a run sets aside a session whose
+            // calls name only places its sandbox hid. A name inside a path
+            // already found adds nothing.
             let named = |place: &&String| input.iter().any(|text| contains(text, place, path));
-            if let Some(place) = patterns.places.iter().find(named) {
-                add(format!("{tool} names {place}"));
+            let mut found: Vec<&String> = Vec::new();
+            for place in patterns.places.iter().filter(named) {
+                if !found.iter().any(|longer| longer.contains(place.as_str())) {
+                    add(format!("{tool} names {place}"));
+                    found.push(place);
+                }
             }
             if tool.starts_with("Web")
                 && input
@@ -301,6 +307,10 @@ mod tests {
                 serde_json::json!({"file_path": "/h/.claude/skills/x/SKILL.md"}),
             ),
             "{\"type\": \"user\", \"message\": ".to_owned(),
+            tool_use(
+                "Bash",
+                serde_json::json!({"command": "cd /p/holdout && fetch https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus"}),
+            ),
         ];
         let want = expected(&[
             (1, "private program g1_secret"),
@@ -315,6 +325,9 @@ mod tests {
             (8, "Read touches Claude Code's files"),
             (9, "Read touches Claude Code's files"),
             (10, "unreadable record"),
+            (11, "Bash names /p/holdout"),
+            (11, "Bash names DARPA-TRACTOR-Program"),
+            (11, "Bash names PUBLIC-Test-Corpus"),
         ]);
         assert_eq!(found(&lines), want);
     }

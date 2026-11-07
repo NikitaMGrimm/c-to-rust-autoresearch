@@ -1,8 +1,10 @@
 //! Mechanical C-to-Rust transpiler. Translation rules are added by the research
 //! loop and listed in CATALOGUE.md; it reads Clang's syntax tree and emits Rust.
 
+mod control;
 mod stdio;
 mod translate;
+mod types;
 
 use std::path::Path;
 use std::process::Command;
