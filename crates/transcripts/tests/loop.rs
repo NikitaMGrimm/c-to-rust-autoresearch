@@ -50,6 +50,7 @@ fn calls_reaching_private_places_are_blocked() {
             "WebFetch",
             json!({"url": "https://x.org/DARPA-TRACTOR-Program"}),
         ),
+        ("Bash", json!({"command": "ls ~/data/Project_CodeNet/data"})),
         ("Edit", json!({"file_path": ".claude/settings.local.json"})),
         ("Read", json!({"file_path": ".claude/settings.local.json"})),
         (

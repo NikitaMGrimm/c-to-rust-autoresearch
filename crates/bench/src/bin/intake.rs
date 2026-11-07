@@ -26,24 +26,6 @@ const KNOWN_UNDEFINED: [(&str, &str); 2] = [
     ),
 ];
 const SPLITS: [(&str, f64); 3] = [("dev", 0.5), ("validation", 0.25), ("held-out", 0.25)];
-const HEAP: [&str; 7] = [
-    "malloc",
-    "calloc",
-    "realloc",
-    "free",
-    "strdup",
-    "strndup",
-    "aligned_alloc",
-];
-const STRING_FUNCTIONS: [&str; 18] = [
-    "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp", "strncmp", "strchr", "strrchr",
-    "strstr", "strtok", "memcpy", "memmove", "memset", "memcmp", "sprintf", "snprintf", "strspn",
-];
-/// Functions that read input through pointer arguments.
-const INPUT_PARSERS: [&str; 9] = [
-    "scanf", "sscanf", "fscanf", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof",
-];
-
 struct Case {
     visibility: String,
     battery: String,
@@ -353,7 +335,7 @@ fn program(
     if inputs.is_empty() {
         return Err("no_valid_inputs".to_owned());
     }
-    let (group, signals) = classify(&c_file)?;
+    let (group, signals) = bench::classify(&c_file)?;
     let licence = test_case.join("LICENSE");
     Ok(Program {
         family: case.family(),
@@ -867,119 +849,6 @@ fn same_value(printed: &str, expected: &serde_json::Value, ty: CType) -> bool {
     }
 }
 
-/// Assigns a difficulty group from the C features the program uses: the
-/// highest group whose features occur. Signals name the features found.
-fn classify(c_file: &Path) -> Result<(u8, Vec<&'static str>), String> {
-    let output = Command::new("clang-18")
-        .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
-        .arg(c_file)
-        .output()
-        .map_err(|err| format!("cannot run clang-18: {err}"))?;
-    let ast: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|_| "c_build: no syntax tree".to_owned())?;
-    let mut signals = BTreeSet::new();
-    for decl in ast["inner"].as_array().into_iter().flatten() {
-        let loc = &decl["loc"];
-        let own = decl["isImplicit"] != true
-            && loc["includedFrom"].is_null()
-            && loc["expansionLoc"]["includedFrom"].is_null()
-            && (loc["offset"].is_number() || loc["expansionLoc"]["offset"].is_number());
-        if own {
-            features(decl, false, false, &mut signals);
-        }
-    }
-    let group = |names: &[&str]| names.iter().any(|name| signals.contains(name));
-    let group = if group(&["union", "goto", "function_pointer", "void_pointer"]) {
-        5
-    } else if group(&["heap"]) {
-        4
-    } else if group(&["struct_pointer", "address_of", "pointer"]) {
-        3
-    } else if group(&["array", "string", "string_function"]) {
-        2
-    } else {
-        1
-    };
-    Ok((group, signals.into_iter().collect()))
-}
-
-fn features(
-    node: &serde_json::Value,
-    in_main: bool,
-    in_parser: bool,
-    signals: &mut BTreeSet<&'static str>,
-) {
-    let kind = node["kind"].as_str().unwrap_or_default();
-    let ty = node["type"]["desugaredQualType"]
-        .as_str()
-        .or(node["type"]["qualType"].as_str())
-        .unwrap_or_default();
-    let mut in_main = in_main;
-    let mut in_parser = in_parser;
-    match kind {
-        "FunctionDecl" => in_main = node["name"] == "main",
-        "RecordDecl" if node["tagUsed"] == "union" => {
-            signals.insert("union");
-        }
-        "GotoStmt" | "IndirectGotoStmt" => {
-            signals.insert("goto");
-        }
-        "MemberExpr" if node["isArrow"] == true => {
-            signals.insert("struct_pointer");
-        }
-        // Parsing input needs addresses but says nothing about the program.
-        "UnaryOperator" if node["opcode"] == "&" && !in_parser => {
-            signals.insert("address_of");
-        }
-        "CallExpr" => in_parser = calls(node, &INPUT_PARSERS),
-        "DeclRefExpr" => {
-            let name = node["referencedDecl"]["name"].as_str().unwrap_or_default();
-            if HEAP.contains(&name) {
-                signals.insert("heap");
-            }
-            if STRING_FUNCTIONS.contains(&name) {
-                signals.insert("string_function");
-            }
-        }
-        // main's argc and argv, and strings taken from them, carry the command line.
-        "ParmVarDecl" if in_main => {}
-        "VarDecl" if in_main && matches!(ty, "char *" | "const char *") => {}
-        "VarDecl" | "ParmVarDecl" | "FieldDecl" | "TypedefDecl" => {
-            // `int (*)(int)` but not a pointer to an array, `char (*)[8]`.
-            if ty.contains("(*") && ty.contains(")(") {
-                signals.insert("function_pointer");
-            } else if ty.contains("void *") {
-                signals.insert("void_pointer");
-            } else if ty.contains('[') {
-                signals.insert("array");
-            } else if matches!(ty, "char *" | "const char *") {
-                signals.insert("string");
-            } else if ty.contains('*') {
-                signals.insert("pointer");
-            }
-        }
-        _ => {}
-    }
-    for child in node["inner"].as_array().into_iter().flatten() {
-        features(child, in_main, in_parser, signals);
-    }
-}
-
-/// Whether a call expression calls one of `names` directly.
-fn calls(call: &serde_json::Value, names: &[&str]) -> bool {
-    fn callee(node: &serde_json::Value) -> Option<&str> {
-        match node["kind"].as_str()? {
-            "DeclRefExpr" => node["referencedDecl"]["name"].as_str(),
-            "ImplicitCastExpr" => callee(node["inner"].get(0)?),
-            _ => None,
-        }
-    }
-    call["inner"]
-        .get(0)
-        .and_then(callee)
-        .is_some_and(|name| names.contains(&name))
-}
-
 /// Assigns families without a split, per group, keeping earlier assignments.
 fn assign(
     programs: &[Program],
@@ -1102,7 +971,7 @@ mod tests {
     fn group_of(test: &str, c: &str) -> (u8, Vec<&'static str>) {
         let file = std::env::temp_dir().join(format!("intake-{test}-{}.c", std::process::id()));
         std::fs::write(&file, c).unwrap();
-        let result = classify(&file);
+        let result = bench::classify(&file);
         std::fs::remove_file(&file).unwrap();
         result.unwrap()
     }

@@ -64,7 +64,8 @@ counts.
 ## Benchmarks
 
 [bench/](bench/README.md) holds the development set, converted from DARPA's
-TRACTOR test corpus. The validation and held-out sets are private.
+TRACTOR test corpus. The validation and held-out sets are private, and so is a
+transfer set from IBM's Project CodeNet.
 
 ## Research loop
 

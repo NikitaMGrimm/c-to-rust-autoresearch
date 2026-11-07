@@ -1,7 +1,7 @@
 [package]
 name = "bench"
 version = "0.1.0"
-description = "Builds the benchmark sets: intake, variants, fuzzed inputs and near-copies"
+description = "Builds the benchmark sets: intake, the CodeNet transfer set, variants, fuzzed inputs and near-copies"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

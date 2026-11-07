@@ -13,7 +13,8 @@ const USAGE: &str = "usage: near-copies PRIVATE_DIR\n\
 /// scores between 0.41 and 0.53.
 const THRESHOLD: f64 = 0.5;
 const SHINGLE: usize = 4;
-const SETS: [&str; 2] = ["validation", "held-out"];
+/// The private sets; the transfer set only when there is one.
+const SETS: [&str; 3] = ["validation", "held-out", "transfer"];
 
 type Shingles = BTreeSet<Vec<String>>;
 
@@ -36,6 +37,9 @@ fn mark(private: &Path) -> Result<(), String> {
     let dev = shingled(&eval::dev_dir())?;
     let mut sets = serde_json::Map::new();
     for set in SETS {
+        if set == "transfer" && !private.join(set).is_dir() {
+            continue;
+        }
         let programs = shingled(&private.join(set))?;
         let mut copies = BTreeMap::new();
         for (name, shingles) in &programs {
