@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Claude Code PreToolUse hook for the loop agent, installed by loop/setup.
 # Claude Code's deny rules cover its own file tools but not the shell, so this
-# blocks any tool call that names a denied place, the TRACTOR corpus or Claude
-# Code's own files, and any MCP tool or skill from outside loop/skills.
+# blocks any tool call that names a denied place, the TRACTOR or CodeNet
+# corpus or Claude Code's own files, and any MCP tool or skill from outside
+# loop/skills.
 # Usage: guard OWN_DIR MARKER..., where OWN_DIR is the loop agent's transcript
 # directory, whose saved tool output it may read back.
 # Exit code 2 blocks the call; on unreadable input it blocks too.
@@ -43,7 +44,9 @@ if [[ $tool == Skill ]]; then
   fi
 fi
 
-for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus; do
+# A name runs on into a dot, so CodeNet's archive and repository are named in full.
+for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus Project_CodeNet \
+  Project_CodeNet.tar.gz Project_CodeNet.git; do
   if names "$text" "$marker"; then
     block "the call names $marker"
   fi

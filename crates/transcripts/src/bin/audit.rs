@@ -1,7 +1,8 @@
 //! Checks the loop agent's transcripts for contact with the private sets: the
 //! name of a private program anywhere in what it saw or wrote, and a tool call
-//! that names the private directory or the TRACTOR corpus, or touches Claude
-//! Code's files. Prints each finding and a summary line.
+//! that names the private directory or a corpus that holds private programs,
+//! TRACTOR or CodeNet, or touches Claude Code's files. Prints each finding and
+//! a summary line.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -12,11 +13,17 @@ const USAGE: &str = "usage: audit PRIVATE_DIR PATH...\n\
      PATH is a transcript (.jsonl) or a directory searched for them, such as the\n\
      loop checkout's directory under ~/.claude/projects; reading files back from\n\
      these directories is no finding. Exit code 1 means findings.";
-/// Text in a tool call that reaches for the TRACTOR corpus, which holds the
-/// private programs too: its repository and the cache `intake` keeps it in.
-const CORPUS: [&str; 3] = [
+/// Text in a tool call that reaches for a corpus that holds private programs
+/// too: TRACTOR's repository, CodeNet's archive and the cache that `intake`
+/// and `codenet` read them from.
+/// A name runs on into a dot, so CodeNet's archive and repository are named in
+/// full.
+const CORPUS: [&str; 6] = [
     "DARPA-TRACTOR-Program",
     "PUBLIC-Test-Corpus",
+    "Project_CodeNet",
+    "Project_CodeNet.tar.gz",
+    "Project_CodeNet.git",
     ".cache/c-to-rust-autoresearch",
 ];
 
@@ -97,6 +104,9 @@ fn patterns(private: &Path) -> Result<Patterns, String> {
     let given = std::path::absolute(private).map_err(open)?;
     let resolved = private.canonicalize().map_err(open)?;
     let mut dirs = vec![resolved.join("validation"), resolved.join("held-out")];
+    if resolved.join("transfer").is_dir() {
+        dirs.push(resolved.join("transfer"));
+    }
     let variants = resolved.join("variants");
     if variants.exists() {
         dirs.extend(eval::entries(&variants)?.into_iter().filter(|p| p.is_dir()));
@@ -172,12 +182,12 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
                     found.push(place);
                 }
             }
-            if tool.starts_with("Web")
-                && input
-                    .iter()
-                    .any(|text| text.to_lowercase().contains("tractor"))
-            {
-                add(format!("{tool} looks for TRACTOR"));
+            for (word, corpus) in [("tractor", "TRACTOR"), ("codenet", "CodeNet")] {
+                if tool.starts_with("Web")
+                    && input.iter().any(|text| text.to_lowercase().contains(word))
+                {
+                    add(format!("{tool} looks for {corpus}"));
+                }
             }
             let touches = input.iter().any(|text| {
                 let mut rest = text.to_string();
@@ -311,6 +321,18 @@ mod tests {
                 "Bash",
                 serde_json::json!({"command": "cd /p/holdout && fetch https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus"}),
             ),
+            tool_use(
+                "WebSearch",
+                serde_json::json!({"query": "IBM CodeNet p02345"}),
+            ),
+            tool_use(
+                "Bash",
+                serde_json::json!({"command": "ls Project_CodeNet/data"}),
+            ),
+            tool_use(
+                "Bash",
+                serde_json::json!({"command": "curl -O https://x.org/1.0.0/Project_CodeNet.tar.gz"}),
+            ),
         ];
         let want = expected(&[
             (1, "private program g1_secret"),
@@ -328,6 +350,9 @@ mod tests {
             (11, "Bash names /p/holdout"),
             (11, "Bash names DARPA-TRACTOR-Program"),
             (11, "Bash names PUBLIC-Test-Corpus"),
+            (12, "WebSearch looks for CodeNet"),
+            (13, "Bash names Project_CodeNet"),
+            (14, "Bash names Project_CodeNet.tar.gz"),
         ]);
         assert_eq!(found(&lines), want);
     }
@@ -364,6 +389,7 @@ mod tests {
         for file in [
             "validation/a.c",
             "held-out/b.c",
+            "transfer/d.c",
             "variants/dev/c__r.c",
             "variants/dev/c__r.json",
         ] {
@@ -374,7 +400,7 @@ mod tests {
         let link = dir.join("link");
         std::os::unix::fs::symlink(&*dir, &link).unwrap();
         let found = super::patterns(&link).unwrap();
-        assert_eq!(found.names, ["a", "b", "c__r"]);
+        assert_eq!(found.names, ["a", "b", "d", "c__r"]);
         let resolved = dir.canonicalize().unwrap();
         let resolved_name = resolved.file_name().unwrap().to_string_lossy();
         let places = [

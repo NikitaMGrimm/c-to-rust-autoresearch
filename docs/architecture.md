@@ -7,7 +7,7 @@ stays fixed while a loop runs.
 |---|---|---|
 | `transpiler` | Translates one C file to Rust | the loop |
 | `eval` | The evaluator library, the `eval` command and the loop's `gate` | the owner |
-| `bench` | Builds the benchmark sets: `intake`, `variants`, `fuzz`, `near-copies` | the owner |
+| `bench` | Builds the benchmark sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` | the owner |
 | `transcripts` | Reads Claude Code transcripts: model `usage` and the loop's `audit` | the owner |
 
 ## Evaluating a program
@@ -97,7 +97,8 @@ inside this one when the agent runs `eval`.
 ```text
 TRACTOR corpus ──intake──> bench/dev            (public)
                       └──> validation, held-out (private)
-each set ──variants──> PRIVATE_DIR/variants/SET
+Project CodeNet ──codenet──> transfer           (private)
+TRACTOR sets ──variants──> PRIVATE_DIR/variants/SET
 each set ──fuzz──────> NAME.fuzz.json next to each program
 private sets ──near-copies──> PRIVATE_DIR/near-copies.json
 ```
@@ -210,8 +211,8 @@ wait for the owner. The step's failures only print a warning.
 
 ## Keeping the loop agent out
 
-A look at a private program cannot be undone, and the TRACTOR corpus that
-holds them is public. Agents rarely go looking on purpose, but one that wants
+A look at a private program cannot be undone, and the TRACTOR corpus and
+Project CodeNet that hold them are public. Agents rarely go looking on purpose, but one that wants
 more examples of a construct might, so the loop has several layers:
 
 - `loop/program.md` tells the agent where the private programs are and why it
@@ -225,7 +226,7 @@ more examples of a construct might, so the loop has several layers:
   checkout, its transcripts and each `DENIED_DIR`, and edits under
   `~/.claude`; deny the web tools, network commands and T3 Code's tools; and
   install `loop/guard`. That hook blocks any tool call, shell commands
-  included, that names those places, by path or by their own name, or the
+  included, that names those places, by path or by their own name, or a
   corpus, or touches Claude Code's files other than the tool output Claude
   Code saves for the agent. It also blocks every MCP tool, since T3 Code's
   reach other threads, a browser and agents in other directories, and every
@@ -233,7 +234,7 @@ more examples of a construct might, so the loop has several layers:
 - `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private
-  directory or the corpus, looked for TRACTOR on the web or touched Claude
+  directory or a corpus, looked for TRACTOR or CodeNet on the web or touched Claude
   Code's files, and every record it cannot read. Exit code 0 means none; a
   path without transcripts is an error.
 

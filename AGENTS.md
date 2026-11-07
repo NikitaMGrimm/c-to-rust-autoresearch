@@ -29,6 +29,8 @@ deleting code is welcome. A new dependency needs a reason.
   match. The bench tools keep an input only when its reference passes stricter
   checks (`eval::References`).
 - **stage**: how far a translation got (`eval::Stage`); only `pass` succeeds.
+- **transfer**: a fourth private set, from IBM's Project CodeNet rather than
+  TRACTOR, that no loop sees or is judged on.
 - **variant**: a private copy of a program with renamed identifiers, changed
   constants or new inputs. **near-copy**: a private program that nearly
   repeats a dev program.
@@ -38,12 +40,13 @@ deleting code is welcome. A new dependency needs a reason.
 
 ## Ways to hurt yourself
 
-1. **Opening a private program.** Never read, copy or reference validation or
-   held-out programs, their variants or their fuzzed inputs. They live in a
-   separate private repository on purpose, and seeing them invalidates the
-   results. The TRACTOR corpus that `intake` fetches contains them as well;
-   open only programs in `bench/dev`. Tools that read the private sets print
-   names and counts only, and so must your own commands.
+1. **Opening a private program.** Never read, copy or reference validation,
+   held-out or transfer programs, their variants or their fuzzed inputs. They
+   live in a separate private repository on purpose, and seeing them
+   invalidates the results. The TRACTOR corpus that `intake` fetches and the
+   CodeNet archive that `codenet` reads contain them as well; open only
+   programs in `bench/dev`. Tools that read the private sets print names and
+   counts only, and so must your own commands.
 2. **Publishing private data.** This repository is public. Do not add
    credentials, private notes, thesis drafts, supervisor correspondence or
    anything from the private holdout repository. Keep unpublished benchmarks
@@ -70,7 +73,7 @@ deleting code is welcome. A new dependency needs a reason.
 | `crates/transpiler/` | The transpiler, the only code the loop changes |
 | `crates/eval/src/` | Evaluator library: `spec`, `reference`, `translate`, `run`, `sandbox`, `evaluate`, `idioms`, `files` |
 | `crates/eval/src/main.rs`, `src/bin/gate.rs` | The `eval` command and the loop's gate |
-| `crates/bench/` | Builds the sets: `intake`, `variants`, `fuzz`, `near-copies` |
+| `crates/bench/` | Builds the sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` |
 | `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |
 | `loop/` | Instructions for the loop agent, the setup of its checkout, the end of each round, its GitHub step and unattended runs |

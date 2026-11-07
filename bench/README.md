@@ -5,7 +5,8 @@ The programs come from DARPA's
 at revision `37960ee08a7c644ee66e29855eca33903f702e67`, under the MIT licence in
 [LICENSE-TRACTOR](LICENSE-TRACTOR). Only the development set is here. The
 validation and held-out sets are in a private repository, so the research
-loop never sees them.
+loop never sees them. So is a transfer set from IBM's Project CodeNet, which
+shows whether the loop's rules carry over to programs from another source.
 
 Agent-written and hand-written programs are not part of any set for now.
 
@@ -92,8 +93,9 @@ Most library programs land in G5: libraries use `void *`, `goto` cleanup,
 unions and function pointers, and a program's group is the highest feature
 anywhere in its file, although its test calls one function.
 
-The private sets are fixed by their manifest, whose SHA-256 is
-`b436ec41ffb2a9aefda0bceabdedf6a00a342c4bf5c14b219fde676f87f2e384`.
+The private sets, the transfer set included, are fixed by their manifest,
+whose SHA-256 is
+`633bf00653a6196b5cd99de2ae867f6aed09cd1db0b674649cf4111ffbedcc50`.
 
 TRACTOR's programs are public, so a loop agent with network access could still
 find the validation and held-out programs. The loop must run without network.
@@ -150,6 +152,7 @@ files.
 | Dev | 410 | 47 | 50 |
 | Validation | 175 | 20 | 24 |
 | Held-out | 159 | 20 | 22 |
+| Transfer | 1,313 | 190 | 200 |
 
 The evaluator reports them as a separate result for now, so the pass rule
 stays as it is. Of the four hand translations of dev programs that pass, two
@@ -165,15 +168,63 @@ like transfer but is not. `cargo run -p bench --bin near-copies -- PRIVATE_DIR`
 compares every private program with every development program by the Jaccard
 similarity of their token 4-grams, ignoring comments and the `main` that
 intake generates for a library test case. A private program
-counts as a near-copy from 0.5; no pair scores between 0.41 and 0.53. The
-list stays private, and results for the private sets are reported with and
-without near-copies. The gate logs both validation scores; its decision uses
+counts as a near-copy from 0.5; no pair from TRACTOR scores between 0.41 and
+0.53. The list stays private, and results for the private sets are reported
+with and without near-copies. The gate logs both validation scores; its decision uses
 all programs.
 
 | Set | Near-copies | Programs |
 |---|---:|---:|
 | Validation | 10 | 24 |
 | Held-out | 4 | 22 |
+| Transfer | 0 | 200 |
+
+## Transfer set
+
+All other sets come from TRACTOR, so a rule that fits TRACTOR's style can
+score well on each of them. The transfer set holds 200 programs from
+[IBM's Project CodeNet](https://github.com/IBM/Project_CodeNet), solutions
+that AIZU's and AtCoder's online judges accepted, under the Community Data
+License Agreement - Permissive 2.0. It is private and has no development
+part: no loop sees it, and the gate does not evaluate it. It is evaluated
+afterwards on the commits a run kept, and reported apart from the TRACTOR
+sets.
+
+`cargo run -p bench --bin codenet -- CODENET_DIR PRIVATE_DIR` takes the
+problems with accepted C solutions whose sample input and output CodeNet
+verified, and merges problems that CodeNet lists as identical into one
+family. Families come in an order derived from the secret seed, and each
+family's program is the first of at most 10 of its accepted C solutions, in
+such an order, that passes the same C checks as the benchmarks on the
+sample input and prints CodeNet's expected output as a judge compares it,
+without trailing spaces and blank lines. Source and input must be UTF-8, and
+a program that calls `atoi`, `atol`, `atoll` or the `scanf` family gets no
+input with a number beyond `int`. Groups come from the intake tool's feature
+detection, the fuzz tool adds inputs to the sample, and `near-copies`
+compares the set with the development programs as well.
+`PRIVATE_DIR/codenet.json` records each program's source and why every other
+solution tried was left out.
+
+| Group | Programs |
+|---|---:|
+| G1 | 31 |
+| G2 | 98 |
+| G3 | 24 |
+| G4 | 21 |
+| G5 | 26 |
+| Total | 200 |
+
+128 programs come from AIZU and 72 from AtCoder. They took 207 of CodeNet's
+2,864 families with a verified sample, in seeded order:
+
+| Left out | Count |
+|---|---:|
+| Solutions that do not build with the default C flags | 47 |
+| Solutions whose output differs from CodeNet's expected output | 22 |
+| Solutions with a sanitizer error on the sample | 13 |
+| Solutions that read uninitialised memory | 3 |
+| Solutions that parse a number beyond `int` | 2 |
+| Families without a program in 10 solutions | 7 |
 
 ## Regenerating
 
@@ -186,4 +237,12 @@ repository, because it contains the validation and held-out programs too. The
 second argument is a checkout of the private repository. Run `variants` after
 `intake`, then `fuzz` (`intake` removes the fuzzed inputs), then update the
 manifest as the private README describes, and run `near-copies` whenever a set
-changes.
+changes. The transfer set comes from an unpacked
+[Project_CodeNet.tar.gz](https://codait-cos-dax.s3.us.cloud-object-storage.appdomain.cloud/dax-project-codenet/1.0.0/Project_CodeNet.tar.gz),
+also kept outside this repository, since it contains the transfer programs:
+
+```sh
+cargo run -p bench --bin codenet -- ~/.cache/c-to-rust-autoresearch/codenet/Project_CodeNet ../c-to-rust-autoresearch-holdout
+```
+
+Run it before `fuzz`, which gives its programs fuzzed inputs too.

@@ -14,8 +14,8 @@ use eval::Input;
 
 const USAGE: &str = "usage: fuzz PRIVATE_DIR\n\
      Writes NAME.fuzz.json next to every program in bench/dev and in the\n\
-     validation and held-out sets of PRIVATE_DIR. Run it after intake, which\n\
-     removes them.";
+     validation, held-out and transfer sets of PRIVATE_DIR. Run it after intake\n\
+     and codenet, which remove them.";
 /// Fuzzed inputs kept per program at most.
 const KEEP: usize = 10;
 /// Candidates tried per program.
@@ -69,7 +69,11 @@ fn main() -> ExitCode {
 
 fn generate(private: &Path) -> Result<(), String> {
     let scratch = eval::Scratch::new("fuzz")?;
-    bench::sets(private).iter().try_for_each(|(set, dir)| {
+    let mut sets = bench::sets(private).to_vec();
+    if private.join("transfer").is_dir() {
+        sets.push(("transfer", private.join("transfer")));
+    }
+    sets.iter().try_for_each(|(set, dir)| {
         let programs = eval::c_programs(dir)?;
         let (mut fuzzed, mut inputs) = (0, 0);
         for c_file in &programs {
