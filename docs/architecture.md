@@ -6,7 +6,7 @@ stays fixed while a loop runs.
 | Crate | Role | Changed by |
 |---|---|---|
 | `transpiler` | Translates one C file to Rust | the loop |
-| `eval` | The evaluator library, the `eval` command and the loop's `gate` | the owner |
+| `eval` | The evaluator library, the `eval` command, the loop's `gate` and `transfer` | the owner |
 | `bench` | Builds the benchmark sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` | the owner |
 | `transcripts` | Reads Claude Code transcripts: model `usage` and the loop's `audit` | the owner |
 
@@ -133,6 +133,17 @@ checkout the loop agent cannot write. It refuses a checkout that is off main,
 has changes or untracked files, or is the loop agent's clone; that catches a
 mistaken checkout, but the gate is built before it checks, so it cannot stop a
 hostile one.
+
+`cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--jobs N]` evaluates the
+transfer set after a run: on the run's start and on every candidate its gate
+kept, in the order of `PRIVATE_DIR/runs/RUN/log.jsonl`, which must hold one
+run's rounds. It trusts the same checkout as the gate and builds and
+evaluates each commit the same way. It appends one entry per commit to
+`PRIVATE_DIR/runs/RUN/transfer.jsonl`: each program's stage, the passes that
+fail their fuzzed inputs and the tool versions. It skips commits already
+there and prints only its progress, since the results stay sealed like
+held-out. Its load would change a gate's timings, so it runs while no run is
+going.
 
 ## A round
 

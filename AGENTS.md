@@ -71,8 +71,8 @@ deleting code is welcome. A new dependency needs a reason.
 | Path | Role |
 | --- | --- |
 | `crates/transpiler/` | The transpiler, the only code the loop changes |
-| `crates/eval/src/` | Evaluator library: `spec`, `reference`, `translate`, `run`, `sandbox`, `evaluate`, `idioms`, `files` |
-| `crates/eval/src/main.rs`, `src/bin/gate.rs` | The `eval` command and the loop's gate |
+| `crates/eval/src/` | Evaluator library: `spec`, `reference`, `translate`, `run`, `sandbox`, `evaluate`, `idioms`, `files`, and `commits` for the gate and `transfer` |
+| `crates/eval/src/main.rs`, `src/bin/gate.rs`, `src/bin/transfer.rs` | The `eval` command, the loop's gate, and the transfer set's evaluation after a run |
 | `crates/bench/` | Builds the sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` |
 | `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |

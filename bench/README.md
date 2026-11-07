@@ -187,8 +187,9 @@ score well on each of them. The transfer set holds 200 programs from
 that AIZU's and AtCoder's online judges accepted, under the Community Data
 License Agreement - Permissive 2.0. It is private and has no development
 part: no loop sees it, and the gate does not evaluate it. It is evaluated
-afterwards on the commits a run kept, and reported apart from the TRACTOR
-sets.
+afterwards on the commits a run kept, with
+`cargo run -p eval --bin transfer -- PRIVATE_DIR RUN`, and reported apart
+from the TRACTOR sets.
 
 `cargo run -p bench --bin codenet -- CODENET_DIR PRIVATE_DIR` takes the
 problems with accepted C solutions whose sample input and output CodeNet

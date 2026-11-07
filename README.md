@@ -142,6 +142,17 @@ environment. The run logs each session's times and exit codes to
 calls named only places that the sandbox hid, and stops early after a failed
 session or round, or when the audit finds contact with the private sets.
 
+After a run, while no other is going, the transfer set is evaluated on the
+run's start and on every commit its gate kept:
+
+```sh
+cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--jobs N]
+```
+
+It builds each commit's transpiler as the gate does, appends the results to
+`PRIVATE_DIR/runs/RUN/transfer.jsonl`, skips commits already there and prints
+no results.
+
 ## Model usage
 
 ```sh
