@@ -2,6 +2,7 @@
 //! safe Rust and, with overflow checks on, prints the same standard output and
 //! exits with the same code as the C original for every input.
 
+mod commits;
 mod evaluate;
 mod files;
 mod idioms;
@@ -11,6 +12,9 @@ mod sandbox;
 mod spec;
 mod translate;
 
+pub use commits::{
+    FuzzFailures, Results, append_log, evaluate_commit, git, git_in, run_id, untrusted,
+};
 pub use evaluate::{Record, Stage, evaluate, evaluate_all, fuzz_counts, versions};
 pub use files::{REPO, Scratch, c_programs, dev_dir, entries};
 pub use reference::References;
