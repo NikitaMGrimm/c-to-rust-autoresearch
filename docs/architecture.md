@@ -139,13 +139,13 @@ transfer set after a run: on the run's start and on every candidate that its
 gate kept, in the order of `PRIVATE_DIR/runs/RUN/log.jsonl`, and that
 `run/RUN` holds. The gate logs before the round moves the branch, so a round
 stopped in between leaves a kept candidate that never joined the run; the
-branch's tip must be among the commits. It trusts the same checkout as the gate and builds and
-evaluates each commit the same way. It appends one entry per commit to
-`PRIVATE_DIR/runs/RUN/transfer.jsonl`: each program's stage, the passes that
-fail their fuzzed inputs and the tool versions. It skips commits already
-there and prints only its progress, since the results stay sealed like
-held-out. Its load would change a gate's timings, so it runs while no run is
-going.
+branch's tip must be among the commits. It trusts the same checkout as the
+gate and builds and evaluates each commit the same way. It appends one entry
+per commit to `PRIVATE_DIR/runs/RUN/transfer.jsonl`: each program's stage,
+the passes that fail their fuzzed inputs and the tool versions. It skips
+commits already there and prints only its progress, since the results stay
+sealed like held-out. Its load would change a gate's timings, so it runs
+while no run is going.
 
 ## A round
 

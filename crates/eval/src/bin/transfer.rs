@@ -68,7 +68,7 @@ fn transfer(args: &Args) -> Result<(), String> {
         .map_err(|err| format!("cannot read the gate's log {}: {err}", log.display()))?;
     let branch = format!("refs/heads/run/{}", args.run);
     let tip = eval::git(&["rev-parse", "--verify", &format!("{branch}^{{commit}}")])?;
-    let commits = kept_commits(&text, &tip, |commit| is_on(commit, &branch))
+    let commits = kept_commits(&text, &tip, |commit| is_on(commit, &tip))
         .map_err(|err| format!("{}: {err}", log.display()))?;
     let out = dir.join("transfer.jsonl");
     let done = match std::fs::read_to_string(&out) {
@@ -118,7 +118,9 @@ fn transfer(args: &Args) -> Result<(), String> {
 /// the gate's log `text`, and every candidate the gate kept that the run's
 /// branch, at `tip`, holds, in order. The gate logs before the round moves the
 /// branch, so a round stopped in between leaves a kept candidate that never
-/// joined the run, and a round run again judges the same base twice.
+/// joined the run, and a round run again judges the same base twice. A
+/// candidate rejected when its round ran again still counts if a later kept
+/// commit builds on it, which the agent could do only from its object store.
 fn kept_commits(
     text: &str,
     tip: &str,
@@ -160,17 +162,17 @@ fn kept_commits(
     Ok(commits)
 }
 
-/// Whether `commit` is `branch` or one of its ancestors.
-fn is_on(commit: &str, branch: &str) -> Result<bool, String> {
+/// Whether `commit` is `tip` or one of its ancestors.
+fn is_on(commit: &str, tip: &str) -> Result<bool, String> {
     let output = Command::new("git")
-        .args(["merge-base", "--is-ancestor", commit, branch])
+        .args(["merge-base", "--is-ancestor", commit, tip])
         .current_dir(eval::REPO)
         .output()
         .map_err(|err| format!("cannot run git: {err}"))?;
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(format!("cannot tell whether {commit} is on {branch}")),
+        _ => Err(format!("cannot tell whether {commit} is in {tip}'s history")),
     }
 }
 
