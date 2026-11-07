@@ -172,7 +172,9 @@ fn is_on(commit: &str, tip: &str) -> Result<bool, String> {
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(format!("cannot tell whether {commit} is in {tip}'s history")),
+        _ => Err(format!(
+            "cannot tell whether {commit} is in {tip}'s history"
+        )),
     }
 }
 
