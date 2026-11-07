@@ -17,8 +17,8 @@ With --run, the commit is judged against and kept on the branch run/RUN, which
 loop/run made, and the gate logs to PRIVATE_DIR/runs/RUN; --dev-only goes to
 the gate. Exits 0 when the gate decided, 1 when the audit found contact with
 the private sets, 3 when the loop checkout has no new commit, 4 when a run's
-session is set aside because its calls named private places, which its
-sandbox hid, and 2 on errors. A failed GitHub step only prints a warning.
+session is set aside because its calls named only places that its sandbox
+hid, and 2 on errors. A failed GitHub step only prints a warning.
 EOF
   exit 2
 }
@@ -91,12 +91,30 @@ fi
 status=0
 found=$(cargo run -q -p transcripts --bin audit -- "$private" "$transcripts") || status=$?
 printf '%s\n' "$found"
+# Whether each finding is a call that names the private directory or the
+# corpus cache, which a run's sandbox hides, or Claude Code's files, which
+# are the sandbox's own. Anything else is contact: a private program's name,
+# a record the audit cannot read, or a call that names a corpus or looks for
+# one on the web, since the model API can search and fetch the web.
+hidden_only() {
+  local line
+  while IFS= read -r line; do
+    if [[ $line == "AUDIT "* ]]; then
+      continue
+    fi
+    [[ $line == "$transcripts/"* ]] || return 1
+    case ${line##*: } in
+      *" names $private" | *" names ${private##*/}" | *" names .cache/c-to-rust-autoresearch") ;;
+      *" touches Claude Code's files") ;;
+      *) return 1 ;;
+    esac
+  done <<<"$found"
+}
+
 if ((status == 1)); then
-  # A run's sessions run in a sandbox that hides the private places, so a call
-  # that names one reached nothing. Such a session is set aside unjudged, with
-  # its transcripts, which later audits would report again. A private
-  # program's name, or a record the audit cannot read, is contact.
-  if [[ -n $run ]] && ! grep -q -E ': (private program |unreadable record$)' <<<"$found"; then
+  # Such a session is set aside unjudged, with its transcripts, which later
+  # audits would report again, and their model usage.
+  if [[ -n $run ]] && hidden_only; then
     aside=$state/flagged/$(date -u +%Y%m%dT%H%M%S%NZ)
     mkdir -p "$aside"
     while IFS= read -r line; do
@@ -111,7 +129,12 @@ if ((status == 1)); then
         done
       fi
     done <<<"$found"
-    echo "round stopped: the audit found calls that name private places but no contact; the session is set aside in $aside and the gate did not run" >&2
+    if [[ -z $(ls -A "$aside") ]]; then
+      echo "round stopped: the audit's findings name no transcript to set aside" >&2
+      exit 2
+    fi
+    cargo run -q -p transcripts --bin usage -- "$aside" >"$aside/usage.json"
+    echo "round stopped: the audit found calls that name places the sandbox hid, but no contact; the session is set aside in $aside and the gate did not run" >&2
     exit 4
   fi
   echo "round stopped: the audit found contact with the private sets; the gate did not run" >&2

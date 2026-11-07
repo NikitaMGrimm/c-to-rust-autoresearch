@@ -85,11 +85,11 @@ if [[ -f $HOME/.claude/settings.json ]]; then
   install -m 600 "$HOME/.claude/settings.json" "$state/settings.json"
   url=$(jq -r --arg url "$url" '.env.ANTHROPIC_BASE_URL // $url' "$state/settings.json")
 fi
-if [[ ! $url =~ ^http://(127\.0\.0\.1|localhost):([0-9]+)(/.*)?$ ]]; then
+if [[ ! $url =~ ^http://127\.0\.0\.1:([0-9]+)(/.*)?$ ]]; then
   echo "loop/run needs ANTHROPIC_BASE_URL=http://127.0.0.1:PORT, a proxy to the model API: a session's sandbox has no other network" >&2
   exit 2
 fi
-port=${BASH_REMATCH[2]}
+port=${BASH_REMATCH[1]}
 if ! claude=$(command -v claude); then
   echo "loop/run needs claude" >&2
   exit 2
@@ -132,16 +132,24 @@ if [[ ! -S $relay/api.sock ]]; then
 fi
 
 # The session sees a read-only file system without the home directory, the
-# Windows drives under WSL, /tmp, other processes and any network, and the
-# places the loop agent may not reach are hidden wherever they are. Its
+# Windows drives under WSL, /tmp, /run, other processes and any network, and
+# the places the loop agent may not reach are hidden wherever they are. /run
+# holds the sockets of the user's systemd and D-Bus, Docker and WSL's
+# interop, each of which would start a process outside the sandbox. Its
 # checkout and its transcripts are writable; the toolchain, Claude Code and
 # this checkout's loop/, for the guard, are readable.
 name=$(printf %s "$loop" | tr -c 'a-zA-Z0-9' '-')
 transcripts=$HOME/.claude/projects/$name
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
 rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
-sandbox=(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs "$HOME")
-hidden=(/mnt "$(cd "$private" && pwd -P)" "$repo" "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch")
+sandbox=(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run --tmpfs "$HOME")
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch
+if [[ -d $cache ]]; then
+  cache=$(cd "$cache" && pwd -P)
+fi
+# The bench tools and the evaluator leave private programs in TMPDIR when
+# they stop early.
+hidden=(/mnt "$(cd "$private" && pwd -P)" "$repo" "$cache" "${TMPDIR:-/tmp}")
 for dir in "$@"; do
   hidden+=("$(cd "$dir" && pwd -P)")
 done
@@ -157,11 +165,11 @@ for dir in "$cargo_home"/{bin,registry,git} "$rustup_home"; do
   fi
 done
 sandbox+=(--ro-bind "$claude" "$claude" --ro-bind "$repo/loop" "$repo/loop")
-sandbox+=(--bind "$loop" "$loop" --bind "$transcripts" "$transcripts" --bind "$relay" /tmp/c2r-relay)
+sandbox+=(--bind "$loop" "$loop" --bind "$relay" /tmp/c2r-relay)
 if [[ -f $state/settings.json ]]; then
   sandbox+=(--ro-bind "$state/settings.json" "$HOME/.claude/settings.json")
 fi
-sandbox+=(--unshare-all --die-with-parent --new-session --chdir "$loop" --)
+isolated=(--unshare-all --die-with-parent --new-session --chdir "$loop" --)
 # Only these variables reach the session; the agent commits as whoever runs
 # the loop, since git's own settings stay hidden.
 environment=(
@@ -199,15 +207,36 @@ before=$(($(wc -l <"$state/sessions") - 1))
 for ((session = 1; session <= sessions; session++)); do
   echo "run $run: session $session of $sessions"
   mkdir -p "$transcripts"
+  # The session's transcripts go to a directory of its own, so that it cannot
+  # read what an earlier session left there, such as one the round set aside.
+  own=$(mktemp -d)
+  temporary+=("$own")
   began=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Permission prompts cannot be answered here. The deny rules and the hook
   # that loop/setup wrote still apply. claude -p would add piped input to the
   # prompt.
   failed=0
-  env -i "${environment[@]}" "${sandbox[@]}" bash -c "$relayed" relay "$port" \
-    "$claude" -p "Do one iteration of the research loop, as loop/program.md says." \
-    --permission-mode bypassPermissions "${claude_args[@]}" </dev/null || failed=$?
+  (
+    # Only the standard streams reach the session: a descriptor that whatever
+    # started the run left open could lead to a hidden place.
+    for fd in /proc/$BASHPID/fd/*; do
+      fd=${fd##*/}
+      if ((fd > 2)); then
+        exec {fd}>&-
+      fi
+    done
+    exec env -i "${environment[@]}" "${sandbox[@]}" --bind "$own" "$transcripts" "${isolated[@]}" \
+      bash -c "$relayed" relay "$port" \
+      "$claude" -p "Do one iteration of the research loop, as loop/program.md says." \
+      --permission-mode bypassPermissions "${claude_args[@]}"
+  ) </dev/null || failed=$?
   ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # The round audits them with all earlier ones.
+  find "$own" -mindepth 1 -maxdepth 1 -exec mv -n -t "$transcripts" -- {} + || true
+  if [[ -n $(ls -A "$own") ]]; then
+    echo "run $run stopped after session $session: its transcripts would overwrite earlier ones in $transcripts" >&2
+    exit 2
+  fi
   status=0
   "$repo/loop/round" --run "$run" "${round[@]}" "$private" "$loop" "$@" || status=$?
   printf '%s\t%s\t%s\t%s\t%s\n' "$((before + session))" "$began" "$ended" "$failed" "$status" \
@@ -217,6 +246,9 @@ for ((session = 1; session <= sessions; session++)); do
     # as it was; the next session starts afresh all the same.
     rm -rf -- "$loop"
     "$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
+    if [[ -f $state/rounds.md ]]; then
+      cp "$state/rounds.md" "$loop/ROUNDS.md"
+    fi
   elif ((status)); then
     echo "run $run stopped after session $session: the round failed" >&2
     exit "$status"

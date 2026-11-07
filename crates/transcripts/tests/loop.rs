@@ -139,19 +139,21 @@ fn commit(dir: &Path, file: &str) -> String {
 
 /// A fake Claude Code session for `loop/run`, which runs it in the sandbox:
 /// it writes a transcript and a rule with its arguments, and commits all it
-/// finds unless `idle` lists the session.
-fn session(idle: &str) -> String {
+/// finds unless `idle` lists the session. Sessions are numbered by the
+/// audits of the rounds before them, logged to `calls`.
+fn session(calls: &Path, idle: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
 transcripts=$HOME/.claude/projects/$(printf %s "$PWD" | tr -c 'a-zA-Z0-9' '-')
-session=$(($(ls "$transcripts" | wc -l) + 1))
+session=$(($(cat {calls} 2>/dev/null | grep -c -- '--bin audit') + 1))
 echo "claude $*" >"$transcripts/s$session.jsonl"
 echo "claude $*" >"rule$session"
 if [[ " {idle} " != *" $session "* ]]; then
   git add -A
   git -c commit.gpgsign=false commit -q -m "feat(transpiler): rule $session"
 fi
-"#
+"#,
+        calls = quoted(calls),
     )
 }
 
@@ -160,12 +162,35 @@ fn quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
 
+/// A new directory for a fixture, removed when dropped. It is not under
+/// /tmp, which a run's sandbox hides anyway, so that a test shows whether the
+/// sandbox hides the private places wherever they are.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Scratch {
+        static CREATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = CREATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("loop-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A scratch copy of this repository's loop scripts on a main branch, which
 /// CI does not check out, with a home directory, a private directory, a bare
 /// repository as GitHub, a fake cargo that stands in for the audit, the usage
 /// tool and the gate, and a fake gh that answers from files in `gh/`.
 struct Fixture {
-    _scratch: eval::Scratch,
+    _scratch: Scratch,
     dir: PathBuf,
     repo: PathBuf,
     home: PathBuf,
@@ -174,8 +199,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
-        let scratch = eval::Scratch::new("test").unwrap();
-        let dir = scratch.canonicalize().unwrap();
+        let scratch = Scratch::new();
+        let dir = scratch.0.canonicalize().unwrap();
         // A quote in the path tests how the scripts quote it.
         let (repo, home) = (dir.join("it's repo"), dir.join("home"));
         for path in [
@@ -205,8 +230,11 @@ impl Fixture {
 echo "$*" >>"$CALLS"
 case "$*" in
   *"--bin audit"*)
-    # A finding in the transcript directory, the last argument.
-    if ((AUDIT == 1)); then echo "${@: -1}/s1.jsonl:1: ${FINDING:-private program p}"; fi
+    # A finding in each transcript of the directory, the last argument.
+    if ((AUDIT == 1)); then
+      for file in "${@: -1}"/${AUDITED:-*.jsonl}; do echo "$file:1: ${FINDING:-private program p}"; done
+      echo "AUDIT findings"
+    fi
     exit "$AUDIT" ;;
   *"--bin usage"*) echo '{"models": {"claude-opus-5-5": {"output_tokens": 5}}}' ;;
   *"--bin gate"*)
@@ -429,7 +457,7 @@ esac | jq -r "$filter"
     /// transcript and a rule with its arguments, and commits all it finds
     /// unless `idle` lists the session.
     fn run_loop(&self, args: &[&str], idle: &str, audit: u8) -> Option<i32> {
-        let mut command = self.loop_command(&session(idle), args, audit);
+        let mut command = self.loop_command(&session(&self.dir.join("calls"), idle), args, audit);
         command.status().unwrap().code()
     }
 
@@ -689,8 +717,9 @@ fn a_run_starts_every_session_afresh_and_stops_at_contact() {
         fixture.run_loop(&["--start", &start, "r1", sessions], idle, audit)
     };
     // The first session leaves its rule uncommitted, which the second, in a
-    // fresh checkout, does not see.
-    assert_eq!(run("2", "1", 0), Some(0));
+    // fresh checkout, does not see. The third commits nothing either, and the
+    // checkout after it still has the judged rounds.
+    assert_eq!(run("3", "1 3", 0), Some(0));
     let kept = git(repo, &["log", "--format=%s", "main..run/r1"]);
     assert_eq!(kept.lines().count(), 2, "{kept}");
     let files = git(repo, &["ls-tree", "--name-only", "run/r1"]);
@@ -698,6 +727,8 @@ fn a_run_starts_every_session_afresh_and_stops_at_contact() {
         files.contains("rule2") && !files.contains("rule1"),
         "{files}"
     );
+    let rounds = std::fs::read_to_string(fixture.loop_dir.join("ROUNDS.md")).unwrap();
+    assert!(rounds.contains("rule 2"), "{rounds}");
     assert_eq!(run("1", "", 0), Some(2));
 
     std::fs::remove_dir_all(&fixture.loop_dir).unwrap();
@@ -708,35 +739,66 @@ fn a_run_starts_every_session_afresh_and_stops_at_contact() {
     assert_eq!(run("3", "", 1), Some(1));
     let sessions = fixture.sessions("r1");
     let rounds: Vec<&str> = sessions.iter().map(|row| row[4].as_str()).collect();
-    assert_eq!(rounds, ["3", "0", "1"]);
+    assert_eq!(rounds, ["3", "0", "3", "1"]);
     assert_eq!(git(repo, &["rev-parse", "run/r1"]), before);
 }
 
 #[test]
-fn a_run_sets_aside_a_session_whose_calls_only_named_private_places() {
+fn a_run_sets_aside_a_session_whose_calls_only_named_places_its_sandbox_hid() {
     let fixture = Fixture::new();
     let repo = &fixture.repo;
     std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
     let start = commit(repo, "crates/transpiler/empty");
-    let mut command = fixture.loop_command(&session(""), &["--start", &start, "r1", "2"], 1);
-    command.env("FINDING", "Bash names private");
-    assert_eq!(command.status().unwrap().code(), Some(0));
+    let calls = fixture.dir.join("calls");
+    let run = |run: &str, finding: &str, audited: &str| {
+        let _ = std::fs::remove_dir_all(&fixture.loop_dir);
+        let args = ["--start", &start, run, "2"];
+        let mut command = fixture.loop_command(&session(&calls, ""), &args, 1);
+        command.env("FINDING", finding).env("AUDITED", audited);
+        command.status().unwrap().code()
+    };
+    let cache = "Bash names .cache/c-to-rust-autoresearch";
+    assert_eq!(run("r1", "Bash names private", "*.jsonl"), Some(0));
+    assert_eq!(run("r2", cache, "*.jsonl"), Some(0));
 
-    // Neither commit was judged, and both transcripts were moved out of
-    // later audits.
-    let sessions = fixture.sessions("r1");
-    let rounds: Vec<&str> = sessions.iter().map(|row| row[4].as_str()).collect();
-    assert_eq!(rounds, ["4", "4"]);
+    // Neither run judged a commit, and every transcript was moved out of
+    // later audits, with its model usage.
+    for run in ["r1", "r2"] {
+        let sessions = fixture.sessions(run);
+        let rounds: Vec<&str> = sessions.iter().map(|row| row[4].as_str()).collect();
+        assert_eq!(rounds, ["4", "4"], "{run}");
+        assert_eq!(
+            git(repo, &["rev-list", "--count", &format!("main..run/{run}")]),
+            "1"
+        );
+        let flagged = repo.join(format!("local/runs/{run}/flagged"));
+        for entry in std::fs::read_dir(flagged).unwrap() {
+            let aside = entry.unwrap().path();
+            let names: Vec<String> = std::fs::read_dir(&aside)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names.len(), 2, "{names:?}");
+            assert!(names.contains(&"usage.json".to_owned()), "{names:?}");
+        }
+    }
     assert!(!fixture.calls().contains("--bin gate"));
-    assert_eq!(git(repo, &["rev-list", "--count", "main..run/r1"]), "1");
-    let flagged = repo.join("local/runs/r1/flagged");
-    let aside: Vec<PathBuf> = std::fs::read_dir(flagged)
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("s1.jsonl"))
-        .collect();
-    assert!(aside.len() == 2 && aside.iter().all(|path| path.exists()));
     let transcripts = transcripts(&fixture.home, &fixture.loop_dir);
-    assert_eq!(std::fs::read_dir(transcripts).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&transcripts).unwrap().count(), 0);
+
+    // The model API reaches the web, so a corpus named or looked for there is
+    // contact, as is a private program's name next to a harmless finding. A
+    // finding without a transcript to set aside is an error.
+    let mixed = format!("Bash names private\n{transcripts}/s.jsonl:2: private program p");
+    for finding in [
+        "Bash names DARPA-TRACTOR-Program",
+        "WebSearch looks for TRACTOR",
+        &mixed,
+    ] {
+        assert_eq!(run("r3", finding, "*.jsonl"), Some(1), "{finding}");
+        std::fs::remove_dir_all(&transcripts).unwrap();
+    }
+    assert_eq!(run("r3", "Bash names private", "gone.jsonl"), Some(2));
 }
 
 #[test]
@@ -745,9 +807,14 @@ fn a_run_session_reaches_only_its_checkout_and_the_model_api() {
     let repo = &fixture.repo;
     std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
     let start = commit(repo, "crates/transpiler/empty");
+    // Neither the private directory nor this denied one is in the home
+    // directory or /tmp, which the sandbox hides as a whole.
+    let denied = fixture.dir.join("denied");
+    std::fs::create_dir(&denied).unwrap();
     let private = fixture.dir.join("private/secret");
     let notes = fixture.home.join("notes/secret");
-    for secret in [&private, &notes] {
+    let elsewhere = denied.join("secret");
+    for secret in [&private, &notes, &elsewhere] {
         std::fs::write(secret, "secret").unwrap();
     }
     let api = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -759,10 +826,17 @@ fn a_run_session_reaches_only_its_checkout_and_the_model_api() {
             let _ = stream.write_all(b"model\n");
         }
     });
-    let unseen = [&private, &notes, &repo.join("crates/transpiler/empty")];
+    let unseen = [
+        &private,
+        &notes,
+        &elsewhere,
+        &repo.join("crates/transpiler/empty"),
+    ];
     let unseen: Vec<String> = unseen.iter().map(|path| quoted(path)).collect();
+    // Two sessions, so that the second could see what the first left.
     let claude = format!(
         r#"#!/usr/bin/env bash
+transcripts=$HOME/.claude/projects/$(printf %s "$PWD" | tr -c 'a-zA-Z0-9' '-')
 {{
   answer=$( (exec 3<>/dev/tcp/127.0.0.1/{api_port} && read -r -t 5 line <&3 && echo "$line") 2>/dev/null)
   echo "model api: $answer"
@@ -771,17 +845,41 @@ fn a_run_session_reaches_only_its_checkout_and_the_model_api() {
     if [[ -e $file ]]; then echo "saw $file"; fi
   done
   if [[ -e /proc/{pid} ]]; then echo "saw the test's process"; fi
+  if [[ -n $(ls -A /run) ]]; then echo "saw /run"; fi
+  if [[ -e /proc/$$/fd/7 ]]; then echo "kept descriptor 7"; fi
+  if compgen -G "$transcripts/left-*" >/dev/null; then echo "saw an earlier session's file"; fi
   env | grep -E '^(CALLS|GH|AUDIT|GATE)=' || true
 }} >probe
+touch "$transcripts/left-$(date +%s%N)"
 git add -A
-git -c commit.gpgsign=false commit -q -m "feat(transpiler): probe"
+git -c commit.gpgsign=false commit -q --allow-empty -m "feat(transpiler): probe"
 "#,
         unseen = unseen.join(" "),
         pid = std::process::id(),
     );
-    let mut command = fixture.loop_command(&claude, &["--start", &start, "r1", "1"], 0);
-    command.env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{api_port}"));
-    assert_eq!(command.status().unwrap().code(), Some(0));
+    let mut command = fixture.loop_command(&claude, &["--start", &start, "r1", "2"], 0);
+    command
+        .arg(&denied)
+        .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{api_port}"));
+    // Whatever starts a run may leave a descriptor open, here on the private
+    // directory.
+    let mut started = Command::new("bash");
+    started
+        .args(["-c", r#"exec 7<"$0" && exec "$@""#])
+        .arg(fixture.dir.join("private"))
+        .arg(command.get_program())
+        .args(command.get_args())
+        .current_dir(&fixture.dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => started.env(key, value),
+            None => started.env_remove(key),
+        };
+    }
+    assert_eq!(started.status().unwrap().code(), Some(0));
+    assert_eq!(fixture.sessions("r1").len(), 2);
     assert_eq!(git(repo, &["show", "run/r1:probe"]), "model api: model");
     drop(other);
 }

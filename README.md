@@ -130,14 +130,16 @@ round:
 A run keeps its commits on its own branch `run/RUN`, which starts from main
 with the transpiler as it was before the loop's first rule, and the gate logs
 it to `PRIVATE_DIR/runs/RUN/log.jsonl`. Each session runs in a bubblewrap
-sandbox that sees only its clone, the Rust toolchain and Claude Code, and
-whose only network is the model API. Claude Code must therefore reach the API
-through a proxy on this machine, at `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT`
-in its settings or the environment. The run logs each session's times and
-exit codes to `local/runs/RUN/sessions`. It publishes nothing, sets aside a
-session whose calls only named private places, which the sandbox hid, and
-stops early after a failed session or round, or when the audit finds contact
-with the private sets.
+sandbox, [described here](docs/architecture.md#the-sandbox): a read-only
+file system without the home directory, `/tmp`, `/run` and the private
+places, in which only its clone and its transcripts are writable, and whose
+only network is the model API. Claude Code must therefore be its native
+install and reach the API through a proxy on this machine, at
+`ANTHROPIC_BASE_URL=http://127.0.0.1:PORT` in its settings or the
+environment. The run logs each session's times and exit codes to
+`local/runs/RUN/sessions`. It publishes nothing, sets aside a session whose
+calls named only places that the sandbox hid, and stops early after a failed
+session or round, or when the audit finds contact with the private sets.
 
 ## Model usage
 

@@ -69,17 +69,24 @@ private data, checks it with `--workspace`.
 The loop agent runs that code in its own session too. In an unattended run
 (`loop/run`), the session therefore runs in a bubblewrap sandbox of its own:
 a read-only file system without the home directory, `/tmp`, `/mnt` (the
-Windows drives under WSL), other processes or network. The private directory,
-the main checkout, the corpus cache and the denied directories are hidden
-wherever they are. The session sees its clone and its transcript directory,
-both writable, and the Rust toolchain without CARGO_HOME's credentials,
-Claude Code itself, the owner's Claude Code settings as the run started and
-the main checkout's `loop/`, for the guard. Its environment holds only what
-Claude Code, cargo and git need. Its one connection out is the model API:
-`socat` relays the API's port on the sandbox's loopback through a socket to
-the proxy at `ANTHROPIC_BASE_URL` on the machine's own, so the API must be
-reached through such a proxy. Cargo works offline. The evaluator's sandbox
-nests inside this one when the agent runs `eval`.
+Windows drives under WSL), `/run`, other processes or network. `/run` holds
+the sockets of the user's systemd and D-Bus, Docker and WSL's interop, each
+of which would start a process outside the sandbox. The private directory,
+the main checkout, the corpus cache, `TMPDIR` and the denied directories are
+hidden wherever they are. The session sees its clone and a transcript
+directory of its own, both writable, and the Rust toolchain without
+CARGO_HOME's credentials, Claude Code itself (the native install), the
+owner's Claude Code settings as the run started and the main checkout's
+`loop/`, for the guard. Its transcripts join the earlier ones only after it
+ends, so a session cannot read what an earlier one left there. Its
+environment holds only what Claude Code, cargo and git need, and no file
+descriptors but the standard streams. Its one connection out is the model
+API: `socat` relays the API's port on the sandbox's loopback through a
+socket to the proxy at `ANTHROPIC_BASE_URL` on the machine's own, so the API
+must be reached through such a proxy. The API can itself search and fetch
+the web for whoever calls it, so the deny rules, the guard and the audit
+below still matter. Cargo works offline. The evaluator's sandbox nests
+inside this one when the agent runs `eval`.
 
 ## Benchmark data
 
@@ -146,10 +153,13 @@ round, for a fixed number of sessions. The sessions run without permission
 prompts, as the pilot's did in T3 Code, in the sandbox above; the deny rules
 and the guard from `loop/setup` still apply. A session without a commit is
 followed by a fresh clone all the same. So is one whose audit findings are
-only calls that name private places: since the sandbox hid them, the round
-moves its transcripts to `local/runs/RUN/flagged/` and judges nothing (exit
-code 4). A private program's name in a transcript, or a record the audit
-cannot read, is contact. The run stops then, and after a session or round
+only calls that name the private directory or the corpus cache, which the
+sandbox hid, or Claude Code's files, which are the sandbox's own: the round
+moves its transcripts, with a report of their model usage, to
+`local/runs/RUN/flagged/` and judges nothing (exit code 4). A private
+program's name in a transcript, a record the audit cannot read, or a call
+that names a corpus or looks for one on the web, which the API can reach, is
+contact. The run stops then, and after a session or round
 that failed. Each session's start, end and exit codes, and the round's, go to
 `local/runs/RUN/sessions`.
 
