@@ -87,6 +87,23 @@ if ! base=$(git rev-parse -q --verify "refs/heads/$branch"); then
   exit 2
 fi
 
+# The transcripts of a run's sessions, which loop/run keeps apart while a
+# session runs, join the earlier ones, so that the audit reads them all; also
+# those of a session whose run stopped before its round.
+if [[ -n $run ]]; then
+  for own in "$state"/session.*; do
+    if [[ -d $own ]]; then
+      mkdir -p "$transcripts"
+      find "$own" -mindepth 1 -maxdepth 1 -exec mv -n -t "$transcripts" -- {} + || true
+      if [[ -n $(ls -A "$own") ]]; then
+        echo "round stopped: transcripts in $own would overwrite earlier ones in $transcripts" >&2
+        exit 2
+      fi
+      rmdir "$own"
+    fi
+  done
+fi
+
 # After a look at a private program, the gate's results would mean nothing.
 status=0
 found=$(cargo run -q -p transcripts --bin audit -- "$private" "$transcripts") || status=$?

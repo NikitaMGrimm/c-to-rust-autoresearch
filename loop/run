@@ -216,8 +216,7 @@ for ((session = 1; session <= sessions; session++)); do
   mkdir -p "$transcripts"
   # The session's transcripts go to a directory of its own, so that it cannot
   # read what an earlier session left there, such as one the round set aside.
-  # It is kept if the run stops before they are handed over, since a round
-  # must audit them.
+  # The round adds them to the earlier ones, even after the run stopped.
   own=$(mktemp -d "$state/session.XXXXXX")
   began=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Permission prompts cannot be answered here. The deny rules and the hook
@@ -239,13 +238,6 @@ for ((session = 1; session <= sessions; session++)); do
       --permission-mode bypassPermissions "${claude_args[@]}"
   ) </dev/null || failed=$?
   ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  # The round audits them with all earlier ones.
-  find "$own" -mindepth 1 -maxdepth 1 -exec mv -n -t "$transcripts" -- {} + || true
-  if [[ -n $(ls -A "$own") ]]; then
-    echo "run $run stopped after session $session: its transcripts in $own would overwrite earlier ones in $transcripts" >&2
-    exit 2
-  fi
-  rmdir "$own"
   status=0
   "$repo/loop/round" --run "$run" "${round[@]}" "$private" "$loop" "$@" || status=$?
   printf '%s\t%s\t%s\t%s\t%s\n' "$((before + session))" "$began" "$ended" "$failed" "$status" \

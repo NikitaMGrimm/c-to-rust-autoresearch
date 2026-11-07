@@ -779,6 +779,18 @@ exec sleep 60
     );
     run.wait().unwrap();
     assert!(written());
+
+    // A round finished by hand audits them with the earlier ones.
+    let mut round = fixture.command("round", 0, 0);
+    round.args(["--run", "r1"]).args([
+        &fixture.dir.join("private"),
+        &fixture.loop_dir,
+        &fixture.home.join("notes"),
+    ]);
+    assert_eq!(round.status().unwrap().code(), Some(3));
+    assert!(!written());
+    let transcripts = transcripts(&fixture.home, &fixture.loop_dir);
+    assert!(Path::new(&transcripts).join("s1.jsonl").exists());
 }
 
 #[test]
