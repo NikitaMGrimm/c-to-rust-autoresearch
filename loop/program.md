@@ -16,14 +16,16 @@ these instructions are fixed; the gate rejects any other change. Keep to
 
 The development programs come from DARPA's TRACTOR test corpus, which also
 holds the private programs the loop is measured on. Do not fetch, clone or
-search for that corpus or any copy of it, and stay inside this checkout: no
-other directories, no Claude Code files such as transcripts or settings, no
-web and no network except cargo fetching crates. One look at a private program
-invalidates the experiment and cannot be undone. Your settings block these,
-and every session is audited afterwards. When a construct needs more examples
-than the development programs give, write small C programs of your own as
-tests. Use Claude Code's own tools and subagents; MCP tools, such as T3
-Code's, are blocked, and the only skills are those in `loop/skills`.
+search for that corpus or any copy of it, and stay inside this checkout, the
+loop's own clone, made afresh for each iteration: no other directories, no
+Claude Code files such as transcripts or settings, no web and no network.
+Cargo works offline with the crates already fetched, so add no dependencies.
+One look at a private program invalidates the experiment and cannot be undone.
+Your settings block these, and every session is audited afterwards. When a
+construct needs more examples than the development programs give, write small
+C programs of your own as tests. Use Claude Code's own tools and subagents;
+MCP tools, such as T3 Code's, are blocked, and the only skills are those in
+`loop/skills`.
 
 ## One iteration
 
@@ -79,8 +81,9 @@ After each iteration the gate, run outside your session, builds the
 transpiler from your commit and evaluates it on the development set, a private
 validation set and private variants of the development programs with renamed
 identifiers, changed constants and new inputs. It keeps the commit when the
-development score rises, or for a fix does not drop, and the validation score
-does not drop, and otherwise drops it. The next iteration starts in a fresh
-checkout of main, whose `ROUNDS.md` adds the commit, the development results
-and the decision. Do not run the gate or the benchmark tools yourself.
-Overfitting the development programs fails on the rest.
+development score rises, or for a fix does not drop, and otherwise drops it;
+it may also require that the validation score does not drop. The next
+iteration starts in a fresh checkout of the kept commits, whose `ROUNDS.md`
+adds the commit, the development results and the decision. Do not run the
+gate or the benchmark tools yourself. Overfitting the development programs
+fails on the rest.

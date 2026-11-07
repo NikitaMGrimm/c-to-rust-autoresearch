@@ -2,8 +2,10 @@
 # Runs the research loop unattended for a fixed number of sessions: each is a
 # headless Claude Code session in a fresh loop checkout, followed by
 # loop/round --run. The run keeps its commits on its own branch run/RUN, which
-# starts from main with the transpiler before the loop's first rule. Run it by
-# this checkout's path, at a clean main. See docs/architecture.md.
+# starts from main with the transpiler before the loop's first rule. Each
+# session runs in a bubblewrap sandbox that sees its checkout, the Rust
+# toolchain and the model API, and nothing else. Run it by this checkout's
+# path, at a clean main. See docs/architecture.md.
 set -euo pipefail
 trap 'exit 2' ERR
 
@@ -15,16 +17,17 @@ Makes the branch run/RUN unless it exists: main with crates/transpiler from
 COMMIT, by default the transpiler before the loop's first rule. Then, SESSIONS
 times, makes LOOP_DIR with loop/setup, runs one headless session in it with
 MODEL and LEVEL, and ends it with loop/round --run RUN, which gets --dev-only.
-LOOP_DIR must not exist. Stops after a session that failed, a round that
-failed, or an audit that found contact with the private sets, with that
-round's exit code or 2.
+A session's only network is the model API, which Claude Code must reach
+through a proxy at ANTHROPIC_BASE_URL=http://127.0.0.1:PORT. LOOP_DIR must not
+exist. Stops after a session that failed, a round that failed, or an audit
+that found contact with the private sets, with that round's exit code or 2.
 EOF
   exit 2
 }
 # The parent of 63a770c, the loop's first rule: a transpiler without rules.
 start=f5046cf47ee43cb4e08bcae901bcd3f72d68cdd1
 round=()
-claude=()
+claude_args=()
 while [[ ${1-} == --* ]]; do
   if [[ $1 == --dev-only ]]; then
     round+=(--dev-only)
@@ -36,7 +39,7 @@ while [[ ${1-} == --* ]]; do
   fi
   case $1 in
     --start) start=$2 ;;
-    --model | --effort) claude+=("$1" "$2") ;;
+    --model | --effort) claude_args+=("$1" "$2") ;;
     *) usage ;;
   esac
   shift 2
@@ -61,11 +64,44 @@ loop=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")
 shift
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 branch=run/$run
+state=$repo/local/runs/$run
+mkdir -p "$state"
+
+temporary=()
+relay_pid=
+cleanup() {
+  if [[ -n $relay_pid ]]; then
+    kill "$relay_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "${temporary[@]}"
+}
+trap cleanup EXIT
+
+# The owner's Claude Code settings as the run starts, the same for every
+# session. They may set the model API's address, and win over the
+# environment as they do in Claude Code.
+url=${ANTHROPIC_BASE_URL-}
+if [[ -f $HOME/.claude/settings.json ]]; then
+  install -m 600 "$HOME/.claude/settings.json" "$state/settings.json"
+  url=$(jq -r --arg url "$url" '.env.ANTHROPIC_BASE_URL // $url' "$state/settings.json")
+fi
+if [[ ! $url =~ ^http://(127\.0\.0\.1|localhost):([0-9]+)(/.*)?$ ]]; then
+  echo "loop/run needs ANTHROPIC_BASE_URL=http://127.0.0.1:PORT, a proxy to the model API: a session's sandbox has no other network" >&2
+  exit 2
+fi
+port=${BASH_REMATCH[2]}
+if ! claude=$(command -v claude); then
+  echo "loop/run needs claude" >&2
+  exit 2
+fi
+# The installed version itself, so that an update during the run changes no
+# session.
+claude=$(readlink -f "$claude")
 
 if ! git -C "$repo" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
   # Built in a separate index, so that this checkout stays as it is.
   index=$(mktemp -d)
-  trap 'rm -rf "$index"' EXIT
+  temporary+=("$index")
   export GIT_INDEX_FILE=$index/index
   git -C "$repo" read-tree main
   git -C "$repo" rm -rq --cached --ignore-unmatch crates/transpiler
@@ -77,32 +113,115 @@ if ! git -C "$repo" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
   git -C "$repo" update-ref "refs/heads/$branch" "$commit" ""
   # The first round's model usage counts from here, not from earlier sessions
   # in a loop checkout at the same path.
-  mkdir -p "$repo/local/runs/$run"
-  date -u +%Y-%m-%dT%H:%M:%SZ >"$repo/local/runs/$run/since"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
   echo "run $run starts at $(git -C "$repo" log -1 --format='%h %s' "$branch")"
 fi
 
+# The model API's proxy, reached from inside the sandbox through a socket.
+relay=$(mktemp -d)
+temporary+=("$relay")
+socat UNIX-LISTEN:"$relay/api.sock",fork TCP:127.0.0.1:"$port" &
+relay_pid=$!
+for _ in {1..100}; do
+  [[ -S $relay/api.sock ]] && break
+  sleep 0.05
+done
+if [[ ! -S $relay/api.sock ]]; then
+  echo "loop/run: the relay to the model API did not start" >&2
+  exit 2
+fi
+
+# The session sees a read-only file system without the home directory, the
+# Windows drives under WSL, /tmp, other processes and any network, and the
+# places the loop agent may not reach are hidden wherever they are. Its
+# checkout and its transcripts are writable; the toolchain, Claude Code and
+# this checkout's loop/, for the guard, are readable.
+name=$(printf %s "$loop" | tr -c 'a-zA-Z0-9' '-')
+transcripts=$HOME/.claude/projects/$name
+cargo_home=${CARGO_HOME:-$HOME/.cargo}
+rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
+sandbox=(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs "$HOME")
+hidden=(/mnt "$(cd "$private" && pwd -P)" "$repo" "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch")
+for dir in "$@"; do
+  hidden+=("$(cd "$dir" && pwd -P)")
+done
+for dir in "${hidden[@]}"; do
+  if [[ -d $dir ]]; then
+    sandbox+=(--tmpfs "$dir")
+  fi
+done
+# Not all of CARGO_HOME: it holds the crates.io token.
+for dir in "$cargo_home"/{bin,registry,git} "$rustup_home"; do
+  if [[ -d $dir ]]; then
+    sandbox+=(--ro-bind "$dir" "$dir")
+  fi
+done
+sandbox+=(--ro-bind "$claude" "$claude" --ro-bind "$repo/loop" "$repo/loop")
+sandbox+=(--bind "$loop" "$loop" --bind "$transcripts" "$transcripts" --bind "$relay" /tmp/c2r-relay)
+if [[ -f $state/settings.json ]]; then
+  sandbox+=(--ro-bind "$state/settings.json" "$HOME/.claude/settings.json")
+fi
+sandbox+=(--unshare-all --die-with-parent --new-session --chdir "$loop" --)
+# Only these variables reach the session; the agent commits as whoever runs
+# the loop, since git's own settings stay hidden.
+environment=(
+  HOME="$HOME" USER="${USER:-$(id -un)}" LANG="${LANG:-C.UTF-8}"
+  PATH="$cargo_home/bin:/usr/local/bin:/usr/bin:/bin"
+  ANTHROPIC_BASE_URL="$url" CARGO_NET_OFFLINE=true CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+)
+for variable in ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY CARGO_HOME RUSTUP_HOME; do
+  if [[ -n ${!variable-} ]]; then
+    environment+=("$variable=${!variable}")
+  fi
+done
+for part in name email; do
+  value=$(git -C "$repo" config "user.$part" || true)
+  for role in AUTHOR COMMITTER; do
+    variable=GIT_${role}_${part^^}
+    environment+=("$variable=${!variable:-$value}")
+  done
+done
+# Inside the sandbox, the model API's port on its own loopback is relayed to
+# the socket.
+relayed='socat TCP-LISTEN:"$1",bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/tmp/c2r-relay/api.sock &
+for _ in {1..100}; do
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && break
+  sleep 0.05
+done
+shift
+exec "$@"'
+
+if [[ ! -f $state/sessions ]]; then
+  printf 'session\tstart\tend\tclaude\tround\n' >"$state/sessions"
+fi
+before=$(($(wc -l <"$state/sessions") - 1))
 "$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
 for ((session = 1; session <= sessions; session++)); do
   echo "run $run: session $session of $sessions"
-  failed=false
+  mkdir -p "$transcripts"
+  began=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Permission prompts cannot be answered here. The deny rules and the hook
   # that loop/setup wrote still apply. claude -p would add piped input to the
   # prompt.
-  (cd "$loop" && claude -p "Do one iteration of the research loop, as loop/program.md says." \
-    --permission-mode bypassPermissions "${claude[@]}" </dev/null) || failed=true
+  failed=0
+  env -i "${environment[@]}" "${sandbox[@]}" bash -c "$relayed" relay "$port" \
+    "$claude" -p "Do one iteration of the research loop, as loop/program.md says." \
+    --permission-mode bypassPermissions "${claude_args[@]}" </dev/null || failed=$?
+  ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   status=0
   "$repo/loop/round" --run "$run" "${round[@]}" "$private" "$loop" "$@" || status=$?
-  if ((status == 3)); then
-    # Without a commit, the round leaves the checkout as it was; the next
-    # session starts afresh all the same.
+  printf '%s\t%s\t%s\t%s\t%s\n' "$((before + session))" "$began" "$ended" "$failed" "$status" \
+    >>"$state/sessions"
+  if ((status == 3 || status == 4)); then
+    # Without a commit, or set aside unjudged, the session leaves the checkout
+    # as it was; the next session starts afresh all the same.
     rm -rf -- "$loop"
     "$repo/loop/setup" --branch "$branch" "$private" "$loop" "$@" >/dev/null
   elif ((status)); then
     echo "run $run stopped after session $session: the round failed" >&2
     exit "$status"
   fi
-  if $failed; then
+  if ((failed)); then
     echo "run $run stopped after session $session: the session failed" >&2
     exit 2
   fi

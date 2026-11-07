@@ -66,6 +66,21 @@ workspace's default members leave the transpiler out, so plain `cargo build`,
 `cargo clippy` and `cargo test` neither build nor run it; CI, which has no
 private data, checks it with `--workspace`.
 
+The loop agent runs that code in its own session too. In an unattended run
+(`loop/run`), the session therefore runs in a bubblewrap sandbox of its own:
+a read-only file system without the home directory, `/tmp`, `/mnt` (the
+Windows drives under WSL), other processes or network. The private directory,
+the main checkout, the corpus cache and the denied directories are hidden
+wherever they are. The session sees its clone and its transcript directory,
+both writable, and the Rust toolchain without CARGO_HOME's credentials,
+Claude Code itself, the owner's Claude Code settings as the run started and
+the main checkout's `loop/`, for the guard. Its environment holds only what
+Claude Code, cargo and git need. Its one connection out is the model API:
+`socat` relays the API's port on the sandbox's loopback through a socket to
+the proxy at `ANTHROPIC_BASE_URL` on the machine's own, so the API must be
+reached through such a proxy. Cargo works offline. The evaluator's sandbox
+nests inside this one when the agent runs `eval`.
+
 ## Benchmark data
 
 ```text
@@ -128,10 +143,15 @@ given. `loop/run` makes that branch from main, with `crates/transpiler/` as
 it was before the loop's first rule (or from `--start COMMIT`), and then
 alternates a headless session (`claude -p`) in a fresh clone with such a
 round, for a fixed number of sessions. The sessions run without permission
-prompts, as the pilot's did in T3 Code; the deny rules and the guard from
-`loop/setup` still apply. A session without a commit is followed by a fresh
-clone all the same. The run stops after a session or round that failed, and
-when the audit finds anything.
+prompts, as the pilot's did in T3 Code, in the sandbox above; the deny rules
+and the guard from `loop/setup` still apply. A session without a commit is
+followed by a fresh clone all the same. So is one whose audit findings are
+only calls that name private places: since the sandbox hid them, the round
+moves its transcripts to `local/runs/RUN/flagged/` and judges nothing (exit
+code 4). A private program's name in a transcript, or a record the audit
+cannot read, is contact. The run stops then, and after a session or round
+that failed. Each session's start, end and exit codes, and the round's, go to
+`local/runs/RUN/sessions`.
 
 With `--github`, the round then runs `loop/github`, which reaches GitHub
 through `gh` and `git` from the main checkout:

@@ -11,7 +11,7 @@ evaluated and a loop commit judged.
 Linux only. Needs [rustup](https://rustup.rs) and, on Ubuntu 24.04:
 
 ```sh
-sudo apt install clang-18 clang-tidy-18 libclang-rt-18-dev llvm-18 jq bubblewrap
+sudo apt install clang-18 clang-tidy-18 libclang-rt-18-dev llvm-18 jq bubblewrap socat
 ```
 
 The evaluator runs agent-written code with bubblewrap, which needs
@@ -129,9 +129,15 @@ round:
 
 A run keeps its commits on its own branch `run/RUN`, which starts from main
 with the transpiler as it was before the loop's first rule, and the gate logs
-it to `PRIVATE_DIR/runs/RUN/log.jsonl`. It publishes nothing, and stops early
-after a failed session or round, or when the audit finds contact with the
-private sets.
+it to `PRIVATE_DIR/runs/RUN/log.jsonl`. Each session runs in a bubblewrap
+sandbox that sees only its clone, the Rust toolchain and Claude Code, and
+whose only network is the model API. Claude Code must therefore reach the API
+through a proxy on this machine, at `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT`
+in its settings or the environment. The run logs each session's times and
+exit codes to `local/runs/RUN/sessions`. It publishes nothing, sets aside a
+session whose calls only named private places, which the sandbox hid, and
+stops early after a failed session or round, or when the audit finds contact
+with the private sets.
 
 ## Model usage
 

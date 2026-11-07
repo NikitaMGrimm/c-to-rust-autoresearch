@@ -50,8 +50,9 @@ deleting code is welcome. A new dependency needs a reason.
    and outputs in the ignored `local/` directory.
 3. **Running agent code outside the sandbox.** The transpiler, its build in
    the gate, the compile of a translation and the translated program all run
-   through `sandbox::sandboxed`. A new way to run any of them must too, with a test
-   that fails without the sandbox.
+   through `sandbox::sandboxed`, and the sessions of an unattended run, which
+   run agent code as well, through `loop/run`'s sandbox. A new way to run any
+   of them must be sandboxed too, with a test that fails without the sandbox.
 4. **Changing the measurement on the side.** Pass rules, limits, inputs and
    the keep rule change every result after them. The bench tools must write
    the same files from the same seed, and a change to the private sets needs

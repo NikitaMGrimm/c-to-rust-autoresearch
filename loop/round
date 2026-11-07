@@ -16,8 +16,9 @@ Takes the arguments of loop/setup, which it runs again for the next iteration.
 With --run, the commit is judged against and kept on the branch run/RUN, which
 loop/run made, and the gate logs to PRIVATE_DIR/runs/RUN; --dev-only goes to
 the gate. Exits 0 when the gate decided, 1 when the audit found contact with
-the private sets, 3 when the loop checkout has no new commit, and 2 on errors.
-A failed GitHub step only prints a warning.
+the private sets, 3 when the loop checkout has no new commit, 4 when a run's
+session is set aside because its calls named private places, which its
+sandbox hid, and 2 on errors. A failed GitHub step only prints a warning.
 EOF
   exit 2
 }
@@ -88,8 +89,31 @@ fi
 
 # After a look at a private program, the gate's results would mean nothing.
 status=0
-cargo run -q -p transcripts --bin audit -- "$private" "$transcripts" || status=$?
+found=$(cargo run -q -p transcripts --bin audit -- "$private" "$transcripts") || status=$?
+printf '%s\n' "$found"
 if ((status == 1)); then
+  # A run's sessions run in a sandbox that hides the private places, so a call
+  # that names one reached nothing. Such a session is set aside unjudged, with
+  # its transcripts, which later audits would report again. A private
+  # program's name, or a record the audit cannot read, is contact.
+  if [[ -n $run ]] && ! grep -q -E ': (private program |unreadable record$)' <<<"$found"; then
+    aside=$state/flagged/$(date -u +%Y%m%dT%H%M%S%NZ)
+    mkdir -p "$aside"
+    while IFS= read -r line; do
+      if [[ $line == "$transcripts/"* ]]; then
+        session=${line#"$transcripts/"}
+        session=${session%%[/:]*}
+        session=${session%.jsonl}
+        for path in "$transcripts/$session.jsonl" "$transcripts/$session"; do
+          if [[ -e $path ]]; then
+            mv -- "$path" "$aside/"
+          fi
+        done
+      fi
+    done <<<"$found"
+    echo "round stopped: the audit found calls that name private places but no contact; the session is set aside in $aside and the gate did not run" >&2
+    exit 4
+  fi
   echo "round stopped: the audit found contact with the private sets; the gate did not run" >&2
   exit 1
 elif ((status)); then
