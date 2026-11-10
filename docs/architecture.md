@@ -41,7 +41,12 @@ same way. That result is reported separately and does not change the stage.
 The stage names are those of `eval::Stage`. For a translation that compiled,
 the record also holds idiomaticity counts from its syntax tree (`idioms`):
 `clones`, `raw_pointers`, `rc_refcell`, `lint_allows` (`allow` and `expect`
-attributes, which hide warnings) and non-blank `lines`.
+attributes, which hide warnings), `leaks` (`leak`, `forget` and
+`ManuallyDrop`, which give up freeing memory), `byte_casts` (`from_le_bytes`,
+`to_le_bytes` and their other byte orders, which a translation over an
+emulated C memory needs) and non-blank `lines`. A pass is also `strict` when
+its `lint_allows`, `leaks` and `byte_casts` are all zero. The stage, the score
+and the gate do not use it.
 
 Both programs run as `./program` from their own directories, so they see the
 same `argv[0]`. Every program may write files of at most 64 MiB and print at

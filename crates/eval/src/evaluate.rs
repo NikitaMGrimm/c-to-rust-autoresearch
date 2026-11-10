@@ -82,11 +82,23 @@ impl Record {
                 .is_some_and(|(stage, _)| *stage != Stage::Pass)
     }
 
+    /// A pass that neither switches lints off, gives up freeing memory nor
+    /// keeps scalars as bytes, as a translation over an emulated C memory does.
+    pub fn strict(&self) -> bool {
+        self.stage == Stage::Pass
+            && self.metrics.as_ref().is_some_and(|metrics| {
+                ["lint_allows", "leaks", "byte_casts"]
+                    .iter()
+                    .all(|name| metrics.get(name) == Some(&0))
+            })
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "name": self.name,
             "group": self.group,
             "stage": self.stage.as_str(),
+            "strict": self.strict(),
             "detail": self.detail,
             "warnings": self.warnings,
             "metrics": self.metrics,

@@ -13,12 +13,42 @@ pub(crate) fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> 
             *self.0.entry(name).or_default() += 1;
         }
     }
+    impl Counter {
+        /// A function or method named like the standard library's that give
+        /// up freeing memory, or that turn scalars into bytes and back.
+        fn call(&mut self, name: &syn::Ident) {
+            let name = name.to_string();
+            if name == "leak" || name == "forget" {
+                self.add("leaks");
+            }
+            let bytes = ["le_bytes", "be_bytes", "ne_bytes"];
+            if let Some(order) = name.strip_prefix("from_").or(name.strip_prefix("to_"))
+                && bytes.contains(&order)
+            {
+                self.add("byte_casts");
+            }
+        }
+    }
     impl<'ast> Visit<'ast> for Counter {
         fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
             if call.method == "clone" && call.args.is_empty() {
                 self.add("clones");
             }
+            self.call(&call.method);
             syn::visit::visit_expr_method_call(self, call);
+        }
+        fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+            let segments = &path.path.segments;
+            if let Some(last) = segments.last() {
+                self.call(&last.ident);
+            }
+            if segments
+                .iter()
+                .any(|segment| segment.ident == "ManuallyDrop")
+            {
+                self.add("leaks");
+            }
+            syn::visit::visit_expr_path(self, path);
         }
         fn visit_type_ptr(&mut self, ptr: &'ast syn::TypePtr) {
             self.add("raw_pointers");
@@ -31,6 +61,14 @@ pub(crate) fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> 
         fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
             if wraps(&ty.path, "Rc", "RefCell") {
                 self.add("rc_refcell");
+            }
+            if ty
+                .path
+                .segments
+                .last()
+                .is_some_and(|last| last.ident == "ManuallyDrop")
+            {
+                self.add("leaks");
             }
             syn::visit::visit_type_path(self, ty);
         }
@@ -57,7 +95,14 @@ pub(crate) fn idiom_counts(source: &str) -> Option<BTreeMap<&'static str, u32>> 
     }
 
     let file = syn::parse_file(source).ok()?;
-    let names = ["clones", "raw_pointers", "rc_refcell", "lint_allows"];
+    let names = [
+        "clones",
+        "raw_pointers",
+        "rc_refcell",
+        "lint_allows",
+        "leaks",
+        "byte_casts",
+    ];
     let mut counter = Counter(names.into_iter().map(|name| (name, 0)).collect());
     counter.visit_file(&file);
     let lines = source
@@ -86,6 +131,10 @@ fn main() {
     let x = 1;
     let p: *const i32 = &raw const x;
     println!("{:?} {:?} clone()", other, p);
+    let kept: &'static mut [u8] = Box::leak(vec![0u8; 4].into_boxed_slice());
+    let word = u32::from_le_bytes([kept[0], kept[1], kept[2], kept[3]]);
+    kept.copy_from_slice(&word.to_le_bytes());
+    std::mem::forget(std::mem::ManuallyDrop::new(vec![1].leak()));
 }
 "#;
         let counts = idiom_counts(source).unwrap();
@@ -93,7 +142,9 @@ fn main() {
         assert_eq!(counts["raw_pointers"], 2);
         assert_eq!(counts["rc_refcell"], 1);
         assert_eq!(counts["lint_allows"], 1);
-        assert_eq!(counts["lines"], 11);
+        assert_eq!(counts["leaks"], 4);
+        assert_eq!(counts["byte_casts"], 2);
+        assert_eq!(counts["lines"], 15);
         assert_eq!(idiom_counts("fn main( {"), None);
     }
 }
