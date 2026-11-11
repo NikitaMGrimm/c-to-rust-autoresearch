@@ -11,12 +11,13 @@ trap 'exit 2' ERR
 
 usage() {
   cat >&2 <<'EOF'
-usage: loop/run [--dev-only] [--start COMMIT] [--model MODEL] [--effort LEVEL]
+usage: loop/run [--dev-only] [--strict] [--start COMMIT] [--model MODEL] [--effort LEVEL]
                 RUN SESSIONS PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 Makes the branch run/RUN unless it exists: main with crates/transpiler from
 COMMIT, by default the transpiler before the loop's first rule. Then, SESSIONS
 times, makes LOOP_DIR with loop/setup, runs one headless session in it with
-MODEL and LEVEL, and ends it with loop/round --run RUN, which gets --dev-only.
+MODEL and LEVEL, and ends it with loop/round --run RUN, which gets --dev-only
+and --strict.
 A session's only network is the model API, which Claude Code must reach
 through a proxy at ANTHROPIC_BASE_URL=http://127.0.0.1:PORT. LOOP_DIR must not
 exist. Stops after a session that failed, a round that failed, or an audit
@@ -29,8 +30,8 @@ start=f5046cf47ee43cb4e08bcae901bcd3f72d68cdd1
 round=()
 claude_args=()
 while [[ ${1-} == --* ]]; do
-  if [[ $1 == --dev-only ]]; then
-    round+=(--dev-only)
+  if [[ $1 == --dev-only || $1 == --strict ]]; then
+    round+=("$1")
     shift
     continue
   fi

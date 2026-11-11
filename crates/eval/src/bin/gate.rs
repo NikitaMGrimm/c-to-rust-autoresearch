@@ -9,14 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use eval::{FuzzFailures, Results, Stage, git, git_in, run_id, untrusted};
+use eval::{FuzzFailures, LaxPasses, Results, Stage, git, git_in, run_id, untrusted};
 
 const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage FILE]\n\
-     \x20           [--dev-only] [--run ID]\n\
+     \x20           [--dev-only] [--strict] [--run ID]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
      --usage adds a report of the transcripts usage tool to the private log.\n\
      --dev-only keeps CANDIDATE on the development score alone; validation is\n\
-     only logged. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop.\n\
+     only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop.\n\
      Run it from a clean checkout of main, not from the loop agent's checkout.";
 
 /// The only paths a loop change may touch; the evaluator and the benchmarks
@@ -36,6 +36,7 @@ struct Args {
     jobs: usize,
     usage: Option<PathBuf>,
     dev_only: bool,
+    strict: bool,
     run: Option<String>,
 }
 
@@ -43,6 +44,7 @@ struct Args {
 fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
     let mut positional = Vec::new();
     let (mut jobs, mut usage, mut dev_only, mut run) = (2, None, false, None);
+    let mut strict = false;
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().filter(|value| !value.starts_with('-'));
@@ -50,6 +52,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
             "--jobs" => jobs = value()?.parse().ok().filter(|&n| n > 0)?,
             "--usage" => usage = Some(value()?.into()),
             "--dev-only" => dev_only = true,
+            "--strict" => strict = true,
             "--run" => run = Some(value().filter(|id| run_id(id))?),
             _ if arg.starts_with('-') => return None,
             _ => positional.push(arg),
@@ -63,6 +66,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
         jobs,
         usage,
         dev_only,
+        strict,
         run,
     })
 }
@@ -121,7 +125,7 @@ fn gate(args: &Args) -> Result<bool, String> {
 
     let near_copies = near_copies(&args.private)?;
     let problem = change_problem(&base, &candidate)?;
-    let ((before, fuzz_before), (after, fuzz_after)) = match problem {
+    let ((before, fuzz_before, lax_before), (after, fuzz_after, lax_after)) = match problem {
         Some(_) => Default::default(),
         None => (
             eval::evaluate_commit(&base, &sets, args.jobs)?,
@@ -130,8 +134,16 @@ fn gate(args: &Args) -> Result<bool, String> {
     };
     let failing_fuzz =
         |failures: &FuzzFailures, set: &str| failures.get(set).map_or(0, BTreeSet::len);
+    let lax = |passes: &LaxPasses, set: &str| passes.get(set).map_or(0, BTreeSet::len);
     let fix = is_fix(Path::new(eval::REPO), &base, &candidate)?;
-    let reason = problem.or_else(|| rejection(&before, &after, fix, args.dev_only));
+    let scores = |set: &str| {
+        (
+            score(&before, &lax_before, set, args.strict),
+            score(&after, &lax_after, set, args.strict),
+        )
+    };
+    let reason =
+        problem.or_else(|| rejection(scores("dev"), scores("validation"), fix, args.dev_only));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -153,6 +165,10 @@ fn gate(args: &Args) -> Result<bool, String> {
                     "base": failing_fuzz(&fuzz_before, set),
                     "candidate": failing_fuzz(&fuzz_after, set),
                 },
+                "passes_not_strict": {
+                    "base": lax(&lax_before, set),
+                    "candidate": lax(&lax_after, set),
+                },
             });
             if let Some(copies) = near_copies.get(set) {
                 let (base, _) = passes_without(base_stages, copies);
@@ -172,6 +188,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         "evaluator": eval::versions(),
         "fix": fix,
         "dev_only": args.dev_only,
+        "strict": args.strict,
         "decision": if reason.is_none() { "keep" } else { "reject" },
         "reason": reason,
         "sets": summary,
@@ -195,6 +212,13 @@ fn gate(args: &Args) -> Result<bool, String> {
             "dev passes failing fuzzed inputs: {} -> {}",
             fuzz["base"], fuzz["candidate"]
         );
+        if args.strict {
+            let (old, new) = scores("dev");
+            println!("dev strict passes: {old} -> {new} of {}", dev["total"]);
+            for name in lax_after.get("dev").into_iter().flatten() {
+                println!("  {name}: pass, not strict");
+            }
+        }
     }
     match &reason {
         None => println!("keep"),
@@ -249,16 +273,26 @@ fn passes(results: &Results, set: &str) -> usize {
     })
 }
 
-/// The keep rule: the development score rises, or for a fix does not drop,
-/// and, unless `dev_only`, the validation score does not drop. Held-out and
-/// the variants are only logged.
-fn rejection(before: &Results, after: &Results, fix: bool, dev_only: bool) -> Option<String> {
-    let (dev_before, dev_after) = (passes(before, "dev"), passes(after, "dev"));
+/// A set's score: its passes, for a strict gate only the strict ones.
+fn score(results: &Results, lax_passes: &LaxPasses, set: &str, strict: bool) -> usize {
+    let lax = lax_passes.get(set).map_or(0, BTreeSet::len);
+    passes(results, set) - if strict { lax } else { 0 }
+}
+
+/// The keep rule, on each set's score before and after: the development
+/// score rises, or for a fix does not drop, and, unless `dev_only`, the
+/// validation score does not drop. Held-out and the variants are only logged.
+fn rejection(
+    (dev_before, dev_after): (usize, usize),
+    (validation_before, validation_after): (usize, usize),
+    fix: bool,
+    dev_only: bool,
+) -> Option<String> {
     if fix && dev_after < dev_before {
         Some("the fix lowered the development score".to_owned())
     } else if !fix && dev_after <= dev_before {
         Some("the development score did not rise".to_owned())
-    } else if !dev_only && passes(after, "validation") < passes(before, "validation") {
+    } else if !dev_only && validation_after < validation_before {
         Some("the validation score dropped".to_owned())
     } else {
         None
@@ -325,6 +359,28 @@ mod tests {
         Results::from([("dev", stages(dev)), ("validation", stages(validation))])
     }
 
+    fn reject(before: &Results, after: &Results, fix: bool, dev_only: bool) -> Option<String> {
+        let scores = |set| (passes(before, set), passes(after, set));
+        rejection(scores("dev"), scores("validation"), fix, dev_only)
+    }
+
+    #[test]
+    fn a_strict_gate_scores_only_strict_passes() {
+        use Stage::{Mismatch, Pass};
+        let all = results(&[Pass, Pass, Mismatch], &[]);
+        let lax = LaxPasses::from([("dev", BTreeSet::from(["p1".to_owned()]))]);
+        assert_eq!(score(&all, &lax, "dev", false), 2);
+        assert_eq!(score(&all, &lax, "dev", true), 1);
+        assert!(
+            parsed(&["private", "base", "candidate", "--strict"])
+                .unwrap()
+                .strict
+        );
+        // A pass that stops being strict lowers a strict score, so a fix that
+        // causes it is rejected.
+        assert!(rejection((2, 1), (0, 0), true, true).is_some());
+    }
+
     #[test]
     fn keeps_a_dev_gain_unless_validation_drops() {
         use Stage::{Mismatch, Panic, Pass};
@@ -332,14 +388,14 @@ mod tests {
         let gain = results(&[Pass, Pass], &[Pass, Panic]);
         let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
-        assert_eq!(rejection(&before, &gain, false, false), None);
+        assert_eq!(reject(&before, &gain, false, false), None);
         assert!(
-            rejection(&before, &trade, false, false)
+            reject(&before, &trade, false, false)
                 .unwrap()
                 .contains("development")
         );
         assert!(
-            rejection(&before, &overfit, false, false)
+            reject(&before, &overfit, false, false)
                 .unwrap()
                 .contains("validation")
         );
@@ -352,10 +408,10 @@ mod tests {
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
         let trade = results(&[Mismatch, Pass], &[Pass, Pass]);
         let same_overfit = results(&[Mismatch, Pass], &[Panic, Panic]);
-        assert_eq!(rejection(&before, &overfit, false, true), None);
-        assert_eq!(rejection(&before, &same_overfit, true, true), None);
-        assert!(rejection(&before, &trade, false, true).is_some());
-        assert!(rejection(&before, &overfit, false, false).is_some());
+        assert_eq!(reject(&before, &overfit, false, true), None);
+        assert_eq!(reject(&before, &same_overfit, true, true), None);
+        assert!(reject(&before, &trade, false, true).is_some());
+        assert!(reject(&before, &overfit, false, false).is_some());
     }
 
     fn parsed(args: &[&str]) -> Option<Args> {
@@ -421,15 +477,15 @@ mod tests {
         let worse = results(&[Mismatch, Mismatch], &[Pass, Panic]);
         let overfit = results(&[Pass, Pass], &[Panic, Panic]);
         let same_overfit = results(&[Mismatch, Pass], &[Panic, Panic]);
-        assert_eq!(rejection(&before, &same, true, false), None);
-        assert!(rejection(&before, &same, false, false).is_some());
+        assert_eq!(reject(&before, &same, true, false), None);
+        assert!(reject(&before, &same, false, false).is_some());
         assert!(
-            rejection(&before, &worse, true, false)
+            reject(&before, &worse, true, false)
                 .unwrap()
                 .contains("lowered")
         );
         for candidate in [&overfit, &same_overfit] {
-            let reason = rejection(&before, candidate, true, false).unwrap();
+            let reason = reject(&before, candidate, true, false).unwrap();
             assert!(reason.contains("validation"), "{reason}");
         }
     }

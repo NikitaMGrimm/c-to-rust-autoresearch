@@ -131,8 +131,11 @@ fn report(records: &[eval::Record], quiet: bool) {
             None => String::new(),
         };
         println!(
-            "{:>14}  {}  ({:.1}s){fuzz}",
-            record.stage, record.name, record.seconds
+            "{:>14}  {}  ({:.1}s){fuzz}{}",
+            record.stage,
+            record.name,
+            record.seconds,
+            not_strict(record)
         );
     }
     if !quiet {
@@ -176,4 +179,20 @@ fn report(records: &[eval::Record], quiet: bool) {
     println!("SCORE {passed}/{}", records.len());
     let (held, fuzzed) = eval::fuzz_counts(records);
     println!("FUZZ {held}/{fuzzed}");
+    let strict = records.iter().filter(|r| r.strict()).count();
+    println!("STRICT {strict}/{}", records.len());
+}
+
+/// What keeps a pass from being strict, for the report.
+fn not_strict(record: &eval::Record) -> String {
+    if record.stage != eval::Stage::Pass || record.strict() {
+        return String::new();
+    }
+    let counts: Vec<String> = eval::STRICT_COUNTS
+        .iter()
+        .filter_map(|name| Some((name, *record.metrics.as_ref()?.get(name)?)))
+        .filter(|(_, count)| *count > 0)
+        .map(|(name, count)| format!("{name} {count}"))
+        .collect();
+    format!("  not strict: {}", counts.join(", "))
 }

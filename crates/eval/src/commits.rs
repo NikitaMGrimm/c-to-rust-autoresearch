@@ -14,6 +14,8 @@ use crate::{REPO, Scratch, Stage, Translator};
 pub type Results = BTreeMap<&'static str, BTreeMap<String, Stage>>;
 /// Passes that fail their fuzzed inputs, by set.
 pub type FuzzFailures = BTreeMap<&'static str, BTreeSet<String>>;
+/// Passes that are not strict (`Record::strict`), by set.
+pub type LaxPasses = BTreeMap<&'static str, BTreeSet<String>>;
 
 /// Whether `id` can name a run's log directory: letters, digits, `.`, `-`
 /// and `_`, starting with a letter or digit, so that it is neither hidden nor
@@ -50,7 +52,7 @@ pub fn evaluate_commit(
     commit: &str,
     sets: &[(&'static str, PathBuf)],
     jobs: usize,
-) -> Result<(Results, FuzzFailures), String> {
+) -> Result<(Results, FuzzFailures, LaxPasses), String> {
     let scratch = Scratch::new("gate")?;
     let workspace = scratch.join("workspace");
     std::fs::create_dir(&workspace).map_err(|err| err.to_string())?;
@@ -69,6 +71,7 @@ pub fn evaluate_commit(
         crate::build_transpiler_sandboxed(&workspace).map_err(|err| format!("{commit}: {err}"))?;
     let translator = Translator::Transpiler(transpiler);
     let (mut results, mut fuzz_failures) = (Results::new(), FuzzFailures::new());
+    let mut lax_passes = LaxPasses::new();
     for (set, dir) in sets {
         let programs = crate::c_programs(dir)?;
         if programs.is_empty() {
@@ -77,10 +80,14 @@ pub fn evaluate_commit(
         let records = crate::evaluate_all(&programs, &translator, jobs)?;
         let failing = records.iter().filter(|r| r.fails_fuzz());
         fuzz_failures.insert(set, failing.map(|r| r.name.clone()).collect());
+        let lax = records
+            .iter()
+            .filter(|r| r.stage == Stage::Pass && !r.strict());
+        lax_passes.insert(set, lax.map(|r| r.name.clone()).collect());
         let stages = records.into_iter().map(|r| (r.name, r.stage)).collect();
         results.insert(set, stages);
     }
-    Ok((results, fuzz_failures))
+    Ok((results, fuzz_failures, lax_passes))
 }
 
 /// Runs git in this checkout.

@@ -13,9 +13,9 @@ mod spec;
 mod translate;
 
 pub use commits::{
-    FuzzFailures, Results, append_log, evaluate_commit, git, git_in, run_id, untrusted,
+    FuzzFailures, LaxPasses, Results, append_log, evaluate_commit, git, git_in, run_id, untrusted,
 };
-pub use evaluate::{Record, Stage, evaluate, evaluate_all, fuzz_counts, versions};
+pub use evaluate::{Record, STRICT_COUNTS, Stage, evaluate, evaluate_all, fuzz_counts, versions};
 pub use files::{REPO, Scratch, c_programs, dev_dir, entries};
 pub use reference::References;
 pub use run::{Run, run_program};

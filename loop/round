@@ -11,11 +11,11 @@ trap 'exit 2' ERR
 
 usage() {
   cat >&2 <<'EOF'
-usage: loop/round [--github | --run RUN] [--dev-only] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
+usage: loop/round [--github | --run RUN] [--dev-only] [--strict] PRIVATE_DIR LOOP_DIR [DENIED_DIR...]
 Takes the arguments of loop/setup, which it runs again for the next iteration.
 With --run, the commit is judged against and kept on the branch run/RUN, which
-loop/run made, and the gate logs to PRIVATE_DIR/runs/RUN; --dev-only goes to
-the gate. Exits 0 when the gate decided, 1 when the audit found contact with
+loop/run made, and the gate logs to PRIVATE_DIR/runs/RUN; --dev-only and
+--strict go to the gate. Exits 0 when the gate decided, 1 when the audit found contact with
 the private sets, 3 when the loop checkout has no new commit, 4 when a run's
 session is set aside because its calls named only places that its sandbox
 hid, and 2 on errors. A failed GitHub step only prints a warning.
@@ -28,7 +28,7 @@ gate=()
 while [[ ${1-} == --* ]]; do
   case $1 in
     --github) github=true ;;
-    --dev-only) gate+=(--dev-only) ;;
+    --dev-only | --strict) gate+=("$1") ;;
     --run)
       run=${2-}
       [[ -n $run ]] || usage
