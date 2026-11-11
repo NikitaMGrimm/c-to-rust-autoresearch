@@ -83,7 +83,7 @@ fn transfer(args: &Args) -> Result<(), String> {
             println!("transfer: {progress} was evaluated before");
             continue;
         }
-        let (results, fuzz_failures) = eval::evaluate_commit(commit, &sets, args.jobs)?;
+        let (results, fuzz_failures, lax_passes) = eval::evaluate_commit(commit, &sets, args.jobs)?;
         let stages = &results["transfer"];
         let passes = stages.values().filter(|&&s| s == Stage::Pass).count();
         let named: BTreeMap<&str, &str> = stages
@@ -101,6 +101,7 @@ fn transfer(args: &Args) -> Result<(), String> {
             "total": stages.len(),
             "stages": named,
             "passes_failing_fuzz": fuzz_failures["transfer"],
+            "passes_not_strict": lax_passes["transfer"],
         });
         eval::append_log(&out, &entry)?;
         println!("transfer: {progress} evaluated");

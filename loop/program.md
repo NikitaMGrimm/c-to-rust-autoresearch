@@ -6,6 +6,17 @@ prints the same output and exits with the same code as the C program on every
 input. The goal is the number of programs that pass, on programs you will never
 see.
 
+The translation should be Rust that a Rust programmer would write, not C kept
+alive in safe Rust: values that Rust owns and frees (`Box`, `Vec`, `String`),
+borrows where the program allows them, and the standard library instead of a
+copy of C's. A pass is *strict* when the translation switches no lint off
+(`allow`, `expect`), never gives up freeing memory (`leak`, `forget`,
+`ManuallyDrop`) and keeps no scalars as bytes (`from_le_bytes`, `to_le_bytes`
+and the like), as a program over an emulated C memory does. The evaluator
+marks passes that are not strict and prints the strict score as `STRICT`. Meet
+the intent, not the list: an arena that never shrinks or C's memory under
+another name is no better than what the list names.
+
 ## What you may change
 
 Only `crates/transpiler/` and `Cargo.lock`. The evaluator, the benchmarks and
@@ -82,7 +93,8 @@ transpiler from your commit and evaluates it on the development set, a private
 validation set and private variants of the development programs with renamed
 identifiers, changed constants and new inputs. It keeps the commit when the
 development score rises, or for a fix does not drop, and otherwise drops it;
-it may also require that the validation score does not drop. The next
+it may also require that the validation score does not drop, and it may count
+only strict passes in its scores. The next
 iteration starts in a fresh checkout of the kept commits, whose `ROUNDS.md`
 adds the commit, the development results and the decision. Do not run the
 gate or the benchmark tools yourself. Overfitting the development programs

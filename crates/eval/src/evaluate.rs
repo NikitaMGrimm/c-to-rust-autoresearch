@@ -55,6 +55,9 @@ impl std::fmt::Display for Stage {
     }
 }
 
+/// The idiomaticity counts that must be zero for a pass to be strict.
+pub const STRICT_COUNTS: [&str; 3] = ["lint_allows", "leaks", "byte_casts"];
+
 /// Result for one benchmark program.
 #[derive(Debug, Clone)]
 pub struct Record {
@@ -87,7 +90,7 @@ impl Record {
     pub fn strict(&self) -> bool {
         self.stage == Stage::Pass
             && self.metrics.as_ref().is_some_and(|metrics| {
-                ["lint_allows", "leaks", "byte_casts"]
+                STRICT_COUNTS
                     .iter()
                     .all(|name| metrics.get(name) == Some(&0))
             })

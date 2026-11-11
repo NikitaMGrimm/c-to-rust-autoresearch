@@ -678,7 +678,16 @@ fn a_run_keeps_its_commits_on_its_own_branch_from_the_start_transpiler() {
     std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
     let start = commit(repo, "crates/transpiler/empty");
     let main = commit(repo, "crates/transpiler/rules");
-    let args = ["--dev-only", "--start", &start, "--model", "m", "r1", "2"];
+    let args = [
+        "--dev-only",
+        "--strict",
+        "--start",
+        &start,
+        "--model",
+        "m",
+        "r1",
+        "2",
+    ];
     assert_eq!(fixture.run_loop(&args, "", 0), Some(0));
 
     assert_eq!(git(repo, &["rev-parse", "main"]), main);
@@ -703,7 +712,11 @@ fn a_run_keeps_its_commits_on_its_own_branch_from_the_start_transpiler() {
         );
     }
     let calls = fixture.calls();
-    assert_eq!(calls.matches("--dev-only --run r1\n").count(), 2, "{calls}");
+    assert_eq!(
+        calls.matches("--dev-only --strict --run r1\n").count(),
+        2,
+        "{calls}"
+    );
     let kept = git(repo, &["log", "--format=%s", &format!("{base}..run/r1")]);
     assert_eq!(kept, "feat(transpiler): rule 2\nfeat(transpiler): rule 1");
     // The next session would start from the run's branch.
