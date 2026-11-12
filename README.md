@@ -72,7 +72,8 @@ transfer set from IBM's Project CodeNet.
 
 The loop agent follows [loop/program.md](loop/program.md): one translation rule
 per commit, each listed in the
-[rule catalogue](crates/transpiler/CATALOGUE.md). The gate decides whether a
+[rule catalogue](crates/transpiler/CATALOGUE.md), or one refactoring that
+prepares later rules. The gate decides whether a
 commit stays:
 
 ```sh
@@ -80,7 +81,8 @@ cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev
 ```
 
 It keeps a candidate that changes only the transpiler when the development
-score rises, or for a candidate of `fix(transpiler)` commits does not drop,
+score rises, or for a candidate of `fix(transpiler)` and
+`refactor(transpiler)` commits does not drop,
 and the validation score does not drop, and prints only the development
 results and the decision. With `--dev-only` the development score alone
 decides. With `--strict` a score counts only the strict passes: those that
@@ -131,7 +133,7 @@ round:
 ```
 
 A run keeps its commits on its own branch `run/RUN`, which starts from main
-with the transpiler as it was before the loop's first rule, and the gate logs
+with main's transpiler, the skeleton, and the gate logs
 it to `PRIVATE_DIR/runs/RUN/log.jsonl`. Each session runs in a bubblewrap
 sandbox, [described here](docs/architecture.md#the-sandbox): a read-only
 file system without the home directory, `/tmp`, `/run` and the private

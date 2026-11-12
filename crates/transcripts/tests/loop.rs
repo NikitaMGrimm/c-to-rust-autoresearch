@@ -768,6 +768,19 @@ fn a_run_starts_every_session_afresh_and_stops_at_contact() {
 }
 
 #[test]
+fn a_run_starts_from_the_transpiler_of_main_by_default() {
+    let fixture = Fixture::new();
+    let repo = &fixture.repo;
+    std::fs::create_dir_all(repo.join("crates/transpiler")).unwrap();
+    let main = commit(repo, "crates/transpiler/skeleton");
+    assert_eq!(fixture.run_loop(&["r1", "1"], "", 0), Some(0));
+
+    let base = git(repo, &["rev-parse", "run/r1~1"]);
+    assert_eq!(git(repo, &["rev-parse", &format!("{base}^")]), main);
+    assert_eq!(git(repo, &["diff", "--name-only", &main, &base]), "");
+}
+
+#[test]
 fn an_interrupted_run_keeps_the_transcripts_of_its_session() {
     let fixture = Fixture::new();
     let repo = &fixture.repo;

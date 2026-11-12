@@ -119,14 +119,16 @@ bench/README.md. Tools that read private programs print names and counts only.
 decides whether a loop commit stays. It rejects a candidate that does not
 descend from `BASE`, changes anything outside `crates/transpiler/` and
 `Cargo.lock`, or changes rules without the
-[catalogue](../crates/transpiler/CATALOGUE.md). Otherwise it builds both
+[catalogue](../crates/transpiler/CATALOGUE.md), unless all its commits are
+refactorings with a `refactor(transpiler)` subject. Otherwise it builds both
 transpilers from `git archive` in the sandbox, after fetching dependencies
 outside it, and evaluates them on the development set, the private validation
 and held-out sets and the private variants of the development set.
 
 The keep rule is provisional: the development score rises, or does not drop
 for a candidate whose commits are all fixes with a `fix(transpiler)` subject,
-such as for a review comment, and the validation score does not drop. With
+such as for a review comment, or refactorings, which prepare later rules,
+and the validation score does not drop. With
 `--dev-only`, as in the baseline runs, the development score alone decides
 and validation is only logged. With `--strict`, the scores of the keep rule
 count only strict passes, and the gate also prints the development set's
@@ -172,8 +174,8 @@ for each loop checkout, and a lock there lets only one round run at a time.
 With `--run RUN`, the branch `run/RUN` takes main's place: the round judges
 the commit against it, keeps the commit there, and keeps its state in
 `local/runs/RUN/`. It passes `--run RUN` to the gate, and `--dev-only` and
-`--strict` when given. `loop/run` makes that branch from main, with `crates/transpiler/` as
-it was before the loop's first rule (or from `--start COMMIT`), and then
+`--strict` when given. `loop/run` makes that branch from main, with main's
+own `crates/transpiler/` (or that of `--start COMMIT`), and then
 alternates a headless session (`claude -p`) in a fresh clone with such a
 round, for a fixed number of sessions. The sessions run without permission
 prompts, in the sandbox above; the deny rules and the guard from

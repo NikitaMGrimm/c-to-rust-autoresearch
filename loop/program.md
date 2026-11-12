@@ -1,6 +1,6 @@
 # Research loop instructions
 
-You improve a mechanical C-to-Rust transpiler, one rule per iteration. A
+You improve a mechanical C-to-Rust transpiler, one step per iteration. A
 translation passes when it compiles as safe Rust and, with overflow checks on,
 prints the same output and exits with the same code as the C program on every
 input. The goal is the number of programs that pass, on programs you will never
@@ -16,6 +16,12 @@ and the like), as a program over an emulated C memory does. The evaluator
 marks passes that are not strict and prints the strict score as `STRICT`. Meet
 the intent, not the list: an arena that never shrinks or C's memory under
 another name is no better than what the list names.
+
+The transpiler has a design, in `crates/transpiler/DESIGN.md`: stages that
+each do one thing, the Rust each C construct should become, and what is not
+built yet. Read it before anything else and keep to it. It refuses a program
+it has no rule for rather than translating it badly, so most development
+programs fail with `unsupported: …`; those reasons are the work.
 
 ## What you may change
 
@@ -42,21 +48,36 @@ MCP tools, such as T3 Code's, are blocked, and the only skills are those in
 
 1. Read `ROUNDS.md`, if there is one: the earlier iterations, with the gate's
    results for each. If there is a `REVIEWS.md`, handle it first, as
-   [Reviews](#reviews) says. Otherwise run `cargo run -p eval -- --quiet` and
-   pick one failing development program, or several that fail for the same
-   reason.
-2. Study it with `scripts/inspect bench/dev/NAME.c` and the evaluator's
-   details (`cargo run -p eval -- --only NAME`).
-3. Add or generalise one rule in `crates/transpiler/src/`. Translate C
-   constructs, not programs: no program names, expected outputs or constants
-   taken from a benchmark. Rules must stay mechanical; the transpiler may not
-   call a language model or any network service.
-4. Add the rule's entry to `crates/transpiler/CATALOGUE.md` and a test in
-   `crates/transpiler/tests/`.
+   [Reviews](#reviews) says. Otherwise run `cargo run -p eval -- --quiet` for
+   the scores and
+   `cargo test -p transpiler --test dev -- --nocapture` for the reason each
+   development program is refused. Pick one reason, best one that several
+   programs share.
+2. Study a program that has it with `scripts/inspect bench/dev/NAME.c` and
+   the evaluator's details (`cargo run -p eval -- --only NAME`).
+3. Make one step in `crates/transpiler/src/`, in the stage where the design
+   puts it:
+   - a **rule**: one C construct gets a translation, or an earlier rule
+     covers more;
+   - a **refactoring**: something that later rules need and that passes no
+     program by itself, such as a fact in the analysis, a rewrite or a node
+     in the C tree, or code that has grown hard to follow made simple again.
+
+   Translate C constructs, not programs: no program names, expected outputs
+   or constants taken from a benchmark. A rule that is wrong for some
+   programs asks the analysis and refuses those; it never falls back to a
+   translation that always works. Rules must stay mechanical; the transpiler
+   may not call a language model or any network service.
+4. For a rule, add its entry to `crates/transpiler/CATALOGUE.md` and a test
+   in `crates/transpiler/tests/translate/` that asserts the Rust it should
+   read as. For a refactoring, update `DESIGN.md` where it changes what the
+   design says.
 5. Run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`,
-   `cargo test --workspace` and the evaluator again. Programs that passed before should still pass.
-6. Commit as `feat(transpiler): ...` and stop with a short report: the rule,
-   the programs it fixed and any it broke.
+   `cargo test --workspace` and the evaluator again. Programs that passed
+   before should still pass.
+6. Commit a rule as `feat(transpiler): ...` and a refactoring as
+   `refactor(transpiler): ...`, and stop with a short report: the step, the
+   programs it fixed and any it broke.
 
 ## Reviews
 
@@ -92,7 +113,8 @@ After each iteration the gate, run outside your session, builds the
 transpiler from your commit and evaluates it on the development set, a private
 validation set and private variants of the development programs with renamed
 identifiers, changed constants and new inputs. It keeps the commit when the
-development score rises, or for a fix does not drop, and otherwise drops it;
+development score rises, or for a fix or a refactoring does not drop, and
+otherwise drops it;
 it may also require that the validation score does not drop, and it may count
 only strict passes in its scores. The next
 iteration starts in a fresh checkout of the kept commits, whose `ROUNDS.md`
