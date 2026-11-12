@@ -86,8 +86,34 @@ score rises, or for a candidate of `fix(transpiler)` and
 and the validation score does not drop, and prints only the development
 results and the decision. With `--dev-only` the development score alone
 decides. With `--strict` a score counts only the strict passes: those that
-switch no lint off, never give up freeing memory and keep no scalars as bytes. It also evaluates the held-out set, for the private log only. Run it from this checkout, which the
-loop agent cannot write, at a clean main.
+switch no lint off, never give up freeing memory and keep no scalars as
+bytes. It never evaluates the held-out set. Run it from this checkout, which
+the loop agent cannot write, at a clean main.
+
+### A driver
+
+One agent can drive the work from a T3 Code thread, with its memory of what
+came before and the whole transpiler in view. It follows
+[loop/driver.md](loop/driver.md):
+
+```sh
+~/src/c-to-rust-autoresearch/loop/seal PRIVATE_DIR
+~/src/c-to-rust-autoresearch/loop/drive RUN PRIVATE_DIR WORK_DIR
+```
+
+`loop/seal` takes every permission from the held-out and transfer programs,
+the corpus cache and the logs that hold their results, so that nothing opens
+them by accident; `loop/seal --open` gives them back. `loop/drive` makes the
+branch `run/RUN` for the commits the gate keeps and the worktree `WORK_DIR`
+on `work/RUN` for the driver, with settings that keep it out of the private
+directory and off the web. The driver's thread is started in `WORK_DIR`. It
+builds and tests the transpiler with `loop/cargo`, which runs cargo in a
+sandbox without the home directory or network, and has each commit judged
+with `local/judge`, which runs the strict gate against `run/RUN` and moves
+that branch on keep. After a stretch of work,
+`loop/audit RUN` audits the driver's transcripts.
+
+### Sessions in a sandbox
 
 The loop agent works in its own clone, which keeps it away from the private
 programs. After each of its sessions, `loop/round` audits the session's
@@ -146,16 +172,16 @@ environment. The run logs each session's times and exit codes to
 calls named only places that the sandbox hid, and stops early after a failed
 session or round, or when the audit finds contact with the private sets.
 
-After a run, while no other is going, the transfer set is evaluated on the
-run's start and on every commit its gate kept:
+After a run, while no other is going, the transfer set and the held-out set
+are evaluated on the run's start and on every commit its gate kept:
 
 ```sh
-cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--jobs N]
+cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--set held-out] [--jobs N]
 ```
 
 It builds each commit's transpiler as the gate does, appends the results to
-`PRIVATE_DIR/runs/RUN/transfer.jsonl`, skips commits already there and prints
-no results.
+`PRIVATE_DIR/runs/RUN/transfer.jsonl` or `held-out.jsonl`, skips commits
+already there and prints no results.
 
 ## Model usage
 

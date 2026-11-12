@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Prepares a run that one agent drives from a T3 Code thread: the branch
+# run/RUN, which holds the commits the gate kept, and a worktree on the branch
+# work/RUN, where the driver works, with Claude Code settings that keep it
+# away from the private programs and off the web. The driver follows
+# loop/driver.md and has each commit judged by loop/judge. Run it by this
+# checkout's path, at a clean main. See docs/architecture.md.
+set -euo pipefail
+
+if (($# != 3)) || [[ ! $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+  ! git check-ref-format "refs/heads/run/$1"; then
+  cat >&2 <<'USAGE'
+usage: loop/drive RUN PRIVATE_DIR WORK_DIR
+Makes the branch run/RUN from main unless it exists, and the worktree WORK_DIR
+on a new branch work/RUN at its head. The driver may not read or edit
+PRIVATE_DIR, the corpus cache or this checkout's local/, may not edit this
+checkout, and may not use the web; loop/guard blocks any other tool call that
+names those places or Claude Code's files. WORK_DIR must not exist.
+USAGE
+  exit 2
+fi
+command -v jq >/dev/null || { echo "loop/drive needs jq" >&2; exit 1; }
+run=$1
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
+private=$(cd "$2" && pwd -P)
+# Before the change of directory below, which would give it another meaning.
+work=$(realpath -m -- "$3")
+if [[ -e $work ]]; then
+  echo "$work already exists" >&2
+  exit 1
+fi
+cd "$repo"
+if git rev-parse -q --verify "refs/heads/work/$run" >/dev/null; then
+  echo "the branch work/$run already exists" >&2
+  exit 1
+fi
+if ! git rev-parse -q --verify "refs/heads/run/$run" >/dev/null; then
+  git branch -q "run/$run" main
+fi
+git worktree add -q -b "work/$run" "$work" "run/$run"
+work=$(cd "$work" && pwd -P)
+
+# Claude Code keeps a project's transcripts in a directory named after its
+# path, with every other character than letters and digits turned into -.
+transcripts=$HOME/.claude/projects/$(printf %s "$work" | tr -c 'a-zA-Z0-9' '-')
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch
+denied=("$private" "$cache" "$repo/local")
+# A shell call can name a place by a shorter path, so the guard looks for the
+# private directory's own name too, and for local/ under this checkout's.
+markers=("${denied[@]}" "$(basename "$private")" .cache/c-to-rust-autoresearch
+  "$(basename "$repo")/local")
+json_array() { printf '%s\n' "$@" | jq -R . | jq -sc .; }
+mkdir -p "$work/.claude"
+jq -n \
+  --argjson denied "$(json_array "${denied[@]}")" \
+  --argjson markers "$(json_array "${markers[@]}")" \
+  --arg guard "$repo/loop/guard" \
+  --arg own "$transcripts" \
+  --arg repo "$repo" '{
+  autoMemoryEnabled: false,
+  permissions: {
+    deny: ([$denied[] | "Read(/\(.)/**)", "Edit(/\(.)/**)"] + [
+      "Edit(/\($repo)/**)",
+      "WebFetch", "WebSearch", "Bash(curl *)", "Bash(wget *)"
+    ])
+  },
+  hooks: {PreToolUse: [{matcher: "*", hooks: [
+    {type: "command", command: ([$guard, "--driver", $own] + $markers | map(@sh) | join(" "))}
+  ]}]}
+}' >"$work/.claude/settings.local.json"
+
+# The driver judges its work by this name, without the run's or this
+# checkout's.
+mkdir -p "$work/local"
+printf '#!/usr/bin/env bash\nexec %q %q\n' "$repo/loop/judge" "$run" >"$work/local/judge"
+chmod +x "$work/local/judge"
+
+state=$repo/local/runs/$run
+mkdir -p "$state"
+printf '%s\n' "$private" >"$state/private"
+printf '%s\n' "$work" >"$state/work"
+# The first round's model usage counts from here.
+if [[ ! -f $state/since ]]; then
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
+fi
+echo "run $run: kept commits on run/$run, at $(git log -1 --format='%h %s' "run/$run")"
+echo "the driver's worktree: $work, on work/$run"
+echo "its Claude Code transcripts: $transcripts"
+echo "the driver follows loop/driver.md and judges a commit with local/judge"

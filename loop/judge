@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Judges the driver's work: runs the strict gate on the commits that work/RUN
+# has beyond run/RUN and, when it keeps them, moves run/RUN there. It prints
+# what the gate prints, the development results and the decision, and adds
+# them to the run's history, local/rounds.md in the driver's worktree. The
+# driver calls it by this checkout's path and never names the private
+# directory, which loop/drive noted. See docs/architecture.md.
+set -euo pipefail
+trap 'exit 2' ERR
+
+if (($# != 1)) || [[ ! $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  cat >&2 <<'USAGE'
+usage: loop/judge RUN
+Exits 0 when the gate kept the commits, 1 when it rejected them, in which case
+work/RUN stays as it is, 3 when work/RUN has no new commit, and 2 on errors.
+USAGE
+  exit 2
+fi
+run=$1
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
+state=$repo/local/runs/$run
+if [[ ! -f $state/private || ! -f $state/work ]]; then
+  echo "judge stopped: loop/drive has not prepared the run $run" >&2
+  exit 2
+fi
+private=$(cat "$state/private")
+work=$(cat "$state/work")
+if [[ ! -d $work ]]; then
+  echo "judge stopped: the driver's worktree $work is gone" >&2
+  exit 2
+fi
+mkdir -p "$repo/local/loop"
+# Two gates at once would judge against the same base, and change each
+# other's timings.
+exec 9>"$repo/local/loop/lock"
+if ! flock -n 9; then
+  echo "judge stopped: another round is running" >&2
+  exit 2
+fi
+cd "$repo"
+base=$(git rev-parse -q --verify "refs/heads/run/$run")
+candidate=$(git rev-parse -q --verify "refs/heads/work/$run")
+if [[ $candidate == "$base" ]]; then
+  echo "judge stopped: work/$run has no new commit" >&2
+  exit 3
+fi
+
+report=$(mktemp)
+printed=$(mktemp)
+trap 'rm -f "$report" "$printed"' EXIT
+# The driver's own model usage since the last round. Its children's sessions
+# are in other directories and are not counted here.
+transcripts=$HOME/.claude/projects/$(printf %s "$work" | tr -c 'a-zA-Z0-9' '-')
+usage=()
+# Up to now, so that what the driver writes while the gate runs counts for
+# the next round.
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [[ -d $transcripts ]]; then
+  cargo run -q -p transcripts --bin usage -- --since "$(cat "$state/since")" --until "$now" \
+    "$transcripts" >"$report"
+  usage=(--usage "$report")
+fi
+status=0
+cargo run -q -p eval --bin gate -- "$private" "$base" "$candidate" "${usage[@]}" \
+  --strict --run "$run" >"$printed" || status=$?
+cat "$printed"
+if ((status > 1)); then
+  echo "judge stopped: the gate failed; nothing was changed" >&2
+  exit 2
+fi
+# The history and the time first: a judgment that stops here is judged again,
+# and one that moved the branch is complete.
+{
+  echo "## $(git log -1 --format='%h %s' "$candidate")"
+  echo
+  cat "$printed"
+  echo
+} >>"$state/rounds.md"
+echo "$now" >"$state/since"
+if ((status == 0)); then
+  git update-ref "refs/heads/run/$run" "$candidate" "$base"
+fi
+if ! { mkdir -p "$work/local" && cp "$state/rounds.md" "$work/local/rounds.md"; }; then
+  echo "judge: the history did not reach $work/local/rounds.md; it is in $state/rounds.md" >&2
+fi
+if ((status == 1)); then
+  echo "work/$run is still at ${candidate:0:7}: change it and judge again, or go back with git reset --hard run/$run"
+fi
+exit "$status"

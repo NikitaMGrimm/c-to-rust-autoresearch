@@ -9,10 +9,11 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-const USAGE: &str = "usage: audit PRIVATE_DIR PATH...\n\
+const USAGE: &str = "usage: audit PRIVATE_DIR [--readable DIR]... PATH...\n\
      PATH is a transcript (.jsonl) or a directory searched for them, such as the\n\
      loop checkout's directory under ~/.claude/projects; reading files back from\n\
-     these directories is no finding. Exit code 1 means findings.";
+     these directories is no finding, nor from a DIR among Claude Code's files\n\
+     that the agent may read, such as its skills. Exit code 1 means findings.";
 /// Text in a tool call that reaches for a corpus that holds private programs
 /// too: TRACTOR's repository, CodeNet's archive and the cache that `intake`
 /// and `codenet` read them from.
@@ -34,21 +35,31 @@ struct Patterns {
     /// given and resolved, each by its own name too, and the corpus.
     places: Vec<String>,
     /// The audited transcripts' directories, which Claude Code saves long
-    /// tool output to and the agent may read back.
+    /// tool output to and the agent may read back, and any other directory
+    /// it may read.
     own: Vec<String>,
 }
 
 fn main() -> ExitCode {
-    let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let [private, paths @ ..] = args.as_slice() else {
+    let mut args = std::env::args_os().skip(1).map(PathBuf::from);
+    let (mut paths, mut readable) = (Vec::new(), Vec::new());
+    let private = args.next();
+    while let Some(arg) = args.next() {
+        if arg.as_os_str() == "--readable" {
+            let Some(dir) = args.next() else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            readable.push(dir);
+        } else {
+            paths.push(arg);
+        }
+    }
+    let (Some(private), false) = (private, paths.is_empty()) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    if paths.is_empty() {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    }
-    match audit(private, paths) {
+    match audit(&private, &paths, &readable) {
         Ok(0) => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {
@@ -59,8 +70,18 @@ fn main() -> ExitCode {
 }
 
 /// Prints the findings in the transcripts under `paths` and returns how many.
-fn audit(private: &Path, paths: &[PathBuf]) -> Result<usize, String> {
+/// Reading files in a `readable` directory is no finding.
+fn audit(private: &Path, paths: &[PathBuf], readable: &[PathBuf]) -> Result<usize, String> {
     let mut patterns = patterns(private)?;
+    // A call may name the directory as given or, where that is a link, as
+    // resolved.
+    for dir in readable {
+        let given = std::path::absolute(dir).map_err(|err| err.to_string())?;
+        let resolved = dir.canonicalize().unwrap_or_else(|_| given.clone());
+        for dir in [given, resolved] {
+            patterns.own.push(dir.display().to_string());
+        }
+    }
     for path in paths {
         let path = path
             .canonicalize()
@@ -194,7 +215,7 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
                 // A path with .. could climb out of the agent's own directory.
                 if tool == "Read" && !text.contains("..") {
                     for dir in &patterns.own {
-                        rest = rest.replace(dir, "");
+                        rest = without(&rest, dir);
                     }
                 }
                 contains(&rest, ".claude", path)
@@ -205,6 +226,21 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
         }
     }
     found
+}
+
+/// `text` without the directory `dir` where it names it, and not a sibling
+/// whose name extends it.
+fn without(text: &str, dir: &str) -> String {
+    let (mut rest, mut tail) = (String::new(), text);
+    while let Some(at) = tail.find(dir).filter(|_| !dir.is_empty()) {
+        let after = &tail[at + dir.len()..];
+        rest.push_str(&tail[..at]);
+        if after.chars().next().is_some_and(path) {
+            rest.push_str(dir);
+        }
+        tail = after;
+    }
+    rest + tail
 }
 
 /// The strings in `value`, decoded, so that an escape such as `\n` cannot
@@ -419,7 +455,42 @@ mod tests {
         std::fs::create_dir(dir.join("private/held-out")).unwrap();
         std::fs::write(dir.join("private/validation/a.c"), "").unwrap();
         std::fs::create_dir(dir.join("empty")).unwrap();
-        let audited = audit(&dir.join("private"), &[dir.join("empty")]);
+        let audited = audit(&dir.join("private"), &[dir.join("empty")], &[]);
         assert_eq!(audited, Err("no transcripts to audit".to_owned()));
+    }
+
+    #[test]
+    fn a_readable_directory_is_read_without_a_finding_and_not_searched() {
+        let dir = eval::Scratch::new("test").unwrap();
+        std::fs::create_dir_all(dir.join("private/validation")).unwrap();
+        std::fs::create_dir(dir.join("private/held-out")).unwrap();
+        std::fs::write(dir.join("private/validation/a.c"), "").unwrap();
+        // The skills are behind a link and hold a file that is no transcript.
+        let (given, real) = (dir.join("home/.claude"), dir.join("real/.claude"));
+        std::fs::create_dir_all(real.join("skills/x")).unwrap();
+        std::fs::create_dir(dir.join("home")).unwrap();
+        std::os::unix::fs::symlink(&real, &given).unwrap();
+        std::fs::write(real.join("skills/x/data.jsonl"), "not a transcript\n").unwrap();
+        std::fs::create_dir(dir.join("transcripts")).unwrap();
+        let read = |path: PathBuf| tool_use("Read", serde_json::json!({"file_path": path}));
+        // By the name the directory was given with, and by the one it has.
+        let calls = [
+            read(given.join("skills/x/SKILL.md")),
+            read(real.canonicalize().unwrap().join("skills/x/SKILL.md")),
+        ];
+        std::fs::write(dir.join("transcripts/s.jsonl"), calls.join("\n")).unwrap();
+        let skills = [given.join("skills")];
+        let audit = |readable: &[PathBuf]| {
+            audit(&dir.join("private"), &[dir.join("transcripts")], readable)
+        };
+        assert_eq!(audit(&skills), Ok(0));
+        assert_eq!(audit(&[]), Ok(2));
+        // Not what lies beside it.
+        let beside = [
+            read(given.join("skills/../settings.json")),
+            read(given.join("skills-old/x/SKILL.md")),
+        ];
+        std::fs::write(dir.join("transcripts/s.jsonl"), beside.join("\n")).unwrap();
+        assert_eq!(audit(&skills), Ok(2));
     }
 }

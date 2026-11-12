@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Seals what stays unseen while a run is going: the held-out and transfer
+# programs, the corpus cache they were taken from, and the logs of earlier
+# runs that hold held-out or transfer results. It takes every permission from
+# their directories, so that no tool opens them by accident, whatever agent or
+# model runs it; opening them again takes this script's --open, a deliberate
+# call that the audit shows. The validation set and the development variants
+# stay open, since the gate reads them. See docs/architecture.md.
+set -euo pipefail
+
+open=false
+if [[ ${1-} == --open ]]; then
+  open=true
+  shift
+fi
+if (($# != 1)); then
+  cat >&2 <<'USAGE'
+usage: loop/seal [--open] PRIVATE_DIR
+Takes all permissions from PRIVATE_DIR's held-out, transfer and
+variants/held-out, from the corpus cache and from each log directory in
+PRIVATE_DIR that holds held-out or transfer results, and notes their modes in
+PRIVATE_DIR/.sealed. With --open, gives the modes back: for the audit, which
+reads the programs' names, the bench tools, and the evaluation of held-out and
+transfer after a run.
+USAGE
+  exit 2
+fi
+private=$(cd "$1" && pwd -P)
+list=$private/.sealed
+
+if $open; then
+  if [[ ! -f $list ]]; then
+    echo "$private is not sealed"
+    exit 0
+  fi
+  # Every directory is tried, and the list stays after a failure.
+  failed=false
+  while IFS=' ' read -r mode dir; do
+    if [[ -d $dir ]] && ! chmod "$mode" "$dir"; then
+      failed=true
+    fi
+  done <"$list"
+  if $failed; then
+    echo "seal: $private is not fully open" >&2
+    exit 2
+  fi
+  rm "$list"
+  echo "opened $private"
+  exit 0
+fi
+
+dirs=("$private/held-out" "$private/transfer" "$private/variants/held-out"
+  "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch")
+# The gate's logs from before it stopped evaluating held-out, and the results
+# that the transfer tool wrote after a run.
+for log in "$private/loop" "$private"/runs/*; do
+  if [[ -r $log ]] && { [[ -e $log/transfer.jsonl || -e $log/held-out.jsonl ]] ||
+    grep -qs '"held-out"' "$log/log.jsonl"; }; then
+    dirs+=("$log")
+  fi
+done
+for dir in "${dirs[@]}"; do
+  # The directory itself, where the name is a link to it.
+  dir=$(readlink -f -- "$dir") || continue
+  mode=$(stat -c %a "$dir" 2>/dev/null) || continue
+  if [[ -d $dir && $mode != 0 ]]; then
+    echo "$mode $dir" >>"$list"
+    chmod 000 "$dir"
+  fi
+done
+echo "sealed $private"

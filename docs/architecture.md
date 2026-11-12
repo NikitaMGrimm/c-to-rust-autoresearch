@@ -123,7 +123,8 @@ descend from `BASE`, changes anything outside `crates/transpiler/` and
 refactorings with a `refactor(transpiler)` subject. Otherwise it builds both
 transpilers from `git archive` in the sandbox, after fetching dependencies
 outside it, and evaluates them on the development set, the private validation
-and held-out sets and the private variants of the development set.
+set and the private variants of the development set. It never evaluates
+held-out, which stays sealed until the work on the transpiler is over.
 
 The keep rule is provisional: the development score rises, or does not drop
 for a candidate whose commits are all fixes with a `fix(transpiler)` subject,
@@ -143,19 +144,61 @@ has changes or untracked files, or is the loop agent's clone; that catches a
 mistaken checkout, but the gate is built before it checks, so it cannot stop a
 hostile one.
 
-`cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--jobs N]` evaluates the
-transfer set after a run: on the run's start and on every candidate that its
+`cargo run -p eval --bin transfer -- PRIVATE_DIR RUN [--set held-out] [--jobs N]`
+evaluates the transfer set, or held-out, after a run: on the run's start and on every candidate that its
 gate kept, in the order of `PRIVATE_DIR/runs/RUN/log.jsonl`, and that
 `run/RUN` holds. The gate logs before the round moves the branch, so a round
 stopped in between leaves a kept candidate that never joined the run; the
 branch's tip must be among the commits. It trusts the same checkout as the
 gate and builds and evaluates each commit the same way. It appends one entry
-per commit to `PRIVATE_DIR/runs/RUN/transfer.jsonl`: each program's stage,
+per commit to `PRIVATE_DIR/runs/RUN/transfer.jsonl` or `held-out.jsonl`: each program's stage,
 the passes that fail their fuzzed inputs, the passes that are not strict and
 the tool versions. It skips
 commits already there and prints only its progress, since the results stay
 sealed like held-out. Its load would change a gate's timings, so it runs
 while no run is going.
+
+## A driver
+
+One agent can drive the work from a T3 Code thread instead of a run of
+separate sessions: it keeps its memory, sees the whole transpiler and can
+hand rules to other agents. [loop/driver.md](../loop/driver.md) is what it
+follows. It is not in a sandbox itself, so three things stand in for one:
+
+- `loop/seal PRIVATE_DIR` takes every permission from the directories of the
+  held-out and transfer programs, of the held-out variants, of the corpus
+  cache and of each log that holds held-out or transfer results, and notes
+  their modes in `PRIVATE_DIR/.sealed`. No tool of any agent or model then
+  opens them by accident. `loop/seal --open` gives the modes back, for the
+  audit, the bench tools and the evaluation after a run. The validation set
+  and the development variants stay open, since the gate reads them. The
+  programs are still in the private repository's history, so the seal
+  guards against a mistake, not against intent, which the audit would show.
+- `loop/drive RUN PRIVATE_DIR WORK_DIR` makes the branch `run/RUN` from main
+  and the worktree `WORK_DIR` on `work/RUN`, with Claude Code settings like
+  those of `loop/setup`: no reading or editing of the private directory, the
+  corpus cache or the main checkout's `local/`, no editing of the main
+  checkout, no web, and `loop/guard` for every other call that names those
+  places. A shell call that first changes directory and then uses a short
+  name gets past the guard, as it does for the loop agent, whose sandbox
+  the driver does not have. T3 Code's tools and the owner's skills stay, since the driver
+  works through them. Agents of another provider that the driver starts get
+  no such settings, only their brief.
+- `loop/cargo` runs cargo on the checkout it is called in, in a sandbox like
+  the evaluator's: no network, `/tmp`, `TMPDIR`, `/run` or `/mnt`, a home
+  directory that holds only the Rust toolchain and the checkout, and neither
+  the corpus cache nor the private directory of any run that `loop/drive`
+  prepared, wherever they are. The driver builds and tests the transpiler
+  only so.
+
+`loop/judge RUN`, which the driver calls as `local/judge`, runs the gate with
+`--strict --run RUN` on `work/RUN` against `run/RUN`, with the driver's model
+usage since the last round, and moves `run/RUN` on keep. It adds the commit
+and what the gate printed to the worktree's `local/rounds.md`, and takes the
+lock that a round takes. A rejected commit stays on `work/RUN` for the driver
+to change or drop. `loop/audit RUN [PATH...]` runs the audit below on the
+driver's transcripts and any others given, and opens the seal only for as
+long as it runs.
 
 ## A round
 
@@ -258,8 +301,10 @@ more examples of a construct might, so the loop has several layers:
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private
   directory or a corpus, looked for TRACTOR or CodeNet on the web or touched Claude
-  Code's files, and every record it cannot read. Exit code 0 means none; a
-  path without transcripts is an error.
+  Code's files, and every record it cannot read. Reading back a file in a
+  transcript's own directory is no finding, nor in a directory given with
+  `--readable DIR`, as `loop/audit` gives a driver's skills. Exit code 0
+  means none; a path without transcripts is an error.
 
 `intake` fetches the corpus again when its cache is missing, so the cache can
 be deleted while a loop runs. The guard and the audit see only what a tool

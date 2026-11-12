@@ -1,9 +1,9 @@
-//! Evaluates the private transfer set, from Project CodeNet, on the commits a
-//! run kept, as the gate evaluates the other sets. No loop sees the set and
-//! the gate never evaluates it, so it shows whether rules learned on TRACTOR
-//! carry over to programs from another source. The results go to the run's
-//! private directory only: they stay sealed like held-out, so the tool prints
-//! nothing but its progress.
+//! Evaluates a sealed private set on the commits a run kept, as the gate
+//! evaluates the other sets: the transfer set, from Project CodeNet, or
+//! held-out. No loop sees either and the gate never evaluates them. Transfer
+//! shows whether rules learned on TRACTOR carry over to programs from another
+//! source; held-out gives the final results. The results go to the run's
+//! private directory only, so the tool prints nothing but its progress.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -11,27 +11,36 @@ use std::process::{Command, ExitCode};
 
 use eval::Stage;
 
-const USAGE: &str = "usage: transfer PRIVATE_DIR RUN [--jobs N]\n\
-     Evaluates PRIVATE_DIR/transfer on the start of run RUN and on every commit\n\
-     that PRIVATE_DIR/runs/RUN/log.jsonl shows kept and the branch run/RUN holds,\n\
-     and appends the results to PRIVATE_DIR/runs/RUN/transfer.jsonl, skipping\n\
-     commits already there. Prints no results. Run it from a clean checkout of\n\
-     main while no run is going: its load would change a gate's timings.";
+const USAGE: &str = "usage: transfer PRIVATE_DIR RUN [--set SET] [--jobs N]\n\
+     Evaluates PRIVATE_DIR/SET, transfer by default or held-out, on the start of\n\
+     run RUN and on every commit that PRIVATE_DIR/runs/RUN/log.jsonl shows kept\n\
+     and the branch run/RUN holds, and appends the results to\n\
+     PRIVATE_DIR/runs/RUN/SET.jsonl, skipping commits already there. Prints no\n\
+     results. Run it from a clean checkout of main while no run is going: its\n\
+     load would change a gate's timings.";
+
+/// The sets that stay sealed while a run is going.
+const SETS: [&str; 2] = ["transfer", "held-out"];
 
 struct Args {
     private: PathBuf,
     run: String,
+    set: &'static str,
     jobs: usize,
 }
 
 /// The tool's arguments, without the program name, or `None` for a usage error.
 fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
     let mut positional = Vec::new();
-    let mut jobs = 2;
+    let (mut jobs, mut set) = (2, SETS[0]);
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--jobs" => jobs = rest.next()?.parse().ok().filter(|&n| n > 0)?,
+            "--set" => {
+                let name = rest.next()?;
+                set = SETS.into_iter().find(|&set| set == name)?;
+            }
             _ if arg.starts_with('-') => return None,
             _ => positional.push(arg),
         }
@@ -40,6 +49,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
     eval::run_id(&run).then(|| Args {
         private: private.into(),
         run,
+        set,
         jobs,
     })
 }
@@ -70,21 +80,22 @@ fn transfer(args: &Args) -> Result<(), String> {
     let tip = eval::git(&["rev-parse", "--verify", &format!("{branch}^{{commit}}")])?;
     let commits = kept_commits(&text, &tip, |commit| is_on(commit, &tip))
         .map_err(|err| format!("{}: {err}", log.display()))?;
-    let out = dir.join("transfer.jsonl");
+    let set = args.set;
+    let out = dir.join(format!("{set}.jsonl"));
     let done = match std::fs::read_to_string(&out) {
         Ok(text) => evaluated(&text).map_err(|err| format!("{}: {err}", out.display()))?,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
         Err(err) => return Err(format!("cannot read {}: {err}", out.display())),
     };
-    let sets = [("transfer", args.private.join("transfer"))];
+    let sets = [(set, args.private.join(set))];
     for (i, commit) in commits.iter().enumerate() {
         let progress = format!("{} ({} of {})", &commit[..7], i + 1, commits.len());
         if done.contains(commit) {
-            println!("transfer: {progress} was evaluated before");
+            println!("{set}: {progress} was evaluated before");
             continue;
         }
         let (results, fuzz_failures, lax_passes) = eval::evaluate_commit(commit, &sets, args.jobs)?;
-        let stages = &results["transfer"];
+        let stages = &results[set];
         let passes = stages.values().filter(|&&s| s == Stage::Pass).count();
         let named: BTreeMap<&str, &str> = stages
             .iter()
@@ -100,14 +111,14 @@ fn transfer(args: &Args) -> Result<(), String> {
             "passes": passes,
             "total": stages.len(),
             "stages": named,
-            "passes_failing_fuzz": fuzz_failures["transfer"],
-            "passes_not_strict": lax_passes["transfer"],
+            "passes_failing_fuzz": fuzz_failures[set],
+            "passes_not_strict": lax_passes[set],
         });
         eval::append_log(&out, &entry)?;
-        println!("transfer: {progress} evaluated");
+        println!("{set}: {progress} evaluated");
     }
     println!(
-        "transfer: {} commits of run {} in {}",
+        "{set}: {} commits of run {} in {}",
         commits.len(),
         args.run,
         out.display()
@@ -204,9 +215,11 @@ mod tests {
     fn takes_the_private_directory_and_a_run() {
         let args = parsed(&["private", "wp2-1"]).unwrap();
         assert_eq!(
-            (args.private, args.run, args.jobs),
-            ("private".into(), "wp2-1".into(), 2)
+            (args.private, args.run, args.set, args.jobs),
+            ("private".into(), "wp2-1".into(), "transfer", 2)
         );
+        let held_out = parsed(&["private", "wp2-1", "--set", "held-out"]).unwrap();
+        assert_eq!(held_out.set, "held-out");
         assert_eq!(
             parsed(&["private", "wp2-1", "--jobs", "4"]).unwrap().jobs,
             4
@@ -216,6 +229,8 @@ mod tests {
             &["private", "wp2-1", "extra"],
             &["private", "wp2-1", "--jobs", "0"],
             &["private", "wp2-1", "--dev-only"],
+            &["private", "wp2-1", "--set", "validation"],
+            &["private", "wp2-1", "--set"],
             &["private", "../loop"],
             &["private", ".hidden"],
         ] {

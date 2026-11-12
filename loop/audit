@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Audits a driver's transcripts for contact with the private sets, after a
+# stretch of work. The audit reads the names of the sealed programs, so this
+# opens the seal for as long as it runs. See docs/architecture.md.
+set -euo pipefail
+
+if (($# < 1)) || [[ ! $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  cat >&2 <<'USAGE'
+usage: loop/audit RUN [PATH...]
+Audits the Claude Code transcripts of the run's driver, and each PATH, a
+transcript or a directory of them, such as those of the driver's children.
+Exits 1 on findings and 2 on errors.
+USAGE
+  exit 2
+fi
+run=$1
+shift
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
+state=$repo/local/runs/$run
+if [[ ! -f $state/private || ! -f $state/work ]]; then
+  echo "audit stopped: loop/drive has not prepared the run $run" >&2
+  exit 2
+fi
+private=$(cat "$state/private")
+transcripts=$HOME/.claude/projects/$(tr -c 'a-zA-Z0-9\n' '-' <"$state/work")
+# What was sealed is sealed again whatever happens, also after an opening that
+# stopped half-way: the same directories, from the seal's own list, and not
+# those that this call's environment would name.
+list=$private/.sealed
+if [[ -f $list ]]; then
+  sealed=$(mktemp)
+  cp "$list" "$sealed"
+  reseal() {
+    local status=$? closed=true mode dir
+    while IFS=' ' read -r mode dir; do
+      if [[ -d $dir ]] && ! chmod 000 "$dir"; then
+        closed=false
+      fi
+    done <"$sealed"
+    # Without the list, loop/seal --open cannot give the modes back.
+    if ! cp "$sealed" "$list"; then
+      echo "audit: $private is not sealed again; its list is kept in $sealed" >&2
+      exit 2
+    fi
+    rm -f "$sealed"
+    if ! $closed; then
+      echo "audit: $private is not sealed again" >&2
+      exit 2
+    fi
+    exit "$status"
+  }
+  trap reseal EXIT
+  if ! "$repo/loop/seal" --open "$private" >/dev/null; then
+    echo "audit stopped: the seal did not open" >&2
+    exit 2
+  fi
+fi
+# The driver may read its skills' files.
+readable=()
+if [[ -d $HOME/.claude/skills ]]; then
+  readable=(--readable "$HOME/.claude/skills")
+fi
+cd "$repo"
+cargo run -q -p transcripts --bin audit -- "$private" "${readable[@]}" "$transcripts" "$@"

@@ -1,9 +1,10 @@
 //! Decides whether the research loop keeps a candidate commit. It trusts its
 //! own code, so it runs only from a clean checkout of main outside the loop
 //! agent's clone. It evaluates the base and the candidate transpiler on the
-//! development set, the private validation and held-out sets and the private
-//! variants of the development set, appends everything to a private log and
-//! prints only what the loop agent may see.
+//! development set, the private validation set and the private variants of
+//! the development set, appends everything to a private log and prints only
+//! what the loop agent may see. It never evaluates held-out, which stays
+//! sealed until a run is over; the `transfer` tool evaluates it then.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -119,11 +120,9 @@ fn gate(args: &Args) -> Result<bool, String> {
         "--verify",
         &format!("{}^{{commit}}", args.candidate),
     ])?;
-    // Held-out results go to the private log only, for the final results.
-    let sets: [(&'static str, PathBuf); 4] = [
+    let sets: [(&'static str, PathBuf); 3] = [
         ("dev", eval::dev_dir()),
         ("validation", args.private.join("validation")),
-        ("held-out", args.private.join("held-out")),
         ("dev_variants", args.private.join("variants/dev")),
     ];
 
@@ -290,7 +289,7 @@ fn score(results: &Results, lax_passes: &LaxPasses, set: &str, strict: bool) -> 
 /// The keep rule, on each set's score before and after: the development
 /// score rises, or for a `steady` change, one of fixes and refactorings, does
 /// not drop, and, unless `dev_only`, the validation score does not drop.
-/// Held-out and the variants are only logged.
+/// The variants are only logged.
 fn rejection(
     (dev_before, dev_after): (usize, usize),
     (validation_before, validation_after): (usize, usize),
