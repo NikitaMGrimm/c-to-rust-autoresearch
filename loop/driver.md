@@ -29,7 +29,7 @@ cargo run -p eval -- --quiet                               # the dev scores; san
 ```
 
 Never run plain `cargo` with `--workspace` or `-p transpiler`. `cargo fmt` is
-fine.
+fine. `local/` is ignored by git and is the place for your own files.
 
 ## What you may not see
 
@@ -47,13 +47,15 @@ own as tests.
 
 1. Choose what to do. The refusal reasons of the development programs, the
    weak spots and the list of what is not built in `DESIGN.md`, and
-   `local/rounds.md`, the gate's results so far, say what is missing. Prefer
-   what unblocks the most, and what later steps will build on.
+   `local/rounds.md`, the gate's results so far, which the first judging
+   writes, say what is missing. Prefer what unblocks the most, and what
+   later steps will build on.
 2. Make one step, in the stage where the design puts it:
    - a **rule**: one C construct gets a translation, or an earlier rule
-     covers more. Add its entry to `crates/transpiler/CATALOGUE.md` and a
-     test in `crates/transpiler/tests/translate/` that runs the C program and
-     its translation and asserts the Rust it should read as.
+     covers more. Add its entry to `crates/transpiler/CATALOGUE.md`, in the
+     form that file gives; the gate rejects a rule without one. Add a test
+     in `crates/transpiler/tests/translate/` that runs the C program and its
+     translation and asserts the Rust it should read as.
    - a **refactoring**: a fact in the analysis, a rewrite, a node in the C
      tree, or code made simple again. It passes no new program by itself.
      Update `DESIGN.md` where it changes what the design says.
@@ -68,7 +70,7 @@ own as tests.
 3. Check it: `cargo fmt`, the sandboxed clippy and tests above, and the
    evaluator. Programs that passed before still pass.
 4. Commit on `work/RUN` as `feat(transpiler): ...`, `refactor(transpiler): ...`
-   or `fix(transpiler): ...`.
+   or `fix(transpiler): ...`. The gate knows the kind of a step by this.
 5. Have it judged: `local/judge`. The gate builds the commit and the last
    kept one in its sandbox and evaluates both on the development set, a
    private validation set and private variants of the development programs.
@@ -77,7 +79,9 @@ own as tests.
    validation score may not drop. It prints the development results and its
    decision. After a rejection, change the commit and judge again, or go back
    with `git reset --hard run/RUN`. Judge each commit by itself unless
-   several belong together.
+   several belong together: a rule that passes no development program by
+   itself is rejected, so when a program needs several rules, commit each
+   and judge them as one.
 
 ## Workers
 
