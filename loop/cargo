@@ -25,16 +25,18 @@ for noted in "$main"/local/runs/*/private; do
     hidden+=("$(cat "$noted")")
   fi
 done
+# By its own name where the name is a link; readlink also resolves a
+# directory that loop/seal closed, which cd cannot enter.
 for dir in "${hidden[@]}"; do
   if [[ -d $dir ]]; then
-    sandbox+=(--tmpfs "$(cd "$dir" && pwd -P)")
+    sandbox+=(--tmpfs "$(readlink -f -- "$dir")")
   fi
 done
 sandbox+=(--bind "$checkout" "$checkout")
 # A hidden place inside the checkout, which the line above brought back.
 for dir in "$HOME" "${hidden[@]}"; do
-  if [[ -d $dir && $(cd "$dir" && pwd -P) == "$checkout"/* ]]; then
-    sandbox+=(--tmpfs "$(cd "$dir" && pwd -P)")
+  if [[ -d $dir && $(readlink -f -- "$dir") == "$checkout"/* ]]; then
+    sandbox+=(--tmpfs "$(readlink -f -- "$dir")")
   fi
 done
 # Not all of CARGO_HOME: it holds the crates.io token.
