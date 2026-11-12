@@ -28,6 +28,10 @@ const CATALOGUE: &str = "crates/transpiler/CATALOGUE.md";
 /// How a fix starts its subject, such as one for a review comment: it must
 /// keep the scores rather than raise them.
 const FIX: &str = "fix(transpiler)";
+/// How a refactoring starts its subject: it prepares later rules or tidies
+/// earlier ones. It must keep the scores as a fix must, and translates
+/// nothing new, so it needs no catalogue entry.
+const REFACTOR: &str = "refactor(transpiler)";
 
 struct Args {
     private: PathBuf,
@@ -124,7 +128,9 @@ fn gate(args: &Args) -> Result<bool, String> {
     ];
 
     let near_copies = near_copies(&args.private)?;
-    let problem = change_problem(&base, &candidate)?;
+    let repo = Path::new(eval::REPO);
+    let refactor = commits_are(repo, &base, &candidate, &[REFACTOR])?;
+    let problem = change_problem(&base, &candidate, refactor)?;
     let ((before, fuzz_before, lax_before), (after, fuzz_after, lax_after)) = match problem {
         Some(_) => Default::default(),
         None => (
@@ -135,7 +141,8 @@ fn gate(args: &Args) -> Result<bool, String> {
     let failing_fuzz =
         |failures: &FuzzFailures, set: &str| failures.get(set).map_or(0, BTreeSet::len);
     let lax = |passes: &LaxPasses, set: &str| passes.get(set).map_or(0, BTreeSet::len);
-    let fix = is_fix(Path::new(eval::REPO), &base, &candidate)?;
+    let fix = commits_are(repo, &base, &candidate, &[FIX])?;
+    let steady = commits_are(repo, &base, &candidate, &[FIX, REFACTOR])?;
     let scores = |set: &str| {
         (
             score(&before, &lax_before, set, args.strict),
@@ -143,7 +150,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         )
     };
     let reason =
-        problem.or_else(|| rejection(scores("dev"), scores("validation"), fix, args.dev_only));
+        problem.or_else(|| rejection(scores("dev"), scores("validation"), steady, args.dev_only));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -187,6 +194,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         "candidate": candidate,
         "evaluator": eval::versions(),
         "fix": fix,
+        "refactor": refactor,
         "dev_only": args.dev_only,
         "strict": args.strict,
         "decision": if reason.is_none() { "keep" } else { "reject" },
@@ -280,17 +288,18 @@ fn score(results: &Results, lax_passes: &LaxPasses, set: &str, strict: bool) -> 
 }
 
 /// The keep rule, on each set's score before and after: the development
-/// score rises, or for a fix does not drop, and, unless `dev_only`, the
-/// validation score does not drop. Held-out and the variants are only logged.
+/// score rises, or for a `steady` change, one of fixes and refactorings, does
+/// not drop, and, unless `dev_only`, the validation score does not drop.
+/// Held-out and the variants are only logged.
 fn rejection(
     (dev_before, dev_after): (usize, usize),
     (validation_before, validation_after): (usize, usize),
-    fix: bool,
+    steady: bool,
     dev_only: bool,
 ) -> Option<String> {
-    if fix && dev_after < dev_before {
-        Some("the fix lowered the development score".to_owned())
-    } else if !fix && dev_after <= dev_before {
+    if steady && dev_after < dev_before {
+        Some("the fix or refactoring lowered the development score".to_owned())
+    } else if !steady && dev_after <= dev_before {
         Some("the development score did not rise".to_owned())
     } else if !dev_only && validation_after < validation_before {
         Some("the validation score dropped".to_owned())
@@ -299,9 +308,9 @@ fn rejection(
     }
 }
 
-/// Whether every commit from `base` to `candidate` in the repository at `dir`
-/// is a fix.
-fn is_fix(dir: &Path, base: &str, candidate: &str) -> Result<bool, String> {
+/// Whether the subject of every commit from `base` to `candidate` in the
+/// repository at `dir` starts with one of `kinds`.
+fn commits_are(dir: &Path, base: &str, candidate: &str, kinds: &[&str]) -> Result<bool, String> {
     // Each subject ends with NUL rather than a newline, so that the trim in
     // `git_in` cannot drop an empty one.
     let range = format!("{base}..{candidate}");
@@ -309,11 +318,11 @@ fn is_fix(dir: &Path, base: &str, candidate: &str) -> Result<bool, String> {
     Ok(!subjects.is_empty()
         && subjects
             .split_terminator('\0')
-            .all(|subject| subject.starts_with(FIX)))
+            .all(|subject| kinds.iter().any(|kind| subject.starts_with(kind))))
 }
 
 /// Why the change from `base` to `candidate` may not be evaluated, if so.
-fn change_problem(base: &str, candidate: &str) -> Result<Option<String>, String> {
+fn change_problem(base: &str, candidate: &str, refactor: bool) -> Result<Option<String>, String> {
     let descends = Command::new("git")
         .args(["merge-base", "--is-ancestor", base, candidate])
         .current_dir(eval::REPO)
@@ -326,10 +335,10 @@ fn change_problem(base: &str, candidate: &str) -> Result<Option<String>, String>
     }
     let changed = git(&["diff", "--no-renames", "--name-only", base, candidate])?;
     let paths: Vec<&str> = changed.lines().collect();
-    Ok(check_paths(&paths))
+    Ok(check_paths(&paths, refactor))
 }
 
-fn check_paths(paths: &[&str]) -> Option<String> {
+fn check_paths(paths: &[&str], refactor: bool) -> Option<String> {
     if paths.is_empty() {
         return Some("the candidate changes nothing".to_owned());
     }
@@ -341,7 +350,8 @@ fn check_paths(paths: &[&str]) -> Option<String> {
             "the candidate changes {path}, outside the transpiler"
         ));
     }
-    if paths.iter().any(|path| path.starts_with(RULES)) && !paths.contains(&CATALOGUE) {
+    let rules = paths.iter().any(|path| path.starts_with(RULES));
+    if rules && !refactor && !paths.contains(&CATALOGUE) {
         return Some(format!("the rules changed but {CATALOGUE} did not"));
     }
     None
@@ -508,13 +518,27 @@ mod tests {
         let late = commit("fix(transpiler): a late fix");
         let blank = commit("");
         let after_blank = commit("fix(transpiler): after a blank subject");
-        assert_eq!(is_fix(&dir, &base, &fix), Ok(true));
-        assert_eq!(is_fix(&dir, &base, &rule), Ok(false));
-        assert_eq!(is_fix(&dir, &base, &late), Ok(false));
+        let is_fix = |base: &str, candidate: &str| commits_are(&dir, base, candidate, &[FIX]);
+        assert_eq!(is_fix(&base, &fix), Ok(true));
+        assert_eq!(is_fix(&base, &rule), Ok(false));
+        assert_eq!(is_fix(&base, &late), Ok(false));
         // A blank subject at either end of the range is no fix either.
-        assert_eq!(is_fix(&dir, &rule, &blank), Ok(false));
-        assert_eq!(is_fix(&dir, &late, &after_blank), Ok(false));
-        assert_eq!(is_fix(&dir, &base, &base), Ok(false));
+        assert_eq!(is_fix(&rule, &blank), Ok(false));
+        assert_eq!(is_fix(&late, &after_blank), Ok(false));
+        assert_eq!(is_fix(&base, &base), Ok(false));
+        // A refactoring keeps the scores as a fix does, alone or beside one.
+        let refactoring = commit("refactor(transpiler): a fact for later rules");
+        let steady = [FIX, REFACTOR];
+        assert_eq!(
+            commits_are(&dir, &after_blank, &refactoring, &[REFACTOR]),
+            Ok(true)
+        );
+        assert_eq!(
+            commits_are(&dir, &blank, &refactoring, &[REFACTOR]),
+            Ok(false)
+        );
+        assert_eq!(commits_are(&dir, &blank, &refactoring, &steady), Ok(true));
+        assert_eq!(commits_are(&dir, &base, &refactoring, &steady), Ok(false));
     }
 
     #[test]
@@ -528,19 +552,25 @@ mod tests {
     #[test]
     fn only_transpiler_changes_with_a_catalogue_entry_are_evaluated() {
         let rule = "crates/transpiler/src/lib.rs";
-        assert_eq!(check_paths(&[rule, CATALOGUE, "Cargo.lock"]), None);
-        assert_eq!(check_paths(&["crates/transpiler/tests/cli.rs"]), None);
-        assert!(check_paths(&[]).is_some());
-        assert!(check_paths(&[rule]).unwrap().contains("CATALOGUE"));
+        assert_eq!(check_paths(&[rule, CATALOGUE, "Cargo.lock"], false), None);
+        assert_eq!(
+            check_paths(&["crates/transpiler/tests/cli.rs"], false),
+            None
+        );
+        assert!(check_paths(&[], false).is_some());
+        assert!(check_paths(&[rule], false).unwrap().contains("CATALOGUE"));
+        // A refactoring translates nothing new, so it has no entry to add.
+        assert_eq!(check_paths(&[rule], true), None);
+        assert!(check_paths(&[rule, "Cargo.toml"], true).is_some());
         for protected in [
             "crates/eval/src/lib.rs",
             "bench/dev/g1_x.c",
             "Cargo.toml",
             "Cargo.lock.orig",
         ] {
-            assert!(check_paths(&[rule, CATALOGUE, protected]).is_some());
+            assert!(check_paths(&[rule, CATALOGUE, protected], false).is_some());
         }
         // A prefix match, not a substring: no sibling crate named like it.
-        assert!(check_paths(&["crates/transpiler-extra/src/lib.rs"]).is_some());
+        assert!(check_paths(&["crates/transpiler-extra/src/lib.rs"], false).is_some());
     }
 }
