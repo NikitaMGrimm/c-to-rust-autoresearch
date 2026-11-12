@@ -175,7 +175,10 @@ follows. It is not in a sandbox itself, so three things stand in for one:
   programs are still in the private repository's history, so the seal
   guards against a mistake, not against intent, which the audit would show.
 - `loop/drive RUN PRIVATE_DIR WORK_DIR` makes the branch `run/RUN` from main
-  and the worktree `WORK_DIR` on `work/RUN`, with Claude Code settings like
+  and the worktree `WORK_DIR` on `work/RUN`, or takes a worktree that
+  exists, such as the one T3 Code made for a new thread, and starts the run
+  at its commit. As T3 Code's action on worktree creation it prepares every
+  new thread's worktree, a worker's too. It writes Claude Code settings like
   those of `loop/setup`: no reading or editing of the private directory, the
   corpus cache or the main checkout's `local/`, no editing of the main
   checkout, no web, and `loop/guard` for every other call that names those
@@ -192,11 +195,13 @@ follows. It is not in a sandbox itself, so three things stand in for one:
   only so.
 
 `loop/judge RUN`, which the driver calls as `local/judge`, runs the gate with
-`--strict --run RUN` on `work/RUN` against `run/RUN`, with the driver's model
-usage since the last round, and moves `run/RUN` on keep. It adds the commit
+`--strict --run RUN` on the commit of the driver's worktree against
+`run/RUN`, with the driver's model usage since the last round, and moves
+`run/RUN` on keep. For a worktree that `loop/drive` took, it makes `run/RUN`
+when the first commit is judged. It adds the commit
 and what the gate printed to the worktree's `local/rounds.md`, and takes the
-lock that a round takes. A rejected commit stays on `work/RUN` for the driver
-to change or drop. `loop/audit RUN [PATH...]` runs the audit below on the
+lock that a round takes. A rejected commit stays in the worktree for the
+driver to change or drop. `loop/audit RUN [PATH...]` runs the audit below on the
 driver's transcripts and any others given, and opens the seal only for as
 long as it runs.
 

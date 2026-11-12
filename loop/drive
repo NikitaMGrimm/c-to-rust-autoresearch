@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Prepares a run that one agent drives from a T3 Code thread: the branch
-# run/RUN, which holds the commits the gate kept, and a worktree on the branch
-# work/RUN, where the driver works, with Claude Code settings that keep it
-# away from the private programs and off the web. The driver follows
-# loop/driver.md and has each commit judged by loop/judge. Run it by this
-# checkout's path, at a clean main. See docs/architecture.md.
+# run/RUN, which holds the commits the gate kept, and a worktree where the
+# driver works, with Claude Code settings that keep it away from the private
+# programs and off the web. The worktree is a new one on the branch work/RUN,
+# or one that exists, such as the one T3 Code made for a new thread, which
+# runs this script as the project's action on worktree creation. The driver
+# follows loop/driver.md and has each commit judged by loop/judge. Run it by
+# this checkout's path. See docs/architecture.md.
 set -euo pipefail
 
 if (($# != 3)) || [[ ! $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
@@ -12,10 +14,12 @@ if (($# != 3)) || [[ ! $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
   cat >&2 <<'USAGE'
 usage: loop/drive RUN PRIVATE_DIR WORK_DIR
 Makes the branch run/RUN from main unless it exists, and the worktree WORK_DIR
-on a new branch work/RUN at its head. The driver may not read or edit
-PRIVATE_DIR, the corpus cache or this checkout's local/, may not edit this
-checkout, and may not use the web; loop/guard blocks any other tool call that
-names those places or Claude Code's files. WORK_DIR must not exist.
+on a new branch work/RUN at its head. Where WORK_DIR is a worktree of this
+repository already, the run starts at its commit, and run/RUN is made when
+the first commit is judged. The driver may not read or edit PRIVATE_DIR, the
+corpus cache or this checkout's local/, may not edit this checkout, and may
+not use the web; loop/guard blocks any other tool call that names those
+places or Claude Code's files.
 USAGE
   exit 2
 fi
@@ -25,20 +29,35 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 private=$(cd "$2" && pwd -P)
 # Before the change of directory below, which would give it another meaning.
 work=$(realpath -m -- "$3")
-if [[ -e $work ]]; then
-  echo "$work already exists" >&2
-  exit 1
-fi
+state=$repo/local/runs/$run
 cd "$repo"
-if git rev-parse -q --verify "refs/heads/work/$run" >/dev/null; then
-  echo "the branch work/$run already exists" >&2
-  exit 1
+if [[ -e $work ]]; then
+  # Another checkout of this repository, and not this one.
+  work=$(cd "$work" && pwd -P)
+  if [[ $work == "$repo" || $(git -C "$work" rev-parse --show-toplevel 2>/dev/null) != "$work" ||
+    $(git -C "$work" rev-parse --path-format=absolute --git-common-dir) != "$repo/.git" ]]; then
+    echo "$work exists and is no other worktree of $repo" >&2
+    exit 1
+  fi
+  mkdir -p "$state"
+  # Where the run starts, for loop/judge to make run/RUN from: a worktree
+  # that judges nothing, such as a worker's, leaves no branch behind.
+  if [[ ! -f $state/base ]] && ! git rev-parse -q --verify "refs/heads/run/$run" >/dev/null; then
+    git -C "$work" rev-parse HEAD >"$state/base"
+  fi
+  start=$(git -C "$work" log -1 --format='%h %s')
+else
+  if git rev-parse -q --verify "refs/heads/work/$run" >/dev/null; then
+    echo "the branch work/$run already exists" >&2
+    exit 1
+  fi
+  if ! git rev-parse -q --verify "refs/heads/run/$run" >/dev/null; then
+    git branch -q "run/$run" main
+  fi
+  git worktree add -q -b "work/$run" "$work" "run/$run"
+  work=$(cd "$work" && pwd -P)
+  start=$(git log -1 --format='%h %s' "run/$run")
 fi
-if ! git rev-parse -q --verify "refs/heads/run/$run" >/dev/null; then
-  git branch -q "run/$run" main
-fi
-git worktree add -q -b "work/$run" "$work" "run/$run"
-work=$(cd "$work" && pwd -P)
 
 # Claude Code keeps a project's transcripts in a directory named after its
 # path, with every other character than letters and digits turned into -.
@@ -75,7 +94,6 @@ mkdir -p "$work/local"
 printf '#!/usr/bin/env bash\nexec %q %q\n' "$repo/loop/judge" "$run" >"$work/local/judge"
 chmod +x "$work/local/judge"
 
-state=$repo/local/runs/$run
 mkdir -p "$state"
 printf '%s\n' "$private" >"$state/private"
 printf '%s\n' "$work" >"$state/work"
@@ -83,7 +101,7 @@ printf '%s\n' "$work" >"$state/work"
 if [[ ! -f $state/since ]]; then
   date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
 fi
-echo "run $run: kept commits on run/$run, at $(git log -1 --format='%h %s' "run/$run")"
-echo "the driver's worktree: $work, on work/$run"
+echo "run $run: kept commits on run/$run, from $start"
+echo "the driver's worktree: $work"
 echo "its Claude Code transcripts: $transcripts"
 echo "the driver follows loop/driver.md and judges a commit with local/judge"

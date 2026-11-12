@@ -14,8 +14,10 @@ priorities are fixed, in this order:
 4. Features come after all three.
 
 The loop agent follows [loop/program.md](loop/program.md), and a driver
-[loop/driver.md](loop/driver.md); both limit it to the transpiler. The smallest change that does the job is the right one, and
-deleting code is welcome. A new dependency needs a reason.
+[loop/driver.md](loop/driver.md); both limit it to the transpiler. You are
+the driver when the owner's message tells you to drive, such as "drive", in
+a checkout that has `local/judge`. The smallest change that does the job is
+the right one, and deleting code is welcome. A new dependency needs a reason.
 
 ## Words
 

@@ -106,11 +106,22 @@ the corpus cache and the logs that hold their results, so that nothing opens
 them by accident; `loop/seal --open` gives them back. `loop/drive` makes the
 branch `run/RUN` for the commits the gate keeps and the worktree `WORK_DIR`
 on `work/RUN` for the driver, with settings that keep it out of the private
-directory and off the web. The driver's thread is started in `WORK_DIR`. It
+directory and off the web. The driver's thread is started in `WORK_DIR`.
+
+Without a terminal: as the T3 Code project's action that runs on worktree
+creation and finishes before the agent starts, `loop/drive` prepares the
+worktree of every new thread, which it takes in place of making one:
+
+```sh
+"$T3CODE_PROJECT_ROOT/loop/drive" "$(basename "$T3CODE_WORKTREE_PATH")" PRIVATE_DIR "$T3CODE_WORKTREE_PATH"
+```
+
+A new thread in a new worktree whose first message is "drive" is then a
+driver, and its run has the worktree's name. The driver
 builds and tests the transpiler with `loop/cargo`, which runs cargo in a
 sandbox without the home directory or network, and has each commit judged
-with `local/judge`, which runs the strict gate against `run/RUN` and moves
-that branch on keep. After a stretch of work,
+with `local/judge`, which runs the strict gate on its worktree's commit
+against `run/RUN` and moves that branch on keep. After a stretch of work,
 `loop/audit RUN` audits the driver's transcripts.
 
 ### Sessions in a sandbox
