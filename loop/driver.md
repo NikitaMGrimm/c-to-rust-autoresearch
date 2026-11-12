@@ -11,8 +11,10 @@ else, and keep it true as the transpiler changes.
 
 ## Where you work
 
-`loop/drive` made your checkout: a worktree on the branch `work/RUN`. The
-commits the gate kept are on `run/RUN`. Change only `crates/transpiler/` and
+`loop/drive` prepared your checkout, a worktree with a branch of its own,
+and left `local/judge` in it, which names your run, RUN. Without that file
+the checkout is not prepared: stop and say so. The commits the gate kept are
+on `run/RUN`, from the first judging on. Change only `crates/transpiler/` and
 `Cargo.lock`; the evaluator, the benchmarks and these instructions are fixed,
 and the gate rejects any other change. Do not edit the main checkout, push or
 open a pull request unless the owner asks. Keep to `AGENTS.md`.
@@ -69,8 +71,8 @@ own as tests.
    or network service.
 3. Check it: `cargo fmt`, the sandboxed clippy and tests above, and the
    evaluator. Programs that passed before still pass.
-4. Commit on `work/RUN` as `feat(transpiler): ...`, `refactor(transpiler): ...`
-   or `fix(transpiler): ...`. The gate knows the kind of a step by this.
+4. Commit on your branch as `feat(transpiler): ...`,
+   `refactor(transpiler): ...` or `fix(transpiler): ...`. The gate knows the kind of a step by this.
 5. Have it judged: `local/judge`. The gate builds the commit and the last
    kept one in its sandbox and evaluates both on the development set, a
    private validation set and private variants of the development programs.
@@ -90,7 +92,7 @@ library functions, can go to workers: `delegate_task` with Claude Opus 5.5,
 each in its own worktree. Give each a brief that stands alone: the rule, the
 place in the design, the test it must add, and the two sections above about
 the sandbox and the private programs, word for word. Read each diff yourself,
-bring what is good onto `work/RUN`, and have it judged. Decisions about the
+bring what is good onto your branch, and have it judged. Decisions about the
 design stay with you.
 
 ## The end of a stretch

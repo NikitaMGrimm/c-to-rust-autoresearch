@@ -1767,8 +1767,8 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
     let drive = ["r1", private.to_str().unwrap(), work.to_str().unwrap()];
     assert_eq!(script("judge", 0, &["r1"]), Some(2));
     assert_eq!(script("drive", 0, &drive), Some(0));
-    // The worktree is taken.
-    assert_eq!(script("drive", 0, &drive), Some(1));
+    // Preparing it again is no error.
+    assert_eq!(script("drive", 0, &drive), Some(0));
     let main = git(repo, &["rev-parse", "main"]);
     assert_eq!(git(repo, &["rev-parse", "run/r1"]), main);
     assert_eq!(git(&work, &["branch", "--show-current"]), "work/r1");
@@ -1873,6 +1873,71 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
     // Without its worktree, nothing is judged.
     std::fs::rename(fixture.dir.join("beside"), fixture.dir.join("moved")).unwrap();
     assert_eq!(script("judge", 0, &["r2"]), Some(2));
+}
+
+/// As T3 Code's action on worktree creation calls loop/drive, in a worktree
+/// that T3 Code made for a new thread.
+#[test]
+fn a_worktree_that_exists_becomes_a_drivers() {
+    let fixture = Fixture::new();
+    let repo = &fixture.repo;
+    let (private, work) = (fixture.dir.join("private"), fixture.dir.join("t3-1"));
+    let script = |name: &str, gate: u8, args: &[&str]| {
+        let mut command = fixture.command(name, 0, gate);
+        command.args(args).status().unwrap().code()
+    };
+    let main = git(repo, &["rev-parse", "main"]);
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "thread",
+            work.to_str().unwrap(),
+        ],
+    );
+    let drive = ["t3-1", private.to_str().unwrap(), work.to_str().unwrap()];
+    assert_eq!(script("drive", 0, &drive), Some(0));
+    assert_eq!(script("drive", 0, &drive), Some(0));
+    assert!(work.join(".claude/settings.local.json").is_file());
+    assert_eq!(git(&work, &["branch", "--show-current"]), "thread");
+    assert_eq!(git(&work, &["status", "--porcelain"]), "");
+    // A worktree that judges nothing leaves no branch.
+    assert_eq!(script("judge", 0, &["t3-1"]), Some(3));
+    assert_eq!(git(repo, &["branch", "--list", "run/*", "work/*"]), "");
+
+    // A rejected commit starts the run's branch where the worktree started.
+    let rejected = commit(&work, "rule1");
+    let judge = Command::new(work.join("local/judge"))
+        .envs(
+            fixture
+                .command("judge", 0, 1)
+                .get_envs()
+                .filter_map(|(k, v)| Some((k, v?))),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(judge.status.code(), Some(1));
+    assert_eq!(git(repo, &["rev-parse", "run/t3-1"]), main);
+    let said = String::from_utf8_lossy(&judge.stdout);
+    assert!(said.contains("git reset --hard run/t3-1"), "{said}");
+    let gate = format!("--bin gate -- {} {main} {rejected} ", private.display());
+    assert!(fixture.calls().contains(&gate), "{}", fixture.calls());
+    // A kept one moves it.
+    let kept = commit(&work, "rule2");
+    assert_eq!(script("judge", 0, &["t3-1"]), Some(0));
+    assert_eq!(git(repo, &["rev-parse", "run/t3-1"]), kept);
+    assert_eq!(git(repo, &["rev-parse", "main"]), main);
+
+    // Not the main checkout, and not a directory that is no worktree of it.
+    let own = ["r2", private.to_str().unwrap(), repo.to_str().unwrap()];
+    assert_eq!(script("drive", 0, &own), Some(1));
+    std::fs::create_dir(fixture.dir.join("other")).unwrap();
+    let other = ["r3", private.to_str().unwrap(), "other"];
+    assert_eq!(script("drive", 0, &other), Some(1));
+    assert!(!repo.join("local/runs/r2").exists() && !repo.join("local/runs/r3").exists());
 }
 
 #[test]
