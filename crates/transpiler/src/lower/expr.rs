@@ -90,6 +90,7 @@ impl Lower<'_> {
             ExprKind::InitList(_) => self.init(&expr.ty, None, expr),
             // C's assignments have a value; Rust's do not.
             ExprKind::Assign { op, target, value } => {
+                self.simple(target)?;
                 let assign = self.assign(expr, op.as_ref(), target, value)?;
                 let place = self.place(target, false)?;
                 Ok(parse_quote!({ #assign; #place }))
@@ -99,6 +100,7 @@ impl Lower<'_> {
                 increment,
                 prefix,
             } => {
+                self.simple(target)?;
                 let step = self.step(target, *increment)?;
                 let place = self.place(target, false)?;
                 Ok(match prefix {
@@ -176,8 +178,18 @@ impl Lower<'_> {
         if *to == Type::Bool {
             return self.cond(inner);
         }
-        if let (Type::Float { .. }, ExprKind::Float(value)) = (to, &inner.kind) {
-            return Ok(rust::float(*value, float_suffix(to, typed)));
+        // A literal of the other floating-point type, where Rust reads the
+        // same digits as the number that C's conversion gives.
+        if let (Type::Float { bits }, ExprKind::Float(value)) = (to, &inner.kind) {
+            let narrowed = *value as f32;
+            let same = match bits {
+                _ if inner.ty == *to => true,
+                32 => format!("{value:?}").parse() == Ok(narrowed),
+                _ => f64::from(narrowed) == *value,
+            };
+            if same {
+                return Ok(rust::float(*value, float_suffix(to, typed)));
+            }
         }
         let value = self.expr(inner)?;
         let target = self.ty(to, expr.at)?;
@@ -497,7 +509,8 @@ impl Lower<'_> {
         Ok(rust::assign(place, self.typed(&back)?))
     }
 
-    /// A place that is named twice must not do anything when evaluated.
+    /// A place that is named twice must not do anything when evaluated: Rust
+    /// would do it twice.
     fn simple(&self, place: &Expr) -> R<()> {
         match place.is_pure() {
             true => Ok(()),

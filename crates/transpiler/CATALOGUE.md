@@ -48,8 +48,10 @@ Entry format, newest last:
   `wrapping_mul` for unsigned; `as` for conversions, through `i8` when a
   `char` widens; a comparison as a value is `i32::from(…)`, a number as a
   test is `!= 0`; a compound assignment on a type narrower than `int` is
-  computed as C does, in the wider type; a literal takes its suffix only
-  where Rust cannot tell its type; `let`, with `mut` only when the variable
+  computed as C does, in the wider type; an assignment, `++` or `--` used
+  for its value is a block that ends in the value, and is refused when its
+  target does more than name a place, since Rust would do that twice; a
+  literal takes its suffix only where Rust cannot tell its type; `let`, with `mut` only when the variable
   changes, and zero for a missing initialiser
 - Needs: `Facts::mutated`
 - Motivation: skeleton
@@ -60,9 +62,9 @@ Entry format, newest last:
 - C: `if`/`else`, `while`, `do … while`, `for`, `break`, `continue`, and
   `switch` whose cases each end in `break`, `return` or `continue`
 - Rust: `if`/`else if`/`else`; `while`, or `loop` for a test that is always
-  true; `loop` ending in `if !test { break; }` for `do`; `for i in a..b` or
-  `a..=b` for a `for` that counts a local up by one to a bound that its body
-  cannot change, `_` for a counter the body does not read, and otherwise the
+  true; `loop` ending in `if !test { break; }` for `do`; `for i in a..b`, or
+  `a..=b` for a signed counter, for a `for` that counts a local up by one to
+  a bound that its body cannot change, `_` for a counter the body does not read, and otherwise the
   initialiser and a `while` ending in the step; `match` with `|` for cases
   that share statements. A test that the facts decide is left out with the
   branch that cannot run
@@ -131,7 +133,8 @@ Entry format, newest last:
 - C: `malloc(sizeof(T))`, `malloc(n * sizeof(T))`, `calloc(n, sizeof(T))`,
   `free`; pointers that hold such memory in locals, parameters, results,
   fields and globals
-- Rust: `Box::new(zero)` and `vec![zero; n]`; `Box<T>` or `Vec<T>` for every
+- Rust: `Box::new(zero)` and `vec![zero; n]`, where the pointers in
+  `calloc`'s memory count as NULL; `Box<T>` or `Vec<T>` for every
   slot that owns; a move between owners, `&mut *b` or `&mut v` from an owner
   to a borrow; `drop(p)` for `free(p)`. A field or a global gives up what it
   owns with `take()` or `std::mem::take`, since its holder stays in use. The

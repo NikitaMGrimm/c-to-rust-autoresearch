@@ -298,6 +298,11 @@ impl Lower<'_> {
         if !is_var(left) || !steps || bound.ty != declared.ty {
             return None;
         }
+        // `i <= bound` holds again after an unsigned `i` wraps at its
+        // greatest value, where a range ends; a signed `i` may not overflow.
+        if *op == BinOp::Le && !matches!(declared.ty.int(), Some((32 | 64, true))) {
+            return None;
+        }
         // The bound is read once in Rust and before every round in C, so it
         // may hold only constants, locals that the body leaves alone and,
         // if the body stores to nothing but locals, what pointers reach.

@@ -87,3 +87,46 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+/// Cases that an earlier version translated to Rust that ran differently.
+#[test]
+fn values_and_names_that_are_easy_to_get_wrong() {
+    let rust = check(
+        "corners",
+        r#"
+#include <stdio.h>
+enum level { LOW = (unsigned long)1, HIGH };
+enum sign { MINUS = -1, PLUS = 1 };
+int main(void) {
+    int n = 0;
+    unsigned top = 4294967295u;
+    for (unsigned i = top; i <= top; i++) {
+        printf("%u\n", i);
+        if (++n == 2) break;
+    }
+    int total = 0;
+    for (int i = 1; i <= 3; i++) total += i;
+    int before = 0;
+    int a[2] = {1, 2};
+    int x = a[before]++;
+    int type = 1;
+    int type_ = 2;
+    enum sign s = MINUS;
+    printf("%d %d %d %d %d %d\n", total, x, a[0], a[1], type, type_);
+    printf("%d %d %d\n", LOW, HIGH, s < 0);
+    printf("%.20f %.20f\n", 0.1f, (double)0.5f);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "for i in 1..=3 {",
+            "while i <= top {",
+            "let type__: i32 = 1;",
+        ],
+    );
+}

@@ -49,7 +49,8 @@ functions, `main`), `types.rs`, `expr.rs`, `stmt.rs`, `pointer.rs` and
 
 - Clang prints a construct that the front end does not read: `clang.rs`, and
   `c.rs` if the tree has no node for it. The tree keeps what C means, not how
-  Clang prints it.
+  Clang prints it. Types, tags and typedefs are found by name, so a program
+  that gives one name two meanings in different scopes is refused.
 - A rule needs to know something about the rest of the program (is this
   pointer ever NULL, does this function change a global, is this array
   resized): a fact in `facts.rs`. A rule never searches the program itself.
@@ -158,6 +159,9 @@ become a fact and a refusal:
 - An owner moved out of a field or a global leaves `None` behind
   (`take()`); a C program that reads the field again before storing to it
   would see NULL in Rust.
+- A pointer into the middle of an array is the rest of the array from
+  there (`&a[1..]`), so an index or a step back before it (`p[-1]`) stops
+  the program where C reads the element.
 - `%c`, `%s` of a program argument and `argv` assume ASCII; C passes any
   bytes through.
 - A conversion from a floating-point number to an integer saturates in Rust

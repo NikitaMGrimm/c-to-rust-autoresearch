@@ -3,15 +3,16 @@
 
 use crate::c::{FuncId, Program, RecordId, VarId, VarKind};
 use crate::facts::Facts;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Rust's keywords that C allows as names, and the names that the
 /// translation itself uses.
-const RESERVED: [&str; 44] = [
+const RESERVED: [&str; 45] = [
     "as", "async", "await", "become", "box", "crate", "dyn", "fn", "gen", "impl", "in", "let",
     "loop", "match", "mod", "move", "mut", "pub", "ref", "self", "Self", "super", "trait", "try",
     "type", "unsafe", "use", "where", "yield", "abstract", "final", "macro", "override", "priv",
     "true", "false", "virtual", "args", "globals", "drop", "main", "Some", "None", "Globals",
+    "before",
 ];
 
 pub struct Names {
@@ -53,15 +54,32 @@ impl Names {
             };
             vars[global] = unique(name, &fallback, &mut taken);
         }
+        // A local may hide another local of the same C name, as in C, but
+        // not a function or a constant that its scope uses, and two C names
+        // never share a Rust name: a name that must change gets underscores
+        // until no local has it.
+        let locals = || program.vars.iter().filter(|var| !var.kind.is_global());
+        let free = |name: &str| !RESERVED.contains(&name) && !taken.contains(name);
+        let mut given: HashSet<String> = locals()
+            .filter(|var| free(&var.name))
+            .map(|var| var.name.clone())
+            .collect();
+        let mut changed: HashMap<&str, String> = HashMap::new();
+        for var in locals().filter(|var| !free(&var.name)) {
+            changed.entry(&var.name).or_insert_with(|| {
+                let mut name = format!("{}_", var.name);
+                while !free(&name) || given.contains(&name) {
+                    name.push('_');
+                }
+                given.insert(name.clone());
+                name
+            });
+        }
         for (id, var) in program.vars.iter().enumerate() {
             if !var.kind.is_global() {
-                let name = plain(&var.name);
-                // A local may hide another local, but not a function or a
-                // constant that its scope uses.
-                vars[id] = if taken.contains(&name) {
-                    format!("{name}_")
-                } else {
-                    name
+                vars[id] = match changed.get(var.name.as_str()) {
+                    Some(name) => name.clone(),
+                    None => var.name.clone(),
                 };
             }
         }

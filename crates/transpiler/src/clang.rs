@@ -7,15 +7,9 @@ use crate::c::{
     UnOp, Var, VarId, VarKind,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 type R<T> = Result<T, Unsupported>;
-
-/// An enumeration without negative values is an `unsigned int`.
-const ENUM: Type = Type::Int {
-    bits: 32,
-    signed: false,
-};
 
 /// Reads the syntax tree of one C file.
 pub fn program(ast: &Value) -> R<Program> {
@@ -33,6 +27,10 @@ struct Reader {
     typedefs: HashMap<String, Result<Type, String>>,
     /// `struct NAME` and `union NAME` to the record.
     tags: HashMap<String, RecordId>,
+    /// The records whose members have been read.
+    defined: HashSet<RecordId>,
+    /// The type of each enumeration, by `enum NAME` and by Clang's id.
+    enums: HashMap<String, Type>,
     /// The types of the type strings read so far.
     types: HashMap<String, Result<Type, String>>,
     // Clang's ids of declarations.
@@ -44,6 +42,11 @@ struct Reader {
     globals: HashMap<String, VarId>,
     /// The labels of the function being read, by Clang's id.
     labels: HashMap<String, String>,
+}
+
+/// Whether an attribute of this kind changes where a record's members lie.
+fn changes_layout(kind: &str) -> bool {
+    matches!(kind, "PackedAttr" | "AlignedAttr" | "MaxFieldAlignmentAttr")
 }
 
 fn children(node: &Value) -> &[Value] {
@@ -87,9 +90,9 @@ fn unsupported<T>(what: impl Into<String>, node: &Value) -> R<T> {
 impl Reader {
     fn top_level(&mut self, decl: &Value) -> R<()> {
         match kind(decl) {
-            "TypedefDecl" => self.typedef(decl),
+            "TypedefDecl" => self.typedef(decl)?,
             "RecordDecl" => self.record(decl, own(decl))?,
-            "EnumDecl" => self.enumeration(decl),
+            "EnumDecl" => self.enumeration(decl)?,
             "VarDecl" if own(decl) => {
                 self.var(decl, VarKind::Global)?;
             }
@@ -99,7 +102,7 @@ impl Reader {
         Ok(())
     }
 
-    fn typedef(&mut self, decl: &Value) {
+    fn typedef(&mut self, decl: &Value) -> R<()> {
         let name = text(decl, "name").to_owned();
         let ty = match children(decl).first() {
             Some(node) => self.type_node(node),
@@ -111,7 +114,13 @@ impl Reader {
         {
             self.program.records[id].name = name.clone();
         }
+        // Types are found by name, so a name has one meaning in the whole
+        // program.
+        if self.typedefs.get(&name).is_some_and(|known| *known != ty) {
+            return unsupported(format!("the typedef `{name}` with two meanings"), decl);
+        }
         self.typedefs.insert(name, ty);
+        Ok(())
     }
 
     /// The type of a type node, which Clang prints only below a typedef.
@@ -131,7 +140,10 @@ impl Reader {
                 // The definition may come after the typedef.
                 None => self.type_str(spelled),
             },
-            "EnumType" => Ok(ENUM),
+            "EnumType" => match self.enums.get(text(&node["decl"], "id")) {
+                Some(ty) => Ok(ty.clone()),
+                None => self.type_str(spelled),
+            },
             "TypedefType" => self.type_str(text(&node["decl"], "name")),
             _ => self.type_str(spelled),
         }
@@ -160,10 +172,21 @@ impl Reader {
         if !own || decl["completeDefinition"] != true {
             return Ok(());
         }
+        // Records are found by tag, so a tag has one meaning in the whole
+        // program.
+        if !self.defined.insert(id) {
+            return unsupported(format!("the tag `{name}` with two meanings"), decl);
+        }
         self.program.records[id].own = true;
         for member in children(decl) {
             match kind(member) {
                 "FieldDecl" => {
+                    if children(member)
+                        .iter()
+                        .any(|part| changes_layout(kind(part)))
+                    {
+                        return unsupported("a member with its own alignment", member);
+                    }
                     let field = Field {
                         name: text(member, "name").to_owned(),
                         ty: self.ty(member)?,
@@ -178,9 +201,12 @@ impl Reader {
                     self.program.records[id].fields.push(field);
                 }
                 "RecordDecl" => self.record(member, true)?,
-                "EnumDecl" => self.enumeration(member),
+                "EnumDecl" => self.enumeration(member)?,
                 "IndirectFieldDecl" => {
                     return unsupported("a member of an unnamed struct or union", member);
+                }
+                attribute if changes_layout(attribute) => {
+                    return unsupported("a record that is packed or aligned", decl);
                 }
                 _ => {}
             }
@@ -188,17 +214,30 @@ impl Reader {
         Ok(())
     }
 
-    fn enumeration(&mut self, decl: &Value) {
-        let mut next = 0;
+    fn enumeration(&mut self, decl: &Value) -> R<()> {
+        let mut next: i128 = 0;
+        let (mut least, mut greatest) = (0, 0);
         for constant in children(decl) {
             if kind(constant) != "EnumConstantDecl" {
                 continue;
             }
-            let written = children(constant)
-                .first()
-                .and_then(|value| text(value, "value").parse().ok());
-            let value = written.unwrap_or(next);
+            let value = match children(constant).first() {
+                // Clang prints the value of some constants only.
+                Some(written) => match text(written, "value").parse().ok().or_else(|| {
+                    let written = self.expr(written).ok()?;
+                    written.constant(&self.program)
+                }) {
+                    Some(value) => value,
+                    None if own(decl) => {
+                        return unsupported("an enumerator without a constant value", constant);
+                    }
+                    // A header's enumeration that the program cannot use.
+                    None => return Ok(()),
+                },
+                None => next,
+            };
             next = value + 1;
+            (least, greatest) = (least.min(value), greatest.max(value));
             self.enumerators.insert(
                 text(constant, "id").to_owned(),
                 self.program.enumerators.len(),
@@ -208,6 +247,27 @@ impl Reader {
                 value,
             });
         }
+        // Clang's choice on x86-64. A wider enumeration gets no type, so
+        // its use is refused.
+        let signed = least < 0;
+        let fits = match signed {
+            true => least >= i128::from(i32::MIN) && greatest <= i128::from(i32::MAX),
+            false => greatest <= i128::from(u32::MAX),
+        };
+        if fits {
+            let ty = Type::Int { bits: 32, signed };
+            let name = text(decl, "name");
+            if !name.is_empty() {
+                // As for records, a tag has one meaning.
+                let tag = format!("enum {name}");
+                if self.enums.get(&tag).is_some_and(|known| *known != ty) {
+                    return unsupported(format!("the tag `{name}` with two meanings"), decl);
+                }
+                self.enums.insert(tag, ty.clone());
+            }
+            self.enums.insert(text(decl, "id").to_owned(), ty);
+        }
+        Ok(())
     }
 
     fn var(&mut self, decl: &Value, storage: VarKind) -> R<VarId> {
@@ -308,8 +368,8 @@ impl Reader {
                             out.push(Stmt::Decl(self.var(decl, storage)?));
                         }
                         "RecordDecl" => self.record(decl, true)?,
-                        "TypedefDecl" => self.typedef(decl),
-                        "EnumDecl" => self.enumeration(decl),
+                        "TypedefDecl" => self.typedef(decl)?,
+                        "EnumDecl" => self.enumeration(decl)?,
                         other => return unsupported(format!("Clang's `{other}` in a block"), decl),
                     }
                 }
@@ -602,7 +662,10 @@ impl Reader {
                         return Err(String::new());
                     };
                     base = Some(match word.as_str() {
-                        "enum" => ENUM,
+                        "enum" => match self.enums.get(&format!("enum {name}")) {
+                            Some(ty) => ty.clone(),
+                            None => return Err(String::new()),
+                        },
                         tag => match self.tags.get(&format!("{tag} {name}")) {
                             Some(&id) => Type::Record(id),
                             None => return Err(String::new()),

@@ -598,6 +598,16 @@ impl<'a> Walk<'a> {
                     self.call(name, args);
                 }
             }
+            // `calloc` starts its memory at zero, so the pointers in it
+            // are NULL.
+            ExprKind::Cast(inner) => {
+                if let ExprKind::Call(callee, _) = &inner.kind
+                    && callee.function() == Some("calloc")
+                    && let Some(element) = expr.ty.element()
+                {
+                    self.zero(element, None);
+                }
+            }
             ExprKind::Cond(cond, then, other) => {
                 self.expr(cond);
                 let truth = self.known.truth(program, cond);

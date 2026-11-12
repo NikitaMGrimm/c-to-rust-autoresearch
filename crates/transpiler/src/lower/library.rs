@@ -215,8 +215,12 @@ impl Lower<'_> {
                 if precision.is_some() {
                     return unsupported("a `printf` precision for text: no rule yet", at);
                 }
-                match literal(value) {
-                    Some(text) => text,
+                // C pads to a width in bytes and Rust in characters.
+                match literal_text(value) {
+                    Some(text) if width.is_some() && !text.is_ascii() => {
+                        return unsupported("a `printf` width for text that is not ASCII", at);
+                    }
+                    Some(text) => rust::string(text),
                     None => self.argument(value)?,
                 }
             }
@@ -240,12 +244,8 @@ impl Lower<'_> {
     }
 }
 
-/// A string literal as a Rust string, if the expression is one that holds
-/// UTF-8 without a NUL.
-fn literal(text: &Expr) -> Option<syn::Expr> {
-    literal_text(text).map(rust::string)
-}
-
+/// The text of a string literal, if the expression is one that holds UTF-8
+/// without a NUL.
 fn literal_text(text: &Expr) -> Option<&str> {
     let ExprKind::Decay(literal) = &text.uncast().kind else {
         return None;

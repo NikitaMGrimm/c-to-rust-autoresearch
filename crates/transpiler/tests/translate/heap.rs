@@ -132,3 +132,28 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn the_pointers_in_memory_from_calloc_are_null() {
+    let rust = check(
+        "calloc",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct holder { int *value; };
+int main(void) {
+    struct holder *h = calloc(1, sizeof *h);
+    if (h->value) puts("set"); else puts("null");
+    h->value = malloc(sizeof(int));
+    *h->value = 3;
+    if (h->value) printf("%d\n", *h->value);
+    free(h->value);
+    free(h);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["value: Option<Box<i32>>,"]);
+}
