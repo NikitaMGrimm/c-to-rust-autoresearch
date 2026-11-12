@@ -9,4 +9,10 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The translation is built as a syntax tree and printed by prettyplease, so
+# no rule writes Rust as text.
+prettyplease = { version = "0.2", features = ["verbatim"] }
+proc-macro2 = { version = "1", default-features = false }
+quote = { version = "1", default-features = false }
 serde_json = "1"
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "clone-impls"] }

@@ -20,14 +20,13 @@ fn main() -> ExitCode {
         eprintln!("refusing to overwrite the input file {input}");
         return ExitCode::FAILURE;
     }
-    let ast = match transpiler::clang_ast(Path::new(input)) {
-        Ok(ast) => ast,
+    let rust = match transpiler::translate_file(Path::new(input)) {
+        Ok(rust) => rust,
         Err(err) => {
             eprintln!("{err}");
             return ExitCode::FAILURE;
         }
     };
-    let rust = transpiler::translate(&ast);
     match output {
         Some(path) => {
             if let Err(err) = std::fs::write(path, rust) {
