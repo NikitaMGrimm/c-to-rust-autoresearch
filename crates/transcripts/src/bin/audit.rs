@@ -46,7 +46,11 @@ fn main() -> ExitCode {
     let private = args.next();
     while let Some(arg) = args.next() {
         if arg.as_os_str() == "--readable" {
-            readable.extend(args.next());
+            let Some(dir) = args.next() else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            readable.push(dir);
         } else {
             paths.push(arg);
         }
@@ -211,7 +215,7 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
                 // A path with .. could climb out of the agent's own directory.
                 if tool == "Read" && !text.contains("..") {
                     for dir in &patterns.own {
-                        rest = rest.replace(dir, "");
+                        rest = without(&rest, dir);
                     }
                 }
                 contains(&rest, ".claude", path)
@@ -222,6 +226,21 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
         }
     }
     found
+}
+
+/// `text` without the directory `dir` where it names it, and not a sibling
+/// whose name extends it.
+fn without(text: &str, dir: &str) -> String {
+    let (mut rest, mut tail) = (String::new(), text);
+    while let Some(at) = tail.find(dir).filter(|_| !dir.is_empty()) {
+        let after = &tail[at + dir.len()..];
+        rest.push_str(&tail[..at]);
+        if after.chars().next().is_some_and(path) {
+            rest.push_str(dir);
+        }
+        tail = after;
+    }
+    rest + tail
 }
 
 /// The strings in `value`, decoded, so that an escape such as `\n` cannot
@@ -467,8 +486,11 @@ mod tests {
         assert_eq!(audit(&skills), Ok(0));
         assert_eq!(audit(&[]), Ok(2));
         // Not what lies beside it.
-        let settings = read(given.join("skills/../settings.json"));
-        std::fs::write(dir.join("transcripts/s.jsonl"), settings).unwrap();
-        assert_eq!(audit(&skills), Ok(1));
+        let beside = [
+            read(given.join("skills/../settings.json")),
+            read(given.join("skills-old/x/SKILL.md")),
+        ];
+        std::fs::write(dir.join("transcripts/s.jsonl"), beside.join("\n")).unwrap();
+        assert_eq!(audit(&skills), Ok(2));
     }
 }

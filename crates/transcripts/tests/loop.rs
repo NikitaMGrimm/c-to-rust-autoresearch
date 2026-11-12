@@ -1916,8 +1916,15 @@ fn an_audit_of_a_driver_opens_the_seal_only_while_it_runs() {
     stuck
         .arg("r1")
         .env("DURING", format!("chmod 555 '{private_arg}'"));
-    assert_eq!(stuck.status().unwrap().code(), Some(2));
+    let stuck = stuck.stderr(Stdio::piped()).output().unwrap();
+    assert_eq!(stuck.status.code(), Some(2));
     assert!(std::fs::read_dir(private.join("held-out")).is_err());
+    // The list of what to open again is kept where the audit says.
+    let said = String::from_utf8_lossy(&stuck.stderr);
+    let (_, kept) = said.trim().split_once("its list is kept in ").expect(&said);
+    let list = std::fs::read_to_string(kept).unwrap();
+    assert!(list.contains("/private/held-out"), "{list}");
+    std::fs::remove_file(kept).unwrap();
     for dir in [private.clone(), private.join("held-out"), cache] {
         std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     }
@@ -1938,6 +1945,7 @@ fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
         private.join("validation/secret"),
         temporary.join("secret"),
         inside.join("validation/secret"),
+        package.join("local/home/secret"),
     ];
     for secret in &secrets {
         std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
@@ -1966,19 +1974,36 @@ fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
     let from_env = |name: &str, default: &str| {
         std::env::var_os(name).map_or(real.join(default), PathBuf::from)
     };
-    let output = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../loop/cargo"))
-        .args(["run", "-q"])
-        .current_dir(&package)
-        .env("HOME", &home)
-        .env("TMPDIR", &temporary)
-        .env("CARGO_HOME", from_env("CARGO_HOME", ".cargo"))
-        .env("RUSTUP_HOME", from_env("RUSTUP_HOME", ".rustup"))
-        .env_remove("XDG_CACHE_HOME")
+    let run = |home: &Path| {
+        let output = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../loop/cargo"))
+            .args(["run", "-q"])
+            .current_dir(&package)
+            .env("HOME", home)
+            .env("TMPDIR", &temporary)
+            .env("CARGO_HOME", from_env("CARGO_HOME", ".cargo"))
+            .env("RUSTUP_HOME", from_env("RUSTUP_HOME", ".rustup"))
+            .env_remove("XDG_CACHE_HOME")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    // The last is a file of the checkout like any other.
+    assert_eq!(run(&home), "hidden\nhidden\nhidden\nhidden\nseen");
+    // Until the home directory is the one in the checkout.
+    assert_eq!(
+        run(&package.join("local/home")),
+        "seen\nhidden\nhidden\nhidden\nhidden"
+    );
+}
+
+#[test]
+fn an_audit_option_without_its_value_is_a_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_audit"))
+        .args(["private", "transcripts", "--readable"])
         .output()
         .unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "hidden\nhidden\nhidden\nhidden",
-        "{output:?}"
-    );
+    assert_eq!(output.status.code(), Some(2));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.starts_with("usage: audit"), "{said}");
 }

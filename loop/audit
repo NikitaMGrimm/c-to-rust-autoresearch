@@ -37,7 +37,11 @@ if [[ -f $list ]]; then
         closed=false
       fi
     done <"$sealed"
-    cp "$sealed" "$list" || closed=false
+    # Without the list, loop/seal --open cannot give the modes back.
+    if ! cp "$sealed" "$list"; then
+      echo "audit: $private is not sealed again; its list is kept in $sealed" >&2
+      exit 2
+    fi
     rm -f "$sealed"
     if ! $closed; then
       echo "audit: $private is not sealed again" >&2
