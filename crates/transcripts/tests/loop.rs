@@ -1985,11 +1985,24 @@ fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
             .env_remove("XDG_CACHE_HOME")
             .output()
             .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        if !output.status.success() {
+            return format!("{output:?}");
+        }
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
     // The last is a file of the checkout like any other.
     assert_eq!(run(&home), "hidden\nhidden\nhidden\nhidden\nseen");
+    // A cache that loop/seal closed is hidden like an open one.
+    let cache = home.join(".cache/c-to-rust-autoresearch");
+    std::fs::create_dir_all(&cache).unwrap();
+    let mode = |mode| {
+        std::fs::set_permissions(&cache, std::os::unix::fs::PermissionsExt::from_mode(mode))
+            .unwrap();
+    };
+    mode(0);
+    let sealed = run(&home);
+    mode(0o755);
+    assert_eq!(sealed, "hidden\nhidden\nhidden\nhidden\nseen");
     // Until the home directory is the one in the checkout.
     assert_eq!(
         run(&package.join("local/home")),
