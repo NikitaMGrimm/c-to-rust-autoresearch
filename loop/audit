@@ -23,9 +23,19 @@ if [[ ! -f $state/private || ! -f $state/work ]]; then
 fi
 private=$(cat "$state/private")
 transcripts=$HOME/.claude/projects/$(tr -c 'a-zA-Z0-9\n' '-' <"$state/work")
+# Sealed again whatever happens, also after an opening that stopped half-way.
 if [[ -f $private/.sealed ]]; then
-  "$repo/loop/seal" --open "$private" >/dev/null
-  trap '"$repo/loop/seal" "$private" >/dev/null' EXIT
+  trap '"$repo/loop/seal" "$private" >/dev/null || echo "audit: $private is not sealed again" >&2' EXIT
+  if ! "$repo/loop/seal" --open "$private" >/dev/null; then
+    echo "audit stopped: the seal did not open" >&2
+    exit 2
+  fi
+fi
+# The driver may read its skills' files; the audit takes reads in the
+# directories it is given as no finding.
+skills=()
+if [[ -d $HOME/.claude/skills ]]; then
+  skills=("$HOME/.claude/skills")
 fi
 cd "$repo"
-cargo run -q -p transcripts --bin audit -- "$private" "$transcripts" "$@"
+cargo run -q -p transcripts --bin audit -- "$private" "$transcripts" "$@" "${skills[@]}"

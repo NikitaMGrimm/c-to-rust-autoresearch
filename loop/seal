@@ -33,11 +33,17 @@ if $open; then
     echo "$private is not sealed"
     exit 0
   fi
+  # Every directory is tried, and the list stays after a failure.
+  failed=false
   while IFS=' ' read -r mode dir; do
-    if [[ -d $dir ]]; then
-      chmod "$mode" "$dir"
+    if [[ -d $dir ]] && ! chmod "$mode" "$dir"; then
+      failed=true
     fi
   done <"$list"
+  if $failed; then
+    echo "seal: $private is not fully open" >&2
+    exit 2
+  fi
   rm "$list"
   echo "opened $private"
   exit 0
@@ -54,6 +60,8 @@ for log in "$private/loop" "$private"/runs/*; do
   fi
 done
 for dir in "${dirs[@]}"; do
+  # The directory itself, where the name is a link to it.
+  dir=$(readlink -f -- "$dir") || continue
   mode=$(stat -c %a "$dir" 2>/dev/null) || continue
   if [[ -d $dir && $mode != 0 ]]; then
     echo "$mode $dir" >>"$list"

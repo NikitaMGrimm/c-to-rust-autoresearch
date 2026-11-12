@@ -179,13 +179,17 @@ follows. It is not in a sandbox itself, so three things stand in for one:
   those of `loop/setup`: no reading or editing of the private directory, the
   corpus cache or the main checkout's `local/`, no editing of the main
   checkout, no web, and `loop/guard` for every other call that names those
-  places. T3 Code's tools and the owner's skills stay, since the driver
+  places. A shell call that first changes directory and then uses a short
+  name gets past the guard, as it does for the loop agent, whose sandbox
+  the driver does not have. T3 Code's tools and the owner's skills stay, since the driver
   works through them. Agents of another provider that the driver starts get
   no such settings, only their brief.
 - `loop/cargo` runs cargo on the checkout it is called in, in a sandbox like
-  the evaluator's: no network, `/tmp`, `/run` or `/mnt`, and a home directory
-  that holds only the Rust toolchain and the checkout. The driver builds and
-  tests the transpiler only so.
+  the evaluator's: no network, `/tmp`, `TMPDIR`, `/run` or `/mnt`, a home
+  directory that holds only the Rust toolchain and the checkout, and neither
+  the corpus cache nor the private directory of any run that `loop/drive`
+  prepared, wherever they are. The driver builds and tests the transpiler
+  only so.
 
 `loop/judge RUN`, which the driver calls as `local/judge`, runs the gate with
 `--strict --run RUN` on `work/RUN` against `run/RUN`, with the driver's model

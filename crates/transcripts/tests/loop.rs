@@ -290,7 +290,9 @@ impl Fixture {
             "name: \"mine\"\n",
         )
         .unwrap();
-        std::fs::write(repo.join(".gitignore"), "/local/\n").unwrap();
+        // As this repository's own.
+        let ignored = "/local/\n.claude/settings.local.json\n";
+        std::fs::write(repo.join(".gitignore"), ignored).unwrap();
         let cargo = dir.join("bin/cargo");
         std::fs::write(
             &cargo,
@@ -1692,7 +1694,19 @@ fn a_github_round_leaves_github_alone_when_its_main_moved_or_github_fails() {
 fn a_seal_closes_what_a_run_may_not_see_and_opens_again() {
     let fixture = Fixture::new();
     let private = fixture.dir.join("private");
-    let cache = fixture.home.join(".cache/c-to-rust-autoresearch");
+    // The cache is a link to a directory that only its owner may open.
+    let (cache, target) = (
+        fixture.home.join(".cache/c-to-rust-autoresearch"),
+        fixture.dir.join("corpus"),
+    );
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &cache).unwrap();
+    let mode = |dir: &Path| {
+        std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(dir).unwrap().permissions())
+            & 0o777
+    };
+    std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let sealed = [
         private.join("held-out"),
         private.join("transfer"),
@@ -1734,6 +1748,7 @@ fn a_seal_closes_what_a_run_may_not_see_and_opens_again() {
     for dir in sealed.iter().chain(&open) {
         assert!(readable(dir), "{} is closed", dir.display());
     }
+    assert_eq!(mode(&target), 0o700);
     assert!(!private.join(".sealed").exists());
     assert_eq!(seal(&["--open"]), Some(0));
 }
@@ -1789,6 +1804,10 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
         child.wait().unwrap().code()
     };
     assert_eq!(run_hook("ls ../private/validation"), Some(2));
+    assert_eq!(
+        run_hook("cat \"../it's repo/local/runs/r1/private\""),
+        Some(2)
+    );
     assert_eq!(run_hook("loop/cargo test -p transpiler"), Some(0));
     assert_eq!(git(&work, &["status", "--porcelain"]), "");
 
@@ -1829,6 +1848,16 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
     assert!(rounds.contains("reject: the development score did not rise"));
     assert_eq!(git(&work, &["status", "--porcelain"]), "");
     assert_eq!(git(repo, &["rev-parse", "main"]), main);
+
+    // A worktree named from where the script is called, not from the main
+    // checkout, which must stay clean for the gate.
+    let relative = ["r2", private.to_str().unwrap(), "beside"];
+    assert_eq!(script("drive", 0, &relative), Some(0));
+    assert!(fixture.dir.join("beside/.claude").is_dir());
+    assert_eq!(git(repo, &["status", "--porcelain"]), "");
+    // Without its worktree, nothing is judged.
+    std::fs::rename(fixture.dir.join("beside"), fixture.dir.join("moved")).unwrap();
+    assert_eq!(script("judge", 0, &["r2"]), Some(2));
 }
 
 #[test]
@@ -1851,30 +1880,44 @@ fn an_audit_of_a_driver_opens_the_seal_only_while_it_runs() {
         "--bin audit -- {private_arg} {}",
         transcripts(&fixture.home, &work)
     );
+    // The driver's reads of its skills' files are no findings.
+    let audited = format!("{audited} {}/.claude/skills", fixture.home.display());
     assert!(fixture.calls().contains(&audited), "{}", fixture.calls());
     assert_eq!(script("seal", 0, &["--open", private_arg]), Some(0));
 }
 
 /// loop/cargo runs the transpiler's build and tests, which are agent code.
 #[test]
-fn cargo_for_the_transpiler_sees_no_home_directory() {
+fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
     let scratch = Scratch::new();
     let dir = scratch.0.canonicalize().unwrap();
     let (home, package) = (dir.join("home"), dir.join("package"));
-    std::fs::create_dir_all(home.join("notes")).unwrap();
+    // A private directory and a temporary one, both outside the home
+    // directory.
+    let (private, temporary) = (dir.join("private"), dir.join("tmp"));
+    let secrets = [
+        home.join("notes/secret"),
+        private.join("validation/secret"),
+        temporary.join("secret"),
+    ];
+    for secret in &secrets {
+        std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+        std::fs::write(secret, "").unwrap();
+    }
     std::fs::create_dir_all(package.join("src")).unwrap();
-    std::fs::write(home.join("notes/secret"), "").unwrap();
     // Its own workspace and repository, apart from this one's.
     let manifest =
         "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[workspace]\n";
     std::fs::write(package.join("Cargo.toml"), manifest).unwrap();
-    let probe = r#"fn main() {
-    let secret = std::path::Path::new(&std::env::var("HOME").unwrap()).join("notes/secret");
-    println!("{}", if secret.exists() { "seen" } else { "hidden" });
-}
-"#;
+    let probe = format!(
+        "fn main() {{\n    for secret in {secrets:?} {{\n        let seen = std::path::Path::new(secret).exists();\n        println!(\"{{}}\", if seen {{ \"seen\" }} else {{ \"hidden\" }});\n    }}\n}}\n"
+    );
     std::fs::write(package.join("src/main.rs"), probe).unwrap();
     git(&package, &["init", "-q"]);
+    // As loop/drive notes the private directory of a run.
+    let noted = package.join("local/runs/r1");
+    std::fs::create_dir_all(&noted).unwrap();
+    std::fs::write(noted.join("private"), format!("{}\n", private.display())).unwrap();
     // The toolchain is in the home directory of whoever runs the tests.
     let real = PathBuf::from(std::env::var_os("HOME").unwrap());
     let from_env = |name: &str, default: &str| {
@@ -1884,13 +1927,15 @@ fn cargo_for_the_transpiler_sees_no_home_directory() {
         .args(["run", "-q"])
         .current_dir(&package)
         .env("HOME", &home)
+        .env("TMPDIR", &temporary)
         .env("CARGO_HOME", from_env("CARGO_HOME", ".cargo"))
         .env("RUSTUP_HOME", from_env("RUSTUP_HOME", ".rustup"))
+        .env_remove("XDG_CACHE_HOME")
         .output()
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "hidden",
+        "hidden\nhidden\nhidden",
         "{output:?}"
     );
 }

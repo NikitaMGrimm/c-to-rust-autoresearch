@@ -25,6 +25,10 @@ if [[ ! -f $state/private || ! -f $state/work ]]; then
 fi
 private=$(cat "$state/private")
 work=$(cat "$state/work")
+if [[ ! -d $work ]]; then
+  echo "judge stopped: the driver's worktree $work is gone" >&2
+  exit 2
+fi
 mkdir -p "$repo/local/loop"
 # Two gates at once would judge against the same base, and change each
 # other's timings.
@@ -60,18 +64,21 @@ if ((status > 1)); then
   echo "judge stopped: the gate failed; nothing was changed" >&2
   exit 2
 fi
-if ((status == 0)); then
-  git update-ref "refs/heads/run/$run" "$candidate" "$base"
-fi
+# The history and the time first: a judgment that stops here is judged again,
+# and one that moved the branch is complete.
 {
   echo "## $(git log -1 --format='%h %s' "$candidate")"
   echo
   cat "$printed"
   echo
 } >>"$state/rounds.md"
-mkdir -p "$work/local"
-cp "$state/rounds.md" "$work/local/rounds.md"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
+if ((status == 0)); then
+  git update-ref "refs/heads/run/$run" "$candidate" "$base"
+fi
+if ! { mkdir -p "$work/local" && cp "$state/rounds.md" "$work/local/rounds.md"; }; then
+  echo "judge: the history did not reach $work/local/rounds.md; it is in $state/rounds.md" >&2
+fi
 if ((status == 1)); then
   echo "work/$run is still at ${candidate:0:7}: change it and judge again, or go back with git reset --hard run/$run"
 fi

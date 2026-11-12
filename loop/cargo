@@ -2,9 +2,10 @@
 # Runs cargo on the checkout it is called in, in a sandbox like the
 # evaluator's. The transpiler, its tests and its build are agent code, so on a
 # machine with the private directory they run only like this: without
-# network, /tmp, /run and /mnt, and with a home directory that holds nothing
-# but the Rust toolchain and the checkout, which hides the private directory
-# and the corpus cache under it. It builds into target/sandboxed.
+# network, /tmp, /run and /mnt, with a home directory that holds nothing but
+# the Rust toolchain and the checkout, and without the private directory of
+# any run that loop/drive prepared or the corpus cache, wherever they are. It
+# builds into target/sandboxed.
 #   loop/cargo test -p transpiler
 #   loop/cargo clippy -p transpiler --all-targets -- -D warnings
 set -euo pipefail
@@ -14,6 +15,21 @@ cargo_home=${CARGO_HOME:-$HOME/.cargo}
 rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
 sandbox=(bwrap --ro-bind / / --dev /dev --proc /proc
   --tmpfs /tmp --tmpfs /run --tmpfs /mnt --tmpfs "$HOME")
+# The bench tools and the evaluator leave private programs in TMPDIR when
+# they stop early. The private directories are noted in the main checkout,
+# which a worktree shares its repository with.
+main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+hidden=("${TMPDIR:-/tmp}" "${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch")
+for noted in "$main"/local/runs/*/private; do
+  if [[ -f $noted ]]; then
+    hidden+=("$(cat "$noted")")
+  fi
+done
+for dir in "${hidden[@]}"; do
+  if [[ -d $dir ]]; then
+    sandbox+=(--tmpfs "$(cd "$dir" && pwd -P)")
+  fi
+done
 # Not all of CARGO_HOME: it holds the crates.io token.
 for dir in "$cargo_home"/{bin,registry,git} "$rustup_home"; do
   if [[ -d $dir ]]; then

@@ -23,7 +23,8 @@ command -v jq >/dev/null || { echo "loop/drive needs jq" >&2; exit 1; }
 run=$1
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 private=$(cd "$2" && pwd -P)
-work=$3
+# Before the change of directory below, which would give it another meaning.
+work=$(realpath -m -- "$3")
 if [[ -e $work ]]; then
   echo "$work already exists" >&2
   exit 1
@@ -45,8 +46,9 @@ transcripts=$HOME/.claude/projects/$(printf %s "$work" | tr -c 'a-zA-Z0-9' '-')
 cache=${XDG_CACHE_HOME:-$HOME/.cache}/c-to-rust-autoresearch
 denied=("$private" "$cache" "$repo/local")
 # A shell call can name a place by a shorter path, so the guard looks for the
-# private directory's own name too.
-markers=("${denied[@]}" "$(basename "$private")" .cache/c-to-rust-autoresearch)
+# private directory's own name too, and for local/ under this checkout's.
+markers=("${denied[@]}" "$(basename "$private")" .cache/c-to-rust-autoresearch
+  "$(basename "$repo")/local")
 json_array() { printf '%s\n' "$@" | jq -R . | jq -sc .; }
 mkdir -p "$work/.claude"
 jq -n \
