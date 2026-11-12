@@ -52,8 +52,12 @@ trap 'rm -f "$report" "$printed"' EXIT
 # are in other directories and are not counted here.
 transcripts=$HOME/.claude/projects/$(printf %s "$work" | tr -c 'a-zA-Z0-9' '-')
 usage=()
+# Up to now, so that what the driver writes while the gate runs counts for
+# the next round.
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [[ -d $transcripts ]]; then
-  cargo run -q -p transcripts --bin usage -- --since "$(cat "$state/since")" "$transcripts" >"$report"
+  cargo run -q -p transcripts --bin usage -- --since "$(cat "$state/since")" --until "$now" \
+    "$transcripts" >"$report"
   usage=(--usage "$report")
 fi
 status=0
@@ -72,7 +76,7 @@ fi
   cat "$printed"
   echo
 } >>"$state/rounds.md"
-date -u +%Y-%m-%dT%H:%M:%SZ >"$state/since"
+echo "$now" >"$state/since"
 if ((status == 0)); then
   git update-ref "refs/heads/run/$run" "$candidate" "$base"
 fi

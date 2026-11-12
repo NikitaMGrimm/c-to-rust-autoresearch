@@ -23,19 +23,38 @@ if [[ ! -f $state/private || ! -f $state/work ]]; then
 fi
 private=$(cat "$state/private")
 transcripts=$HOME/.claude/projects/$(tr -c 'a-zA-Z0-9\n' '-' <"$state/work")
-# Sealed again whatever happens, also after an opening that stopped half-way.
-if [[ -f $private/.sealed ]]; then
-  trap '"$repo/loop/seal" "$private" >/dev/null || echo "audit: $private is not sealed again" >&2' EXIT
+# What was sealed is sealed again whatever happens, also after an opening that
+# stopped half-way: the same directories, from the seal's own list, and not
+# those that this call's environment would name.
+list=$private/.sealed
+if [[ -f $list ]]; then
+  sealed=$(mktemp)
+  cp "$list" "$sealed"
+  reseal() {
+    local status=$? closed=true mode dir
+    while IFS=' ' read -r mode dir; do
+      if [[ -d $dir ]] && ! chmod 000 "$dir"; then
+        closed=false
+      fi
+    done <"$sealed"
+    cp "$sealed" "$list" || closed=false
+    rm -f "$sealed"
+    if ! $closed; then
+      echo "audit: $private is not sealed again" >&2
+      exit 2
+    fi
+    exit "$status"
+  }
+  trap reseal EXIT
   if ! "$repo/loop/seal" --open "$private" >/dev/null; then
     echo "audit stopped: the seal did not open" >&2
     exit 2
   fi
 fi
-# The driver may read its skills' files; the audit takes reads in the
-# directories it is given as no finding.
-skills=()
+# The driver may read its skills' files.
+readable=()
 if [[ -d $HOME/.claude/skills ]]; then
-  skills=("$HOME/.claude/skills")
+  readable=(--readable "$HOME/.claude/skills")
 fi
 cd "$repo"
-cargo run -q -p transcripts --bin audit -- "$private" "$transcripts" "$@" "${skills[@]}"
+cargo run -q -p transcripts --bin audit -- "$private" "${readable[@]}" "$transcripts" "$@"

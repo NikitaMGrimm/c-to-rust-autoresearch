@@ -36,7 +36,14 @@ for dir in "$cargo_home"/{bin,registry,git} "$rustup_home"; do
     sandbox+=(--ro-bind "$dir" "$dir")
   fi
 done
-sandbox+=(--bind "$checkout" "$checkout" --chdir "$PWD")
+sandbox+=(--bind "$checkout" "$checkout")
+# A hidden place inside the checkout, which the line above brought back.
+for dir in "${hidden[@]}"; do
+  if [[ -d $dir && $(cd "$dir" && pwd -P) == "$checkout"/* ]]; then
+    sandbox+=(--tmpfs "$(cd "$dir" && pwd -P)")
+  fi
+done
+sandbox+=(--chdir "$PWD")
 sandbox+=(--unshare-all --die-with-parent --new-session --clearenv)
 # Only these variables reach cargo.
 for variable in HOME="$HOME" USER="${USER:-$(id -un)}" LANG="${LANG:-C.UTF-8}" \

@@ -301,6 +301,8 @@ echo "$*" >>"$CALLS"
 case "$*" in
   *"--bin audit"*)
     # A finding in each transcript of the directory, the last argument.
+    # $DURING is what happens while the audit runs.
+    eval "${DURING-}"
     if ((AUDIT == 1)); then
       for file in "${@: -1}"/${AUDITED:-*.jsonl}; do echo "$file:1: ${FINDING:-private program p}"; done
       echo "AUDIT findings"
@@ -1848,6 +1850,19 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
     assert!(rounds.contains("reject: the development score did not rise"));
     assert_eq!(git(&work, &["status", "--porcelain"]), "");
     assert_eq!(git(repo, &["rev-parse", "main"]), main);
+    // Each judging counts the usage up to its start and the next one from
+    // there, so that none is lost while the gate runs.
+    let calls = fixture.calls();
+    let windows: Vec<Vec<&str>> = calls
+        .lines()
+        .filter_map(|call| call.split_once("--bin usage -- "))
+        .map(|(_, window)| window.split(' ').collect())
+        .collect();
+    let [first, second] = windows.as_slice() else {
+        panic!("{calls}");
+    };
+    assert_eq!(first[..3], ["--since", first[1], "--until"]);
+    assert_eq!(second[..2], ["--since", first[3]]);
 
     // A worktree named from where the script is called, not from the main
     // checkout, which must stay clean for the gate.
@@ -1864,7 +1879,9 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
 fn an_audit_of_a_driver_opens_the_seal_only_while_it_runs() {
     let fixture = Fixture::new();
     let (private, work) = (fixture.dir.join("private"), fixture.dir.join("work"));
+    let cache = fixture.home.join(".cache/c-to-rust-autoresearch");
     std::fs::create_dir_all(private.join("held-out")).unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
     let script = |name: &str, audit: u8, args: &[&str]| {
         let mut command = fixture.command(name, audit, 0);
         command.args(args).status().unwrap().code()
@@ -1876,14 +1893,34 @@ fn an_audit_of_a_driver_opens_the_seal_only_while_it_runs() {
         assert_eq!(script("audit", findings, &["r1"]), Some(findings.into()));
         assert!(std::fs::read_dir(private.join("held-out")).is_err());
     }
+    // The driver's reads of its skills' files are no findings.
     let audited = format!(
-        "--bin audit -- {private_arg} {}",
+        "--bin audit -- {private_arg} --readable {}/.claude/skills {}",
+        fixture.home.display(),
         transcripts(&fixture.home, &work)
     );
-    // The driver's reads of its skills' files are no findings.
-    let audited = format!("{audited} {}/.claude/skills", fixture.home.display());
     assert!(fixture.calls().contains(&audited), "{}", fixture.calls());
-    assert_eq!(script("seal", 0, &["--open", private_arg]), Some(0));
+
+    // What was sealed is sealed again, also where the audit's environment
+    // names another cache.
+    let mut elsewhere = fixture.command("audit", 0, 0);
+    elsewhere
+        .arg("r1")
+        .env("XDG_CACHE_HOME", fixture.dir.join("elsewhere"));
+    assert_eq!(elsewhere.status().unwrap().code(), Some(0));
+    assert!(std::fs::read_dir(&cache).is_err());
+    assert!(private.join(".sealed").exists());
+
+    // An audit that cannot seal everything again fails, whatever it found.
+    let mut stuck = fixture.command("audit", 0, 0);
+    stuck
+        .arg("r1")
+        .env("DURING", format!("chmod 555 '{private_arg}'"));
+    assert_eq!(stuck.status().unwrap().code(), Some(2));
+    assert!(std::fs::read_dir(private.join("held-out")).is_err());
+    for dir in [private.clone(), private.join("held-out"), cache] {
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
 }
 
 /// loop/cargo runs the transpiler's build and tests, which are agent code.
@@ -1895,10 +1932,12 @@ fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
     // A private directory and a temporary one, both outside the home
     // directory.
     let (private, temporary) = (dir.join("private"), dir.join("tmp"));
+    let inside = package.join("local/private");
     let secrets = [
         home.join("notes/secret"),
         private.join("validation/secret"),
         temporary.join("secret"),
+        inside.join("validation/secret"),
     ];
     for secret in &secrets {
         std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
@@ -1918,6 +1957,10 @@ fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
     let noted = package.join("local/runs/r1");
     std::fs::create_dir_all(&noted).unwrap();
     std::fs::write(noted.join("private"), format!("{}\n", private.display())).unwrap();
+    // And one inside the checkout itself.
+    std::fs::create_dir_all(package.join("local/runs/r2")).unwrap();
+    let noted = package.join("local/runs/r2/private");
+    std::fs::write(noted, format!("{}\n", inside.display())).unwrap();
     // The toolchain is in the home directory of whoever runs the tests.
     let real = PathBuf::from(std::env::var_os("HOME").unwrap());
     let from_env = |name: &str, default: &str| {
@@ -1935,7 +1978,7 @@ fn cargo_for_the_transpiler_sees_no_home_or_private_directory() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "hidden\nhidden\nhidden",
+        "hidden\nhidden\nhidden\nhidden",
         "{output:?}"
     );
 }

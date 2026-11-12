@@ -301,8 +301,10 @@ more examples of a construct might, so the loop has several layers:
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private
   directory or a corpus, looked for TRACTOR or CodeNet on the web or touched Claude
-  Code's files, and every record it cannot read. Exit code 0 means none; a
-  path without transcripts is an error.
+  Code's files, and every record it cannot read. Reading back a file in a
+  transcript's own directory is no finding, nor in a directory given with
+  `--readable DIR`, as `loop/audit` gives a driver's skills. Exit code 0
+  means none; a path without transcripts is an error.
 
 `intake` fetches the corpus again when its cache is missing, so the cache can
 be deleted while a loop runs. The guard and the audit see only what a tool
