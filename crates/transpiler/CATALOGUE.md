@@ -1,559 +1,170 @@
 # Rule catalogue
 
-Every translation rule the research loop adds or changes has an entry here, so
-the results can be traced to rules. The loop gate rejects a change to `src/`
-that leaves this file unchanged.
+Every translation rule has an entry here, so the results can be traced to
+rules. The loop gate rejects a change to `src/` that leaves this file
+unchanged. [DESIGN.md](DESIGN.md) says what the rules share and where a new
+one belongs.
+
+R1 to R10 are the skeleton, written before the loop's first iteration. They
+cover little on purpose: each construct without a rule is refused with its
+name and line.
 
 Entry format, newest last:
 
 ```markdown
-## R1: short name
+## R11: short name
 
 - C: the construct it translates, for example `printf` with a literal format
 - Rust: what it emits for it
+- Needs: the facts or rewrites it relies on, if any
 - Motivation: the development programs that failed without it, and how
 - Changes: earlier rules it replaces or extends, if any
 ```
 
-## R1: integer functions with printf and scanf
+## R1: functions, `main` and calls
 
-- C: function definitions over the integer types (definitions with names that
-  C reserves, as from system headers, are skipped); `int main(void)` falling
-  off its end; local variables, uninitialised ones as 0; `=`, `+=`, `-=`,
-  `*=`, `/=` and `%=` as statements; signed `+ - * / %` and unary `-`;
-  integer conversions; calls of the program's own functions; `printf` with a
-  literal format of `%d`/`%i` with the flags `-`, `+` and `0` and a width,
-  and `%%`, whose result is discarded; `scanf` with a literal format of `%d`
-  into `&variable`; either format ends at its first zero byte, as in C
-- Rust: `fn` with `i8`…`u64`, `let` with `mut` only for variables that are
-  assigned or whose address is taken, raw identifiers for Rust keywords;
-  `self`, `Self`, `super`, `crate`, `_` and `main`, and each of them
-  followed by underscores, with one more `_`, so no two C names share a
-  Rust name; the last `return` as the tail expression, C's `main` as `main_`
-  called by `std::process::exit`; operands in parentheses unless atomic; `print!` or
-  `println!` with the format converted at translation time; `crt::scanf`, a
-  runtime emitted once that reads standard input byte by byte as glibc does,
-  saturating out-of-range numbers as `strtol` does, and passes each value to
-  one closure that matches the argument's index and assigns its variable, so
-  a variable named twice is written twice in order. Every other construct,
-  including `static` and `extern` local variables, becomes
-  `compile_error!("unsupported C: ...")`
-- Motivation: the transpiler emitted an empty file, so every development
-  program failed to compile; `g1_040_storage_class_auto` needs exactly these
-- Changes: none, the first rule
+- C: function definitions that are not variadic; calls of the program's own
+  functions by name; `main` with no parameters or with `argc` and `argv`;
+  `return`
+- Rust: `fn` with the last `return` as the tail expression; `fn main()`, or
+  `fn main() -> ExitCode` when some `return` that can run gives another value
+  than the constant 0, with the low byte as the code; `argc` as
+  `args.len() as i32` from `let args: Vec<String> = std::env::args().collect();`;
+  `exit` as `std::process::exit`. Names that are Rust keywords or that the
+  translation uses itself get a `_`
+- Needs: `Facts::truth`, to leave out returns in branches that cannot run
+- Motivation: skeleton
+- Changes: none
 
-## R2: control flow and goto
+## R2: numbers
 
-- C: `if`/`else if`/`else`, `while`, `do ... while` and `for` (any part
-  empty); `break` and `continue`; `goto` to a label among the statements of
-  the block that holds the `goto` or of a block around it; comparisons of
-  integers of the same type, `&&`, `||` and `!`, as conditions and as `int`
-  values; integers as conditions; `++` and `--` as statements
-- Rust: Rust's `if`, `while` and `loop` with a `bool` condition (`x != 0`
-  for an integer), `loop` for a nonzero constant one; a `for` becomes its
-  initialiser, in a block if it declares, and a `while` ending in the
-  increment; the body of a `for` or `do` is a labelled block that
-  `continue` leaves, so the increment or test still runs; jumps carry a
-  label only when they leave a loop other than the innermost. A block with
-  labels becomes `let mut __gotoN = 0; loop { match __gotoN { ... } }` with
-  one arm per label, falling through by setting the next arm; `goto` sets
-  the arm and continues that loop. Its integer variables are declared before
-  the loop, with their initialisers as assignments, unless that would hide
-  a variable of the same name that the block uses. Comparisons as values are
-  `i32::from(...)`. `++`/`--` are `+= 1`/`-= 1` on `int` and `long`, whose
-  overflow C leaves undefined, and `wrapping_add`/`wrapping_sub` on unsigned
-  and narrower types, which wrap. A `goto` into a block, `++`/`--` used as a
-  value and `break` or `continue` outside a loop stay unsupported
-- Motivation: every development program but one uses `if` or a loop, and
-  `g5_021_complex_goto` jumps forwards and backwards between labels inside a
-  `while` body
-- Changes: extends R1, whose function bodies held only straight-line code
+- C: `char`, the integer types, `_Bool`, `float`, `double`, enumerators;
+  literals and `sizeof`; `+ - * / % << >> & | ^ ~ !`, comparisons, `&&`,
+  `||`, `?:`, the comma operator; conversions between numbers; `=`, the
+  compound assignments, `++` and `--`; locals with and without an initialiser
+- Rust: `u8` for `char`, `i8` to `u64`, `bool`, `f32`, `f64`, a `const` for
+  each enumerator used; Rust's operators for signed arithmetic, so that an
+  overflow stops the program, and `wrapping_add`, `wrapping_sub` and
+  `wrapping_mul` for unsigned; `as` for conversions, through `i8` when a
+  `char` widens; a comparison as a value is `i32::from(…)`, a number as a
+  test is `!= 0`; a compound assignment on a type narrower than `int` is
+  computed as C does, in the wider type; a literal takes its suffix only
+  where Rust cannot tell its type; `let`, with `mut` only when the variable
+  changes, and zero for a missing initialiser
+- Needs: `Facts::mutated`
+- Motivation: skeleton
+- Changes: none
 
-## R3: characters and unsigned conversions in formatted I/O
+## R3: control flow
 
-- C: character literals of type `int`; `printf` conversions `%u`, `%o`,
-  `%x` and `%X` with the flags and width of R1, of an `unsigned int` or an
-  `int`; `scanf` conversion `%c` into a `char`; `fscanf(stdin, ...)`
-- Rust: a character literal as its `int` value, with an `_i32` suffix when
-  negative; `{}`, `{:o}`, `{:x}` and `{:X}`, without the `+` flag, which C
-  ignores on unsigned conversions, and an `int` argument converted
-  `as u32`, whose bits glibc prints; `%c` stores the next byte of input
-  without skipping white space, converted `as i8`; `fscanf` on `stdin` is
-  `scanf`. `%c` in `printf` stays unsupported
-- Motivation: `g1_010_integer_overflow` reads a character with
-  `fscanf(stdin, "%c", ...)`, starts from `' '` and prints with `%02x`
-- Changes: extends R1's `printf` and `scanf`
+- C: `if`/`else`, `while`, `do … while`, `for`, `break`, `continue`, and
+  `switch` whose cases each end in `break`, `return` or `continue`
+- Rust: `if`/`else if`/`else`; `while`, or `loop` for a test that is always
+  true; `loop` ending in `if !test { break; }` for `do`; `for i in a..b` or
+  `a..=b` for a `for` that counts a local up by one to a bound that its body
+  cannot change, `_` for a counter the body does not read, and otherwise the
+  initialiser and a `while` ending in the step; `match` with `|` for cases
+  that share statements. A test that the facts decide is left out with the
+  branch that cannot run
+- Needs: `Facts::truth`
+- Motivation: skeleton
+- Changes: none
 
-## R4: pointers to string literals
+## R4: `printf` and numbers from the arguments
 
-- C: `char *` and `const char *` variables, parameters and return values
-  whose values are string literals or null pointer constants such as `NULL`,
-  `0` or `(char *)0`, uninitialised ones as null; `==` and `!=` against a
-  null pointer constant and a pointer as a condition; `printf`'s `%s`
-  without flags or a width
-- Rust: `Option<&'static [u8]>`, `None` for null and otherwise the bytes of
-  the literal's array through its final zero, `Some(b"...\x00".as_slice())`;
-  the tests are `is_none()` and `is_some()`; `%s` is `{}` of
-  `crt::c_str(...)`, a runtime part that takes the bytes before the first
-  zero and panics on null, for which C has no string. The `crt` runtime now
-  holds only the parts a translation calls. Literals that are not UTF-8,
-  `%s` with flags or a width, which C counts in bytes and Rust in
-  characters, and any other comparison of pointers stay unsupported; so does
-  every write through a pointer, which leaves the literals read-only
-- Motivation: `g2_011_uninit_char_ptr` and
-  `g2_019_integer_overflow_char_max_multiply` print through a
-  `printLine(const char *)` that tests its argument against `NULL`, and the
-  first assigns a literal to an uninitialised `char *`
-- Changes: extends R1's types and `printf`, and R2's conditions and the
-  variables declared before a block with labels
+- C: `printf` with a literal format of text, `%%`, `%d %i %u %x %X %o` with
+  `hh h l ll z`, `%f` with a precision, `%c`, and `%s` of a literal or of
+  `argv[i]`, with the flags `-`, `0`, `+` and a width; `puts` of a literal;
+  `putchar`; `atoi`, `atol`, `atoll`, and `strtol` or `strtoll` in base 10
+  with a NULL end pointer, of `argv[i]`; `abs`, `sqrt`, `fabs`, `floor`,
+  `ceil`, `pow`
+- Rust: `print!`, or `println!` when the format ends in a newline, each value
+  converted to the type its conversion reads; `parse_int(&args[i])`, a
+  helper emitted once that reads a number as `strtoll` does (leading white
+  space, a sign, digits, 0 without digits, the nearest limit out of range);
+  the methods of `i32` and `f64` for the mathematics
+- Needs: nothing
+- Motivation: skeleton; `g1_div_euclid` and `g1_encode_quant` pass with R1 to
+  R4
+- Changes: none
 
-## R5: pointers to integer variables
+## R5: records
 
-- C: pointers to the integer types, `const` or not, as variables and
-  parameters; `&` of an integer variable, perhaps in parentheses; `*` of
-  such a pointer as a value; null pointer constants, uninitialised pointers
-  as null, `==` and `!=` against null and a pointer as a condition, as R4
-  has them for `char *`
-- Rust: `Option<&T>` for a `T *`, `Some(&x)` for `&x` and
-  `*p.expect("null pointer dereference")` for `*p`, since C has no object
-  at null; the tests are `is_none()` and `is_some()`. A pointer only reads:
-  a write through it stays unsupported, and a write to the variable while a
-  pointer borrows it fails to compile. A function returning such a pointer,
-  whose borrow Rust cannot give a lifetime, `&` of anything but an integer
-  variable, `&` of a `char`, whose `char *` R4 holds as a literal's bytes,
-  and comparisons between two pointers stay unsupported
-- Motivation: `g3_012_uninit_int_ptr` passes the address of a local `int`,
-  through an `int *` variable, to a function with a `const int *` parameter
-  that prints `*` of it
-- Changes: extends R1's types and R4's null pointers and pointer conditions
+- C: `struct` definitions, values of them, member access with `.` and `->`,
+  initialiser lists, assignment of a whole record
+- Rust: `struct` in CamelCase with `#[derive(Clone)]`, plus `Copy` when no
+  field owns memory and `Default` when the standard library derives it, else
+  a written `impl Default`; `Name { field: value, … }` with zeros for members
+  the list leaves out; `Name::default()` for a record without an initialiser
+- Needs: the facts of each field that is a pointer (R7, R8)
+- Motivation: skeleton
+- Changes: none
 
-## R6: integer division results
+## R6: arrays
 
-- C: `div`, `ldiv` and `lldiv`; variables, parameters and return values of
-  type `div_t`, `ldiv_t` and `lldiv_t`, uninitialised ones as zero; reading
-  their members `quot` and `rem` with `.`
-- Rust: the pair `(quot, rem)`, `(i32, i32)` for `div_t` and `(i64, i64)`
-  for the others, with `.0` and `.1` for the members; the calls are
-  `crt::div`, a generic runtime part that returns `(numer / denom, numer %
-  denom)`, which round towards zero as C does and panic for a zero divisor
-  or a quotient out of range, which C leaves undefined. Writing a member,
-  `->` and pointers to these types stay unsupported
-- Motivation: `g1_022_stdlib_div` reads two integers, calls `div` and prints
-  the quotient and remainder
-- Changes: extends R1's types and calls
+- C: arrays of a constant length, indexing, initialiser lists, and `char`
+  arrays initialised from a string literal
+- Rust: `[T; N]`, `[zero; N]` or `std::array::from_fn` for one without an
+  initialiser, `a[i as usize]`, `*b"…"` for text. An index that C widened to
+  64 bits is converted to `usize` directly
+- Needs: nothing
+- Motivation: skeleton
+- Changes: none
 
-## R7: program arguments, strtol and static local variables
+## R7: borrows
 
-- C: `int main(int argc, char **argv)`, also with `char *argv[]`; `argv[i]`
-  with an integer index; `strtol` and `strtoll` with a null end pointer or
-  the address of a `char *` variable; `==` and `!=` between two `char *`
-  when one is an element of `argv`; `static` local variables of the integer
-  types, read, assigned, with `+=`, `-=`, `*=`, `/=` and `%=`, and with
-  `++` and `--` as statements
-- Rust: `argv` is `&'static [Option<&'static [u8]>]`, built once by
-  `crt::args`, a runtime part that leaks each argument's bytes with a final
-  zero and ends the slice with `None`; Rust's `main` passes `argc` as its
-  length less one. `argv[i]` indexes the slice, a negative index converted
-  `as usize` so that it panics as out of bounds. `crt::strtol` skips white
-  space, reads a sign, a base-0 or `0x` prefix and digits as glibc does,
-  saturates out of range and stores where the number ends, or the start of
-  the string without one, through `Option<&mut Option<&[u8]>>`; `errno` is
-  not set. The comparison tests the slices' start addresses with
-  `.map(<[u8]>::as_ptr)`: an argument is never a string literal, which C
-  may or may not merge, so other pointer comparisons stay unsupported. A
-  static local is a Rust static `AtomicI8`…`AtomicU64` in the block that
-  declares it, named `__NAME_N`, which C reserves, initialised once, to 0
-  without an initialiser; reads are `load` and writes `store`, with
-  `Relaxed` order, keeping R1's overflow checks and R2's wrapping. `&` of a
-  static local, writing one through `scanf`, static locals of other types,
-  `main` with other parameters and other uses of `char **` stay unsupported
-- Motivation: `g1_005_static_loop` parses its argument with `strtol`, tests
-  `end == argv[1]` and keeps a running total in a `static int`; the static
-  locals of `g1_011_static_dag` and the `argv` of most programs that read
-  their arguments failed as well
-- Changes: extends R1's types, `main` and local variables, and R4's pointer
-  comparisons
+- C: a pointer that neither holds memory from `malloc` nor is freed: a
+  parameter, a local or a result; `&x`, `&a[i]`, an array used as a pointer,
+  `p + n`; `*p`, `p->field`, `p[i]`
+- Rust: `&T` or `&[T]`, with `mut` when something is stored through the
+  pointer or through any slot it is handed to; `&x`, `&mut a[i..]`,
+  `std::slice::from_ref`; a `&mut` variable is reborrowed where it is handed
+  on. A function that returns a borrow and takes several gives all of them
+  the lifetime `'a`
+- Needs: `Facts::pointer` for each slot; `Facts::stored_through` for `mut` on
+  the binding of an owner or an `Option`
+- Motivation: skeleton
+- Changes: none
 
-## R8: booleans
+## R8: heap
 
-- C: `bool` and `_Bool` variables, parameters and return values,
-  uninitialised ones as false; conversions to `bool` of an integer or a
-  pointer, implicit or by a cast; a `bool` promoted to an integer type; a
-  `bool` as a condition
-- Rust: `bool`; a conversion to `bool` is the test of a condition, so `x !=
-  0`, `p.is_some()` or a comparison itself, and a constant such as
-  `<stdbool.h>`'s `true` and `false` is `true` or `false`; a promotion is
-  `i32::from(b)` or the target type's `from`, and a promoted `bool` that C
-  tests is the `bool` itself, with `!b` for `!`. `++`, `--` and compound
-  assignments on a `bool`, static `bool` locals and pointers to `bool` stay
-  unsupported
-- Motivation: `g1_011_static_dag` passes `true` and `false` to a function
-  with a `bool` parameter that it tests with `if`
-- Changes: extends R1's types and conversions and R2's conditions
+- C: `malloc(sizeof(T))`, `malloc(n * sizeof(T))`, `calloc(n, sizeof(T))`,
+  `free`; pointers that hold such memory in locals, parameters, results,
+  fields and globals
+- Rust: `Box::new(zero)` and `vec![zero; n]`; `Box<T>` or `Vec<T>` for every
+  slot that owns; a move between owners, `&mut *b` or `&mut v` from an owner
+  to a borrow; `drop(p)` for `free(p)`. A field or a global gives up what it
+  owns with `take()` or `std::mem::take`, since its holder stays in use. The
+  NULL test after an allocation is left out, since allocation in Rust does
+  not return NULL
+- Needs: `Facts::pointer` (`owned`, `many`); `Facts::truth`
+- Motivation: skeleton
+- Changes: none
 
-## R9: unsigned and bitwise arithmetic, switch, rand, strtoul and errno
+## R9: globals
 
-- C: `+ - * / %` on the unsigned types and unary `-` on them; `& | ^ << >>`
-  and `~` on every integer type; the compound assignments of all these
-  operators, on local and static local variables; `c ? a : b`; `sizeof` of
-  an integer, `bool` or pointer type or expression; `switch` on an integer
-  whose case labels are integer or character constants, perhaps negated or
-  converted, where no case with statements falls into the next; `errno`,
-  read and assigned; `strtoul` and `strtoull`; `rand` and `srand`;
-  `fprintf` to `stdout` or `stderr`; `*p` of a `char *`
-- Rust: unsigned `+ - *` wrap with `wrapping_add`, `wrapping_sub` and
-  `wrapping_mul`, as C defines them, and unary `-` with `wrapping_neg`; the
-  other operators are Rust's, so overflow checks still catch what C leaves
-  undefined: signed overflow, a zero divisor and a shift count outside the
-  type; `~` is `!`. A compound assignment that wraps becomes `x =
-  x.wrapping_add(v)`, the rest `x op= v`. `?:` is `if c { a } else { b }`.
-  `sizeof` is a literal such as `4_u64` with x86-64 Linux's sizes. A
-  `switch` is a `match` with an arm for each run of labels and `_` last,
-  or `_ => {}` without `default`; a `break` that ends an arm is dropped, any
-  other leaves a labelled block around the `match`, and `continue` still
-  continues the loop around it. `errno` is `crt::ERRNO`, a static
-  `AtomicI32`. `crt::strtol` and `crt::strtoul` share one parser; out of
-  range they saturate and set `errno` to `ERANGE`, and `strtoul` negates a
-  value after `-` modulo 2^64, as glibc does. `crt::rand` and `crt::srand`
-  are glibc's `random`: 31 words seeded by its linear congruential
-  generator, 310 results discarded and each result a sum of two words
-  shifted right by one, seeded with 1 until `srand`. `fprintf` is
-  `print!` or `eprint!` as R1's `printf`. `*p` is the first byte of the
-  slice as `i8`, and panics past the end of the array. Fallthrough between
-  cases, labels inside other statements, case ranges, case values that are
-  not literal constants, a variable declared in one case and used in
-  another and other streams stay unsupported
-- Motivation: `g1_016_switch_arith` parses a seed with `strtoul` and
-  `errno`, draws two numbers with `srand` and `rand`, combines them with
-  every unsigned and bitwise operator and a `?:`, and prints one of ten
-  messages from a `switch`; it prints its usage with `fprintf(stderr, ...)`
-- Changes: extends R1's operators, compound assignments and `printf`, R2's
-  control flow, R4's `char *` and R7's `strtol`, which now sets `errno`
+- C: global variables and `static` locals
+- Rust: `const`, or `static` for an array or a record, in upper case when the
+  program never changes the variable; otherwise a field of `struct Globals`,
+  which `main` creates and every function that uses a global, itself or
+  through a call, takes as its first parameter: `globals: &Globals`, or
+  `&mut Globals` when it changes one
+- Needs: `Facts::mutated`, `Facts::access`
+- Motivation: skeleton
+- Changes: none
 
-## R10: integer arrays and pointers into them
+## R10: pointers that may be NULL
 
-- C: local arrays of the integer types other than `char`, of a fixed length,
-  perhaps with an initialiser list, designators included, or of a variable
-  length that is a variable's name; `a[i]` and `p[i]` with an integer index,
-  read, assigned, with the compound assignments that R9 has for variables
-  and with `++` and `--` as statements; an array as a pointer, `&a[i]` and `*p` as a value and as a
-  target; `&` of an integer variable or parameter; `scanf` into `&a[i]`;
-  `sizeof` of a fixed-length array; `restrict`, `const` and `volatile` on a
-  pointer itself, as in `int *restrict`
-- Rust: every integer the program points to is a `std::cell::Cell`, so
-  pointers to the same object, as when one array is passed as the output and
-  the inputs of one function, all read it with `get` and write it with `set`.
-  A `T *` is `Option<&[Cell<T>]>`, the cells from the one it points to
-  through the end of its array; `&x` is `Some(std::slice::from_ref(&x))`,
-  `&a[i]` is `Some(&a[i..])`, and an array decays to `Some(&a[..])`. A
-  fixed-length array is `&[Cell<T>]` borrowing `[const { Cell::new(0) };
-  N]`, so a constant index out of bounds panics when it runs rather than
-  failing to compile where it never runs; its initialiser sets the listed
-  elements, the rest staying 0. A variable-length one is `vec![Cell::new(0);
-  n as usize]`. `p[i]` indexes the slice of
-  `p.expect("null pointer dereference")`, with a negative index converted
-  `as usize` so it panics as out of bounds, and `*p` is element 0. A compound
-  assignment or `++` on a cell finds the cell once, `{ let __cell = &...;
-  __cell.set(...) }`, keeping R1's overflow checks and R9's wrapping. A
-  variable whose address is taken is a cell from its declaration, a
-  parameter from the start of its function; one whose address goes only to
-  `scanf` stays a plain variable. Pointer arithmetic and comparisons between
-  pointers, arrays of `char`, of arrays and of other types, arrays in a block
-  with labels or static, a variable length given by an expression and
-  returning a pointer stay unsupported
-- Motivation: `g3_030_mutable_buffer_overlap_extrahard`,
-  `g3_048_mutable_buffer_overlap2` and `g3_031_disjoint_arrays` read numbers
-  into an `int[100]` with `scanf("%d", &data[i])` and pass it to a function
-  that writes `out[i] = mul1[i] * mul2[i] + add[i]` through `int *`
-  parameters, which the first points all at the same array, the second at a
-  variable-length array and the third, as `int *restrict`, at three of them
-- Changes: replaces R5's `Option<&T>`, a read-only borrow, with the slice of
-  cells, so a program can now write through a pointer and to the variable it
-  points to; extends R1's local variables, assignments and `scanf`, R2's
-  variables declared before a block with labels and R9's `sizeof`
-
-## R11: char arrays and the string functions that write them
-
-- C: local arrays of `char` of a fixed length, perhaps initialised with a
-  string literal or a list, or of a variable length that is a variable's
-  name; `a[i]` of such an array with an integer index, read and assigned,
-  and `p[i]` of a `char *`, read; such an array as a `char *` or `const char
-  *`, passed to the program's own functions, `printf`'s `%s`, `atoi`,
-  `strlen` or as a source; `fgets(a, n, stdin)`, `memset(a, c, n)`,
-  `strcpy(a, src)` and `strncpy(a, src, n)` into such an array, their
-  results discarded or, for `fgets`, compared with null; `atoi`, `atol`,
-  `atoll` and `strlen` of any `char *`
-- Rust: the array is `&mut [u8]` borrowing `[0; N]`, so a constant index out
-  of bounds panics when it runs; a literal copies its bytes in, without the
-  final zero when the array has no room for it, and a list sets the listed
-  elements; a variable length is `&mut vec![0; n as usize]`. An element reads
-  `a[i] as i8` and is assigned `a[i] = (v) as u8`, a `char *` element reads
-  `p.expect("null pointer dereference")[i] as i8`, and the array as a
-  pointer is `Some(&a[..])`. A `char *` variable is now `Option<&[u8]>`, so it
-  can borrow a local array, and the `char *` parameters and return value of a
-  function all borrow for one lifetime, `fn f<'a>(s: Option<&'a [u8]>) ->
-  Option<&'a [u8]>`, so a function may return a parameter or a literal, but
-  not its own array. The writing functions are `crt::fgets`, `crt::memset`,
-  `crt::strcpy` and `crt::strncpy` on `&mut a[..]`: `fgets` reads standard
-  input with `scanf`'s buffer, up to and including a newline and at most `n
-  - 1` bytes, stores a zero after them, and returns `None`, leaving the array
-  as it was, for `n` below 1 or input that ends before a byte, and otherwise
-  `Some(())`; `n` of 1 stores only the zero, as glibc does. `crt::atoi` is
-  `crt::strtol` in base 10 converted `as i32`, as glibc defines it, and
-  `atol` and `atoll` are `crt::strtol`; R7's runtime now takes a string of any
-  lifetime. Reading or writing past an array panics. Writing to the array
-  while a `char *` borrows it fails to compile; so does using the result of
-  `fgets` as a pointer. Writing through a `char *`, compound assignments and
-  `++`/`--` on a `char` element, `char` arrays that are static, global or in
-  a block with labels, other streams, and `memset` or `strcpy` into arrays of
-  other types stay unsupported
-- Motivation: `g2_009_stack_buffer_overflow` and
-  `g2_017_signed_length_confusion` read a number with `fgets` into a
-  `char[14]` initialised with `""` and `atoi`; the second also fills a
-  `char[100]` with `memset`, terminates it by assigning `'\0'` to an
-  element, copies it with `strncpy` and passes the array to a `const char *`
-  parameter
-- Changes: extends R4's `char *`, which held only literals and arguments with
-  the `'static` lifetime, R7's `strtol` runtime and R10's local arrays, whose
-  variable-length form is now borrowed as a slice too
-
-## R12: floating-point numbers
-
-- C: `float` and `double` variables, parameters and return values, and
-  their literals; `+ - * /`, unary `-`, comparisons and tests of them, and
-  `+=`, `-=`, `*=` and `/=` where C computes in the variable's own type;
-  conversions between them, from and to integers and `bool`; `sizeof`;
-  `printf`'s `%f`, `%F`, `%e`, `%E`, `%g` and `%G`, with a precision, a
-  width, the flag `-` and the length `l`; `strtod` with a null end pointer
-  or the address of a `char *` variable, `atof`, `fabs`, `floor`, `ceil`,
-  `sqrt` and `pow`
-- Rust: `f32` and `f64`, whose operators round as C's do on x86-64; a
-  literal is the value Clang gives, printed by Rust with the fewest digits
-  that keep it, as `0.1_f64`; a test is `x != 0.0`; conversions are `as`,
-  which truncates towards zero and saturates where C leaves a value out of
-  range undefined, and a `bool` converts with `f64::from(u8::from(b))`.
-  `printf` passes each floating value to `crt::float`, which formats `%f`
-  and `%e` with Rust's exact rounding, ties to even as in glibc, writes C's
-  exponent with a sign and two digits, picks `%f` or `%e` for `%g` and
-  trims its zeros, and prints `inf` and `nan` with their signs; a width
-  pads the text. `crt::strtod` reads what glibc's `strtod` reads, including
-  `inf`, `infinity` and `nan(...)` in any case, lets Rust's parser round the
-  decimal number, stores the end as R7's `strtol` does and sets `errno` to
-  `ERANGE` for an infinite result or a subnormal or zero one of nonzero
-  digits; a hexadecimal number panics. `atof` is `crt::strtod(s, None)`.
-  `fabs`, `floor` and `ceil` are Rust's `abs`, `floor` and `ceil`;
-  `crt::sqrt` sets `errno` to `EDOM` for a negative number; `crt::pow` calls
-  Rust's `powf`, which is glibc's `pow`, and sets `errno` as glibc does: to
-  `EDOM` for a result that is not a number of operands that are, and to
-  `ERANGE` for an infinite result of finite operands or a zero one of a
-  finite nonzero base. `long double`, `++` and `--` on floating values,
-  `+=` on a `float` that C computes in `double`, floating arrays, pointers
-  and static locals, `printf`'s `%a` and floating conversions with the
-  flags `+`, `0`, space or `#`, a precision on other conversions, `scanf`
-  of floating values and the `float` versions of the functions stay
-  unsupported
-- Motivation: `g2_016_divide_by_zero_float` reads a `float` with `fgets`
-  and `atof`, tests it with `fabs` and prints `(int)(100.0 / data)`;
-  `g1_007_errno_pow` reads two `double` arguments with `strtod`, checks
-  `errno` for `ERANGE` and the end pointer, and prints `pow` of them with
-  `%.2f` or its `EDOM` and `ERANGE` errors
-- Changes: extends R1's variables, arithmetic, compound assignments and
-  `printf`, R2's comparisons and tests, R7's `strtol` end pointer, which
-  `strtod` shares, R8's conversions of `bool` and R9's `sizeof` and
-  `errno`, whose `ERANGE` is now a part of the runtime of its own
-
-## R13: structs, bit-fields and scanf %u
-
-- C: structs defined at file scope, by tag or by a typedef, whose members are
-  named and of the integer types, `float`, `double`, `bool` or such structs,
-  bit-fields included; their local variables, parameters and return values,
-  uninitialised ones as zero; initialiser lists, designators and nested
-  lists included; `s.m`, `p->m`, `(*p).m` and `p[i].m`, read, assigned,
-  with R9's compound assignments and with `++` and `--` as statements;
-  assigning and copying a whole struct; pointers to structs as variables
-  and parameters, with null pointers and tests as R5 has them; `&` of a
-  struct and of a member of a scalar type, which is an `int *` or the like;
-  `scanf` into a member; `scanf`'s conversion `%u` into an `unsigned int`
-- Rust: a Rust struct with the C name, with one more `_` while the
-  translation uses that name for Rust's own types and paths, such as
-  `Option`, or another struct has it; a member of a scalar type is a `std::cell::Cell` and one
-  of a struct type is that struct, so pointers to a struct all read and write
-  its members, as R10's cells let them. Each derives `Clone`, which copies it
-  as C does, and `Default`, which is the value of an uninitialised one, and
-  one that the program assigns whole gets a `set` that sets each member from
-  a value, so no struct is `mut`. A `T *` is `Option<&[T]>`, the structs from
-  the one it points to, `&s` is `Some(std::slice::from_ref(&s))` and `p->m`
-  is a member of `p.expect("null pointer dereference")[0]`. An initialiser
-  list is a struct expression with every member, `Cell::new(0)` or the
-  struct's `default()` for those it leaves out. Reading a struct, as to
-  initialise, pass or return it, is `.clone()`, and assigning one is `.set`.
-  A bit-field stores the low bits of each value, sign-extended for a signed
-  type as GCC and Clang do, as `(v) & 7` or `((v) << 29) >> 29`. `%u` reads
-  as glibc does, with `strtoul`'s negation modulo 2^64 and saturation, and
-  stores the low 32 bits. Unions, structs with other members or unnamed
-  ones, arrays of structs, static and global structs, `sizeof` of a struct,
-  returning or comparing pointers to structs and compound assignments that
-  C computes in a type other than the bit-field's own stay unsupported
-- Motivation: `g3_033_bitfield` reads its values with `scanf("%u", ...)`,
-  initialises a struct of bit-fields with designators and prints its members
-  through a `const foo_t *`; `g3_023_struct_and_errno` and
-  `g3_024_struct_and_static` change a `house_t` through pointers to it with
-  `->`, `++` and `+=`, and fail now only for a `char *` comparison and a
-  global variable
-- Changes: extends R1's types, variables, assignments and `scanf`, whose
-  reading of `%d` keeps its behaviour, R5's null pointers and tests, R9's
-  compound assignments and R10's cells and pointers, which can now point to
-  a struct or into one
-
-## R14: global variables
-
-- C: variables at file scope, `static` or not, of the integer types,
-  `float`, `double`, `bool`, R13's structs and integer arrays of a fixed
-  length, with constant initialisers or none, declared once or again, as in
-  a tentative definition; reading them, assigning them in every way that R9,
-  R10 and R13 allow for a local of the same type, `&` of them and their
-  elements and members, `scanf` into them, and their arrays decaying to
-  pointers; a local variable that hides one
-- Rust: a function `__global_NAME`, a name C reserves, for each, which
-  returns `&'static` of the value R10 and R13 hold for a local: a
-  `std::cell::Cell` of a number or `bool`, the struct, or a slice of cells.
-  The function makes it on its first use from C's initial value, zero
-  without an initialiser, in a `thread_local!` that leaks it with
-  `Box::leak`, as safe Rust has no static of a cell; the program has one
-  thread. A use is `(*__global_NAME())`, a place like a local's name, and an
-  array is `__global_NAME()`, a slice like a local array. Global `char`
-  arrays, pointers, arrays of other types or of a variable length, other
-  initialisers and block-scope `extern` declarations stay unsupported
-- Motivation: `g3_024_struct_and_static` keeps a `static house_t` at file
-  scope with a designated initialiser, passes its address to functions that
-  change it through `->` and adds to a member directly
-- Changes: extends R1's variables, which were only local, R10's integer
-  arrays and R13's structs, which can now be global
-
-## R15: pointer equality
-
-- C: `==` and `!=` between two pointers of the same type that the
-  translation holds, `char *`, pointers to integers and pointers to structs,
-  `const` or not, as conditions and as `int` values; a conversion that only
-  drops a qualifier, as Clang makes when a `char *` meets a `const char *`
-- Rust: `p.map(<[_]>::as_ptr) == q.map(<[_]>::as_ptr)`: each slice runs from
-  where the pointer points to the end of its array, so its start says where,
-  and `None` equals only `None`, as null does in C. C leaves open whether
-  equal string literals share an address; Clang and GCC give them one within
-  a file, as rustc does for equal byte strings. The qualifier conversion is
-  its operand. Comparisons with `<`, `<=`, `>` and `>=` and between
-  pointers of different types stay unsupported
-- Motivation: `g3_023_struct_and_errno` parses its input with `strtol` and
-  tests `endp != str`, a `char *` against a `const char *` parameter, which
-  R7 allowed only when one side was an element of `argv`
-- Changes: replaces R7's comparison of `char *`, which needed an element of
-  `argv`, and lifts R5's and R13's rejection of comparisons between pointers
-  to integers and to structs
-
-## R16: pointers moving forwards, assignments as values, strchr and fread
-
-- C: `p + n` and `n + p` of an integer `n` and a `char *`, a pointer to an
-  integer or a pointer to a struct, or an array that decays to one; `p += n`
-  and `++` on such a pointer as statements; an assignment to a variable,
-  not of a struct type, used as a value, as in `while ((s = strchr(s, c)))`
-  or `a = b = 0`; `strchr` and `strrchr`; `fread(a, size, n, stdin)` into a
-  local `char` array, its result discarded or used as a `size_t`
-- Rust: each pointer is the slice from where it points to the end of its
-  array, so `p + n` is `Some(&p.expect("null pointer arithmetic")[n as
-  usize..])`, or of the array's own slice; one past the last element is the
-  empty slice, and beyond it, a negative `n` and null panic, as C leaves them
-  undefined. `p += n` and `++` assign that value. An assignment as a value is
-  `{ x = v; x }`, which reads the variable back after R1's, R7's or R14's
-  store, so a narrower type gives the converted value as C does.
-  `crt::strchr` and `crt::strrchr` return the rest of the string from the
-  first or last byte equal to `c` converted to `char`, the final zero
-  included, or `None`; a string without a zero panics where the search reads
-  past its array. `crt::fread` reads `size * n` bytes, the product wrapping
-  as glibc's does, from standard input with `scanf`'s buffer into `&mut
-  a[..]`, or as many as input holds, and returns `n` when it read them all
-  and otherwise the whole items read, as glibc does; writing past the array
-  panics. `p - n`, `p -= n`, `--` on a pointer, the difference of two
-  pointers, arithmetic on `char **`, an assignment to anything but a variable
-  used as a value, `fread` into other objects or from other streams stay
-  unsupported
-- Motivation: `g2_028_strchr` reads its input with `fread` into a
-  `char[1000]` and counts a character with `for (const char *s = in; s =
-  strchr(s, c); s++)`
-- Changes: lifts R10's rejection of pointer arithmetic for moving forwards,
-  extends R1's assignments, which were statements only, and R11's functions
-  that write a `char` array
-
-## R17: static local arrays and returns of a local array
-
-- C: `static` local arrays of a fixed length of `char` or of R10's integer
-  types, uninitialised or with a string literal or a list; `return` of a
-  function's own local array that is not static, perhaps in parentheses
-- Rust: the array is made on its block's first run, from the value R10 and
-  R11 give a local array, in a `thread_local!` that leaks it with
-  `Box::leak`, as R14 holds a global one, and the C name is a `let` that
-  borrows it for the whole program: `&[std::cell::Cell<T>]` for integers,
-  as a local integer array, and `&[u8]` for `char`, so a `char *` may borrow
-  it past the function's return; the static is named `__NAME_N`, as R7's. A
-  `return` of a local array that is not static is `panic!`, as the pointer
-  points to nothing once the function returns and C leaves using it
-  undefined; a call whose result C discards panics too. Writing to a static
-  `char` array fails to compile, as safe Rust cannot lend the same bytes
-  mutably on every run; static arrays of other types, of arrays and of
-  pointers stay unsupported, as do other ways to return a local array, such
-  as through a pointer variable or `a + n`
-- Motivation: `g2_015_return_stack_buffer` returns a `static char[]`
-  initialised with a literal from one helper and a local `char[]` from
-  another, which runs only on input that the benchmark leaves out
-- Changes: lifts R7's rejection of static locals of array types and R11's of
-  static `char` arrays and of a function returning its own array
-
-## R18: typedefs, enums, heap structs, member arrays and memcpy
-
-- C: typedefs of numbers and `bool`, such as `uint8_t` and `size_t`, wherever
-  a type names them, as behind a pointer or in a function's type; enum types
-  and their constants; struct members that are pointers or integer arrays of
-  a fixed length, other than of `char`, with a struct that points to itself;
-  such an array as a pointer, indexed, `&` of its elements and moved forwards;
-  `sizeof` of a struct; `malloc` converted to a pointer to an integer or a
-  struct, `free` and `memcpy` between two such pointers of one type; functions
-  that return any pointer the translation holds; `++` and `--` on a variable
-  used as a value; compound assignments that C computes in a type other than
-  the target's, such as `int += size_t`, `char += int` or `float *= double`;
-  `printf`'s lengths `l`, `ll` and `z` on integer conversions, and an integer
-  of the other signedness than the conversion's
-- Rust: before translating, every type the tree gives is spelled with the
-  number type of each such typedef and with each enum's integer type, `unsigned
-  int` without negative constants and `int` with them, as GCC and Clang
-  choose, and each use of a constant becomes its value. A pointer member is a
-  cell of the pointer, borrowing for the whole program; an array member is
-  `[Cell<T>; N]`, with a `Default` of its own for lengths Rust gives none, and
-  a struct's `set` sets each element. `sizeof` lays a struct out as x86-64
-  does, each member at the next multiple of its alignment. `crt::malloc` makes
-  as many zero objects as the bytes hold, leaked to last until the program
-  exits, and null beyond `isize::MAX` bytes; `crt::free` does nothing, as C
-  leaves using the memory afterwards undefined. `crt::memcpy` copies whole
-  objects, cells by value and structs with `set`, and panics for part of one,
-  past an array or for null. Every pointer of a function that returns one
-  borrows for its lifetime `'a`, as R11's `char *` do, and one that stores a
-  pointer other than null or `malloc`'s in a member borrows for `'static`. `x++`
-  as a value is `{ let __value = x; x += 1; __value }` and `++x` is `{ x += 1;
-  x }`. A compound assignment converts the target to C's type with `as`,
-  applies the operator there and converts back, as x86-64 does. `%zu` is
-  `unsigned long`, and an argument of the other signedness is converted `as`
-  the conversion's type, whose bits glibc reads. A pointer member that borrows
-  a local variable fails to compile, as do pointers in a function that stores
-  one and that a caller gives a local. Enums wider than `int`, `char` array
-  members, initialisers of array members, `sizeof` of a struct with
-  bit-fields, `calloc`, `realloc`, `memmove`, `memcpy` of `char` arrays and
-  `malloc` for a `char *` stay unsupported
-- Motivation: `g4_memcpy_fun_buffers` reads byte buffers into `buffer_t`
-  structs of a `uint8_t data[256]`, a `size_t` length and a `uint32_t`
-  checksum, held in an array from `malloc(sizeof(buffer_t) * n)` that a
-  struct points to, copies them with `memcpy`, also through `&dst->data[pos++]`,
-  switches on an `operation_t` enum and prints with `%zu`
-- Changes: extends R1's types, R2's `++` and `--`, R9's compound assignments,
-  `sizeof` and `switch`, R10's arrays and pointers, R11's lifetime of `char *`
-  to every pointer, R12's compound assignments on floating values, which no
-  longer need C's type to be the target's, and R13's structs, which lifts its
-  rejection of `sizeof` of a struct and of returning a pointer to one, and of
-  R5's returning a pointer to an integer
+- C: a pointer that NULL may reach; `if (p)`, `if (p != NULL)`, and the guard
+  `if (!p) return …;` (or `break`, `continue`, `exit`) for a local or a
+  parameter whose address is not taken and that is not assigned where the
+  test holds
+- Rust: `Option<…>` around the slot's type, `None` for NULL, `Some(…)` for a
+  value; `if let Some(p) = …` and `let Some(p) = … else { … };`, with `p`
+  inside as the type without `Option`; `is_some()` and `is_none()` for a
+  test with no such form; `as_deref()`, `as_deref_mut()` and `unwrap()` for
+  other uses
+- Needs: `Facts::pointer` (`nullable`); the rewrite `normalise::narrow`,
+  which gives the tested pointer a variable of its own
+- Motivation: skeleton
+- Changes: none

@@ -2,7 +2,8 @@
 
 Bachelor thesis: improving a mechanical C-to-Rust translator through an LLM-driven research loop.
 
-The transpiler starts empty; translation rules are added by the research loop.
+The transpiler starts as a skeleton of stages with a few rules, described in
+its [design](crates/transpiler/DESIGN.md); the research loop adds the rest.
 [docs/architecture.md](docs/architecture.md) explains how a translation is
 evaluated and a loop commit judged.
 
