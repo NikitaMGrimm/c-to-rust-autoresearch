@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Runs cargo on the checkout it is called in, in a sandbox like the
+# evaluator's. The transpiler, its tests and its build are agent code, so on a
+# machine with the private directory they run only like this: without
+# network, /tmp, /run and /mnt, and with a home directory that holds nothing
+# but the Rust toolchain and the checkout, which hides the private directory
+# and the corpus cache under it. It builds into target/sandboxed.
+#   loop/cargo test -p transpiler
+#   loop/cargo clippy -p transpiler --all-targets -- -D warnings
+set -euo pipefail
+
+checkout=$(git rev-parse --show-toplevel)
+cargo_home=${CARGO_HOME:-$HOME/.cargo}
+rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
+sandbox=(bwrap --ro-bind / / --dev /dev --proc /proc
+  --tmpfs /tmp --tmpfs /run --tmpfs /mnt --tmpfs "$HOME")
+# Not all of CARGO_HOME: it holds the crates.io token.
+for dir in "$cargo_home"/{bin,registry,git} "$rustup_home"; do
+  if [[ -d $dir ]]; then
+    sandbox+=(--ro-bind "$dir" "$dir")
+  fi
+done
+sandbox+=(--bind "$checkout" "$checkout" --chdir "$PWD")
+sandbox+=(--unshare-all --die-with-parent --new-session --clearenv)
+# Only these variables reach cargo.
+for variable in HOME="$HOME" USER="${USER:-$(id -un)}" LANG="${LANG:-C.UTF-8}" \
+  PATH="$cargo_home/bin:/usr/local/bin:/usr/bin:/bin" \
+  CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" \
+  CARGO_TARGET_DIR="$checkout/target/sandboxed" CARGO_NET_OFFLINE=true; do
+  sandbox+=(--setenv "${variable%%=*}" "${variable#*=}")
+done
+exec "${sandbox[@]}" -- cargo "$@"

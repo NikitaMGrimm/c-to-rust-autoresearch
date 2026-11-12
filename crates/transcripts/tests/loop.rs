@@ -106,6 +106,63 @@ fn ordinary_calls_pass() {
     }
 }
 
+/// Exit code of loop/guard as loop/drive installs it for the driver, whose
+/// home directory is `/h`.
+fn driver_guard(tool: &str, input: serde_json::Value) -> Option<i32> {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../loop/guard");
+    let mut child = Command::new(script)
+        .args([
+            "--driver",
+            "/h/.claude/projects/-work",
+            "/p/holdout",
+            "holdout",
+        ])
+        .env("HOME", "/h")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let call = json!({"tool_name": tool, "tool_input": input});
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(call.to_string().as_bytes()).unwrap();
+    drop(stdin);
+    child.wait().unwrap().code()
+}
+
+#[test]
+fn the_driver_may_use_its_thread_and_skills_but_not_private_places() {
+    let allowed = [
+        ("mcp__t3-code__delegate_task", json!({"task": "add a rule"})),
+        ("Skill", json!({"skill": "file-pr"})),
+        ("Read", json!({"file_path": "/h/.claude/skills/x/SKILL.md"})),
+        ("Bash", json!({"command": "/repo/loop/judge r1"})),
+    ];
+    for (tool, input) in allowed {
+        assert_eq!(driver_guard(tool, input.clone()), Some(0), "{tool} {input}");
+    }
+    let blocked = [
+        ("Bash", json!({"command": "ls ../holdout/validation"})),
+        (
+            "mcp__t3-code__delegate_task",
+            json!({"task": "read /p/holdout"}),
+        ),
+        ("Read", json!({"file_path": ".claude/settings.local.json"})),
+        (
+            "Read",
+            json!({"file_path": "/h/.claude/skills/../settings.json"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cat /h/.claude/skills/x/SKILL.md"}),
+        ),
+        ("WebFetch", json!({"url": "https://x.org/Project_CodeNet"})),
+    ];
+    for (tool, input) in blocked {
+        assert_eq!(driver_guard(tool, input.clone()), Some(2), "{tool} {input}");
+    }
+}
+
 /// Claude Code's transcript directory for a project at `path`.
 fn transcripts(home: &Path, path: &Path) -> String {
     let name: String = path
@@ -221,7 +278,9 @@ impl Fixture {
         ] {
             std::fs::create_dir_all(path).unwrap();
         }
-        for script in ["setup", "guard", "round", "github", "run"] {
+        for script in [
+            "setup", "guard", "round", "github", "run", "seal", "drive", "judge", "audit",
+        ] {
             let source = format!("{}/../../loop/{script}", env!("CARGO_MANIFEST_DIR"));
             std::fs::copy(source, repo.join("loop").join(script)).unwrap();
         }
@@ -1627,4 +1686,211 @@ fn a_github_round_leaves_github_alone_when_its_main_moved_or_github_fails() {
     assert!(output.contains("the GitHub step failed"), "{output}");
     assert_eq!(git(&fixture.loop_dir, &["rev-parse", "HEAD"]), work);
     assert!(fixture.loop_dir.join("ROUNDS.md").is_file());
+}
+
+#[test]
+fn a_seal_closes_what_a_run_may_not_see_and_opens_again() {
+    let fixture = Fixture::new();
+    let private = fixture.dir.join("private");
+    let cache = fixture.home.join(".cache/c-to-rust-autoresearch");
+    let sealed = [
+        private.join("held-out"),
+        private.join("transfer"),
+        private.join("variants/held-out"),
+        private.join("runs/old"),
+        private.join("runs/done"),
+        cache,
+    ];
+    let open = [
+        private.join("validation"),
+        private.join("variants/dev"),
+        private.join("runs/new"),
+    ];
+    for dir in sealed.iter().chain(&open) {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let log = |run: &str, file: &str, text: &str| {
+        std::fs::write(private.join("runs").join(run).join(file), text).unwrap();
+    };
+    log("old", "log.jsonl", r#"{"sets": {"held-out": {}}}"#);
+    log("done", "transfer.jsonl", "{}");
+    log("new", "log.jsonl", r#"{"sets": {"validation": {}}}"#);
+    let seal = |args: &[&str]| {
+        let mut command = fixture.command("seal", 0, 0);
+        command.args(args).arg(&private).status().unwrap().code()
+    };
+    let readable = |dir: &PathBuf| std::fs::read_dir(dir).is_ok();
+
+    assert_eq!(seal(&[]), Some(0));
+    // Sealing again leaves the noted modes as they are.
+    assert_eq!(seal(&[]), Some(0));
+    for dir in &sealed {
+        assert!(!readable(dir), "{} is open", dir.display());
+    }
+    for dir in &open {
+        assert!(readable(dir), "{} is closed", dir.display());
+    }
+    assert_eq!(seal(&["--open"]), Some(0));
+    for dir in sealed.iter().chain(&open) {
+        assert!(readable(dir), "{} is closed", dir.display());
+    }
+    assert!(!private.join(".sealed").exists());
+    assert_eq!(seal(&["--open"]), Some(0));
+}
+
+#[test]
+fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
+    let fixture = Fixture::new();
+    let (repo, home) = (&fixture.repo, &fixture.home);
+    let (private, work) = (fixture.dir.join("private"), fixture.dir.join("work"));
+    let script = |name: &str, gate: u8, args: &[&str]| {
+        let mut command = fixture.command(name, 0, gate);
+        command.args(args).status().unwrap().code()
+    };
+    let drive = ["r1", private.to_str().unwrap(), work.to_str().unwrap()];
+    assert_eq!(script("judge", 0, &["r1"]), Some(2));
+    assert_eq!(script("drive", 0, &drive), Some(0));
+    // The worktree is taken.
+    assert_eq!(script("drive", 0, &drive), Some(1));
+    let main = git(repo, &["rev-parse", "main"]);
+    assert_eq!(git(repo, &["rev-parse", "run/r1"]), main);
+    assert_eq!(git(&work, &["branch", "--show-current"]), "work/r1");
+
+    let settings = std::fs::read_to_string(work.join(".claude/settings.local.json")).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let deny = settings["permissions"]["deny"].as_array().unwrap();
+    for rule in [
+        format!("Read(/{}/**)", private.display()),
+        format!("Read(/{}/.cache/c-to-rust-autoresearch/**)", home.display()),
+        format!("Read(/{}/local/**)", repo.display()),
+        format!("Edit(/{}/**)", repo.display()),
+        "WebFetch".to_owned(),
+        "WebSearch".to_owned(),
+    ] {
+        assert!(deny.contains(&json!(rule)), "{rule} not in {deny:?}");
+    }
+    // The driver's thread and its children are T3 Code's.
+    assert!(!deny.contains(&json!("mcp__t3-code")));
+    let hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    let run_hook = |command: &str| {
+        let mut child = Command::new("sh")
+            .args(["-c", hook])
+            .env("HOME", home)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let call = json!({"tool_name": "Bash", "tool_input": {"command": command}});
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(call.to_string().as_bytes()).unwrap();
+        drop(stdin);
+        child.wait().unwrap().code()
+    };
+    assert_eq!(run_hook("ls ../private/validation"), Some(2));
+    assert_eq!(run_hook("loop/cargo test -p transpiler"), Some(0));
+    assert_eq!(git(&work, &["status", "--porcelain"]), "");
+
+    // Nothing to judge yet.
+    assert_eq!(script("judge", 0, &["r1"]), Some(3));
+    std::fs::create_dir_all(transcripts(home, &work)).unwrap();
+    let kept = commit(&work, "rule1");
+    assert_eq!(script("judge", 0, &["r1"]), Some(0));
+    assert_eq!(git(repo, &["rev-parse", "run/r1"]), kept);
+    let calls = fixture.calls();
+    let gate = format!("--bin gate -- {} {main} {kept} --usage", private.display());
+    assert!(calls.contains(&gate), "{calls}");
+    assert!(calls.contains("--strict --run r1"), "{calls}");
+    assert!(calls.contains("--bin usage -- --since"), "{calls}");
+
+    // A rejected commit stays on the work branch only. The driver judges by
+    // the name that loop/drive left in its worktree.
+    let rejected = commit(&work, "rule2");
+    let mut judge = fixture.command("judge", 0, 1);
+    let judge = judge
+        .arg("r1")
+        .get_envs()
+        .map(|(name, value)| (name.to_owned(), value.map(std::ffi::OsStr::to_owned)));
+    let mut own = Command::new(work.join("local/judge"));
+    for (name, value) in judge.collect::<Vec<_>>() {
+        match value {
+            Some(value) => own.env(name, value),
+            None => own.env_remove(name),
+        };
+    }
+    let own = own.stdout(Stdio::null()).stderr(Stdio::null());
+    assert_eq!(own.status().unwrap().code(), Some(1));
+    assert_eq!(git(repo, &["rev-parse", "run/r1"]), kept);
+    assert_eq!(git(repo, &["rev-parse", "work/r1"]), rejected);
+    let rounds = std::fs::read_to_string(work.join("local/rounds.md")).unwrap();
+    assert!(rounds.contains("feat(transpiler): rule1"), "{rounds}");
+    assert!(rounds.contains("keep"), "{rounds}");
+    assert!(rounds.contains("reject: the development score did not rise"));
+    assert_eq!(git(&work, &["status", "--porcelain"]), "");
+    assert_eq!(git(repo, &["rev-parse", "main"]), main);
+}
+
+#[test]
+fn an_audit_of_a_driver_opens_the_seal_only_while_it_runs() {
+    let fixture = Fixture::new();
+    let (private, work) = (fixture.dir.join("private"), fixture.dir.join("work"));
+    std::fs::create_dir_all(private.join("held-out")).unwrap();
+    let script = |name: &str, audit: u8, args: &[&str]| {
+        let mut command = fixture.command(name, audit, 0);
+        command.args(args).status().unwrap().code()
+    };
+    let (private_arg, work_arg) = (private.to_str().unwrap(), work.to_str().unwrap());
+    assert_eq!(script("drive", 0, &["r1", private_arg, work_arg]), Some(0));
+    assert_eq!(script("seal", 0, &[private_arg]), Some(0));
+    for findings in [0, 1] {
+        assert_eq!(script("audit", findings, &["r1"]), Some(findings.into()));
+        assert!(std::fs::read_dir(private.join("held-out")).is_err());
+    }
+    let audited = format!(
+        "--bin audit -- {private_arg} {}",
+        transcripts(&fixture.home, &work)
+    );
+    assert!(fixture.calls().contains(&audited), "{}", fixture.calls());
+    assert_eq!(script("seal", 0, &["--open", private_arg]), Some(0));
+}
+
+/// loop/cargo runs the transpiler's build and tests, which are agent code.
+#[test]
+fn cargo_for_the_transpiler_sees_no_home_directory() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.canonicalize().unwrap();
+    let (home, package) = (dir.join("home"), dir.join("package"));
+    std::fs::create_dir_all(home.join("notes")).unwrap();
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    std::fs::write(home.join("notes/secret"), "").unwrap();
+    // Its own workspace and repository, apart from this one's.
+    let manifest =
+        "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[workspace]\n";
+    std::fs::write(package.join("Cargo.toml"), manifest).unwrap();
+    let probe = r#"fn main() {
+    let secret = std::path::Path::new(&std::env::var("HOME").unwrap()).join("notes/secret");
+    println!("{}", if secret.exists() { "seen" } else { "hidden" });
+}
+"#;
+    std::fs::write(package.join("src/main.rs"), probe).unwrap();
+    git(&package, &["init", "-q"]);
+    // The toolchain is in the home directory of whoever runs the tests.
+    let real = PathBuf::from(std::env::var_os("HOME").unwrap());
+    let from_env = |name: &str, default: &str| {
+        std::env::var_os(name).map_or(real.join(default), PathBuf::from)
+    };
+    let output = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../loop/cargo"))
+        .args(["run", "-q"])
+        .current_dir(&package)
+        .env("HOME", &home)
+        .env("CARGO_HOME", from_env("CARGO_HOME", ".cargo"))
+        .env("RUSTUP_HOME", from_env("RUSTUP_HOME", ".rustup"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hidden",
+        "{output:?}"
+    );
 }

@@ -13,8 +13,8 @@ priorities are fixed, in this order:
    programs, so nothing it sees may leave.
 4. Features come after all three.
 
-The loop agent follows [loop/program.md](loop/program.md), which limits it to
-the transpiler. The smallest change that does the job is the right one, and
+The loop agent follows [loop/program.md](loop/program.md), and a driver
+[loop/driver.md](loop/driver.md); both limit it to the transpiler. The smallest change that does the job is the right one, and
 deleting code is welcome. A new dependency needs a reason.
 
 ## Words
@@ -41,7 +41,8 @@ deleting code is welcome. A new dependency needs a reason.
 ## Ways to hurt yourself
 
 1. **Opening a private program.** Never read, copy or reference validation,
-   held-out or transfer programs, their variants or their fuzzed inputs. They
+   held-out or transfer programs, their variants or their fuzzed inputs, and
+   never open what `loop/seal` closed while work on the transpiler goes on. They
    live in a separate private repository on purpose, and seeing them
    invalidates the results. The TRACTOR corpus that `intake` fetches and the
    CodeNet archive that `codenet` reads contain them as well; open only
@@ -53,8 +54,9 @@ deleting code is welcome. A new dependency needs a reason.
    and outputs in the ignored `local/` directory.
 3. **Running agent code outside the sandbox.** The transpiler, its build in
    the gate, the compile of a translation and the translated program all run
-   through `sandbox::sandboxed`, and the sessions of an unattended run, which
-   run agent code as well, through `loop/run`'s sandbox. A new way to run any
+   through `sandbox::sandboxed`, the sessions of an unattended run, which
+   run agent code as well, through `loop/run`'s sandbox, and a driver's
+   builds and tests of the transpiler through `loop/cargo`. A new way to run any
    of them must be sandboxed too, with a test that fails without the sandbox.
 4. **Changing the measurement on the side.** Pass rules, limits, inputs and
    the keep rule change every result after them. The bench tools must write
@@ -76,7 +78,7 @@ deleting code is welcome. A new dependency needs a reason.
 | `crates/bench/` | Builds the sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` |
 | `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |
-| `loop/` | Instructions for the loop agent, the setup of its checkout, the end of each round, its GitHub step and unattended runs |
+| `loop/` | Instructions for the loop agent and for a driver, the setup of their checkouts, the seal, the judging of a commit, the GitHub step and unattended runs |
 | `scripts/inspect` | A C or Rust file's warnings, lints and run result |
 | `docs/architecture.md` | How a program is evaluated and a commit judged |
 
@@ -93,7 +95,8 @@ cargo test
 The tests need the C tools and bubblewrap from the README. If you could not
 run a check, say so. These commands leave out the transpiler: it is agent
 code, so on a machine with the private directory never build, test or run it
-outside the sandbox, such as with `--workspace` or `-p transpiler`. CI checks
+outside the sandbox, such as with `--workspace` or `-p transpiler`; `loop/cargo`
+runs cargo for it in a sandbox. CI checks
 it. In the loop agent's own clone, `loop/program.md` says what to run. For an evaluator change, compare the output of
 `cargo run -p eval -- --json FILE` before and after; for a bench tool change,
 rerun it and check that both repositories have no changes you did not intend.
