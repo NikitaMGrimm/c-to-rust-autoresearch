@@ -178,6 +178,54 @@ place:
   (Clang prints it only as text), a local that gets its first value in a branch or
   in a loop (`let x;`).
 
+What a review of the passing translations found that no rule writes as Rust
+would, most frequent first. Each needs the proof named with it, and keeps
+C's promotions, checked arithmetic and the input it consumes:
+
+- **Types that inference gives.** `let foo: FooT = FooT { … }` in every
+  program. An annotation goes where the value alone fixes the type: a
+  record, a call, a cast, a literal with a suffix.
+- **A value from an expression instead of a variable set later.** `let mut
+  x = 0;` and then a store in a branch or after a read, where `let x =
+  if …` or `scan_int().map_or(0, …)` says it. Needs every store and read
+  of the variable, also through pointers.
+- **Stores that nothing reads.** A first value that the next statement
+  overwrites, and a result that is never read. Needs liveness; the
+  expression stays where it can stop the program or read input.
+- **Promotions with no effect.** `args.len() as i32 != 2`, `foo.x as i32 as
+  u32` for a `u32`, `!!(b != 0)`. Only where the widths make the casts an
+  identity: a `char`'s sign extension and a narrowing stay.
+- **Statements of C in conditions and at the end.** `if !({ x -= e; x } >
+  0)` for a store in a condition, `return;` as a function's last
+  statement, `x = x * y` for `x *= y`. The compound form needs a place
+  without effects.
+- **The spelling of numbers.** `0xAAAA` printed as `43690`, `INT_MIN` as
+  `-2147483647 - 1` (`i32::MIN`), an `f32` constant with all the digits of
+  its `double`. Needs the literal's text from Clang.
+- **A counter where the elements would do.** `while i < n { …a[i as
+  usize]…; i += 1; }` as `for value in &a`, when the counter is dead after
+  the loop and only indexes. Two slices walked together need lengths that
+  are proved equal.
+- **A length beside its slice.** `(a: &[i32], len: i32)` where every
+  caller could pass `&a[..len]`. Needs all callers, and a `len` with no
+  other use.
+- **A container for one global.** `Globals { sum }` for a program with one
+  piece of state, which could be a local of `main` passed as `&mut i32`.
+- **Numbers in a `char`.** A `char` that only holds numbers is `u8` with
+  `as i8 as i32` at each use; `i8` would say it. Needs the `bytes` fact's
+  counterpart for values, since buffers stay `u8`.
+- **Bytes read as numbers through text.** `parse_int(&text_of(&buffer))`
+  makes a `String` of bytes only to read digits; the parse helpers should
+  take `until_nul(&buffer)`.
+- **The end pointer as a result.** Where `end` is only compared with the
+  text (R21), `let Some(n) = … else { … }` on a helper that returns
+  nothing when it read no digit, instead of `&mut end` and `as_ptr()`.
+- **Operations the standard library has.** `x.min(120)` for a conditional,
+  `reverse_bits`, `div_euclid`. Only by rules for exact shapes: a
+  near-miss such as `d ^ (d >> 31)` is not `abs`.
+- **The helpers.** One `StdinLock` held by `main` and passed on, rather
+  than a lock for every byte; `parse_int_rest` scans its text twice.
+
 ## Known weak spots
 
 Places where a rule assumes more than the analysis proves. Each should
@@ -195,6 +243,8 @@ become a fact and a refusal:
   where C's behaviour is undefined, and a NaN prints differently.
 - `parse_float` reads decimal numbers only: `strtod` also reads
   hexadecimal ones (`0x1p3`), of which this reads the `0`.
+- `read_line` takes an error of the read for the end of the input: after
+  some bytes it returns them, where `fgets` returns NULL.
 
 ## Tests
 
