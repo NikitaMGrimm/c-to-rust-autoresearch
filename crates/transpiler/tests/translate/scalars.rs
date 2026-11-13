@@ -266,3 +266,54 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn printf_e_and_g_print_what_c_prints() {
+    let rust = check(
+        "format-g",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    double wide = strtod(argv[1], NULL);
+    float narrow = strtof(argv[1], NULL);
+    printf("%g|%.9g|%.17g|%.0g|%.1g|%12.4g|%-12.3g|\n", wide, narrow, wide, wide, wide, wide, wide);
+    printf("%e|%.0e|%.3e|%14.2e|%-14.10e|\n", wide, wide, narrow, wide, wide);
+    return 0;
+}
+"#,
+        &[
+            &["0"],
+            &["-0.0"],
+            &["1"],
+            &["100000"],
+            &["1000000"],
+            &["999999.5"],
+            &["0.0001"],
+            &["0.00001"],
+            &["0.00009999995"],
+            &["123456789.125"],
+            &["-1.5e300"],
+            &["2.5e-300"],
+            &["0.1"],
+            &["9.5"],
+            &["0.95"],
+            &["16777217"],
+            &["3.14159265358979323846"],
+            &["1e400"],
+            &["-inf"],
+            &["nan"],
+            &["5e-324"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "format_g(wide, 6),",
+            "format_g(narrow as f64, 9),",
+            "format_e(wide, 0),",
+            "fn format_g(value: f64, precision: usize) -> String {",
+        ],
+    );
+}

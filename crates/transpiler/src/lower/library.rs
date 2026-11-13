@@ -275,7 +275,9 @@ impl Lower<'_> {
         // numbers.
         match (width, left, zero) {
             (Some(_), true, _) => spec.push('<'),
-            (Some(_), false, false) if letter == b's' || letter == b'c' => spec.push('>'),
+            (Some(_), false, false) if matches!(letter, b's' | b'c' | b'e' | b'g') => {
+                spec.push('>')
+            }
             _ => {}
         }
         if plus {
@@ -316,6 +318,24 @@ impl Lower<'_> {
             b'f' | b'F' => {
                 spec.push_str(&format!(".{}", precision.unwrap_or(6)));
                 self.expr(value)?
+            }
+            // R19: the helpers give the text that C prints, which Rust
+            // then only pads.
+            b'e' | b'g' => {
+                if zero || plus {
+                    return unsupported("a `printf` flag for `%e` or `%g`: no rule yet", at);
+                }
+                let helper = match letter {
+                    b'e' => Helper::FormatE,
+                    _ => Helper::FormatG,
+                };
+                self.helper(helper);
+                let precision = rust::int(precision.unwrap_or(6) as i128, "");
+                let value = self.expr(value)?;
+                match helper {
+                    Helper::FormatE => rust::call("format_e", [value, precision]),
+                    _ => rust::call("format_g", [value, precision]),
+                }
             }
             b'c' => self.character(value)?,
             b's' => {

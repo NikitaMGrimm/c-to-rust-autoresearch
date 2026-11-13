@@ -31,6 +31,8 @@ enum Helper {
     ParseInt,
     ParseUint,
     ParseFloat,
+    FormatE,
+    FormatG,
     PeekByte,
     ReadByte,
     SkipSpace,
@@ -47,12 +49,14 @@ impl Helper {
             Helper::ParseInt
             | Helper::ParseUint
             | Helper::ParseFloat
+            | Helper::FormatE
             | Helper::PeekByte
             | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
             Helper::ReadLine => &[Helper::ReadByte],
             Helper::TextOf => &[Helper::UntilNul],
+            Helper::FormatG => &[Helper::FormatE],
         }
     }
 
@@ -156,6 +160,45 @@ impl Helper {
                         }
                     }
                     text[..end].parse().unwrap_or_default()
+                }
+            },
+            Helper::FormatE => parse_quote! {
+                /// `value` as C's `%e` prints it with `precision` digits after
+                /// the point: an exponent with a sign and at least two digits.
+                fn format_e(value: f64, precision: usize) -> String {
+                    if !value.is_finite() {
+                        let sign = if value.is_sign_negative() { "-" } else { "" };
+                        let name = if value.is_nan() { "nan" } else { "inf" };
+                        return format!("{sign}{name}");
+                    }
+                    let text = format!("{value:.precision$e}");
+                    let (digits, exponent) = text.split_once('e').unwrap_or((&text, "0"));
+                    let exponent: i32 = exponent.parse().unwrap_or(0);
+                    let sign = if exponent < 0 { '-' } else { '+' };
+                    format!("{digits}e{sign}{:02}", exponent.abs())
+                }
+            },
+            Helper::FormatG => parse_quote! {
+                /// `value` as C's `%g` prints it with `precision` significant
+                /// digits: as `%e` does when the exponent is below -4 or not
+                /// below `precision`, and without an exponent otherwise, in
+                /// both cases without the zeros at the end of the fraction.
+                fn format_g(value: f64, precision: usize) -> String {
+                    let precision = precision.max(1);
+                    let scientific = format_e(value, precision - 1);
+                    let Some((digits, exponent)) = scientific.split_once('e') else {
+                        return scientific;
+                    };
+                    let trimmed = |digits: &str| match digits.contains('.') {
+                        true => digits.trim_end_matches('0').trim_end_matches('.').to_owned(),
+                        false => digits.to_owned(),
+                    };
+                    let power: i32 = exponent.parse().unwrap_or(0);
+                    if power < -4 || power >= precision as i32 {
+                        return format!("{}e{exponent}", trimmed(digits));
+                    }
+                    let places = (precision as i32 - 1 - power) as usize;
+                    trimmed(&format!("{value:.places$}"))
                 }
             },
             Helper::PeekByte => parse_quote! {

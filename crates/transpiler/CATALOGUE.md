@@ -285,3 +285,15 @@ Entry format, newest last:
   `g2_ldexp_q2` and `g2_pow43` for `strtof`, which the benchmark's own
   `main` reads each `float` argument with
 - Changes: extends R4
+
+## R19: `%e` and `%g`
+
+- C: `printf`'s `%e` and `%g` with a precision, a width and `-`
+- Rust: `format_e(value, 6)` and `format_g(value, 6)` as the value of `{}`,
+  two helpers that write the exponent with a sign and two digits and, for
+  `%g`, choose between the two forms and drop the zeros at the end as C
+  does; the standard library has neither form
+- Needs: nothing
+- Motivation: `g2_ldexp_q2` and `g2_pow43` were refused for `%.9g`, which
+  the benchmark's own `main` prints each `float` result with
+- Changes: extends R4

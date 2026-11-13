@@ -168,7 +168,7 @@ place:
 - **Others.** `goto`, a `case` that falls through, pointers to functions
   (`fn` types), unions (an `enum` when a tag says which member is live),
   bit-fields, variadic functions, arrays whose length is not a constant
-  (`Vec`), `%e` and `%g`, a local that gets its first value in a branch or
+  (`Vec`), a local that gets its first value in a branch or
   in a loop (`let x;`).
 
 ## Known weak spots
