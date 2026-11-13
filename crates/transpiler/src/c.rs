@@ -23,6 +23,21 @@ pub struct Program {
 }
 
 impl Program {
+    /// The size in bits of the numbers that a union holds, if all of its
+    /// members are numbers of one size: such a union is the bits of a
+    /// number, read as one type or another.
+    pub fn bits_of_union(&self, record: RecordId) -> Option<u8> {
+        let record = &self.records[record];
+        let bits = |field: &Field| match (&field.ty, field.bits) {
+            (Type::Int { bits, .. } | Type::Float { bits }, None) => Some(*bits),
+            (Type::Char, None) => Some(8),
+            _ => None,
+        };
+        let size = record.fields.first().and_then(bits)?;
+        (record.union && record.own && record.fields.iter().all(|field| bits(field) == Some(size)))
+            .then_some(size)
+    }
+
     /// The program's own function of this name, if it has a body.
     pub fn function(&self, name: &str) -> Option<FuncId> {
         self.functions.iter().position(|f| f.name == name)
@@ -249,6 +264,10 @@ pub enum ExprKind {
     Index(Box<Expr>, Box<Expr>),
     /// A conversion to the expression's type, written or implied.
     Cast(Box<Expr>),
+    /// The bits of a floating-point number as the unsigned integer of its
+    /// size, or the number that has an integer's bits. `normalise::unions`
+    /// writes it for a union that the program reads as both.
+    Bits(Box<Expr>),
     SizeOf(Type),
     /// The values of an array's elements or a record's fields in order.
     /// Elements beyond them are zero.
@@ -439,6 +458,7 @@ impl Expr {
             | ExprKind::Deref(inner)
             | ExprKind::Decay(inner)
             | ExprKind::Cast(inner)
+            | ExprKind::Bits(inner)
             | ExprKind::Member { base: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)
@@ -566,6 +586,7 @@ impl Expr {
             | ExprKind::Deref(inner)
             | ExprKind::Decay(inner)
             | ExprKind::Cast(inner)
+            | ExprKind::Bits(inner)
             | ExprKind::Member { base: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)

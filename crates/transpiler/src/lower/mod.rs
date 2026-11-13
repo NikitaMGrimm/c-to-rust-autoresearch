@@ -567,8 +567,16 @@ impl Lower<'_> {
     /// R5: a `struct` for each record, with the traits its uses need.
     fn record(&mut self, id: usize) -> R<Vec<syn::Item>> {
         let record = &self.program.records[id];
+        // `normalise::unions` has left no use of a union that is the bits
+        // of a number.
+        if self.program.bits_of_union(id).is_some() {
+            return Ok(Vec::new());
+        }
         if record.union {
-            return unsupported(format!("the union `{}`", record.name), 0);
+            return unsupported(
+                "a union whose members are not all numbers of one size: no rule yet",
+                0,
+            );
         }
         let name = rust::ident(self.names.record(id));
         let mut fields: Vec<syn::Field> = Vec::new();

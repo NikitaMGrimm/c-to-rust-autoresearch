@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> join, ends -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, join, ends -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> join, ends -> facts -> cursors -> facts -
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -218,6 +218,37 @@ pointer is refused where it is read anywhere else, where the call is inside
 a larger expression than a declaration or an assignment, and where it is
 assigned in any other way.
 
+### Unions
+
+C has no way to ask for the bits of a `float`, so programs store the number
+in one member of a union and read another: `u.flt = x; n = u.num;`. Rust has
+`to_bits` and `from_bits`, and safe Rust has no memory that two types share.
+So a union whose members are all numbers of one size is not a type of its
+own. Its value is the unsigned integer of that size, the bits, and each
+member converts on its way in and out (R33):
+
+| C | Rust |
+| --- | --- |
+| `union { float flt; uint32_t num; } u;` | `u: u32` |
+| `u.flt = x;` as the first use of `u` | `let u: u32 = x.to_bits();` |
+| `u.flt = x;`, `u.num = n;`, `u.i = k;` | `u = x.to_bits();`, `u = n;`, `u = k as u32;` |
+| `u.flt`, `u.num`, `u.i` | `f32::from_bits(u)`, `u`, `u as i32` |
+| `u.num ^= 1;`, `p->flt` | `u ^= 1;`, `f32::from_bits(*p)` |
+
+`normalise::unions` does this to the tree before any other stage: the
+union's type becomes the integer wherever it is written, a read of a member
+becomes a conversion of the bits (`c::ExprKind::Bits` between a
+floating-point number and its bits, a cast between integers) and a store
+becomes a store of the converted value. So the analysis and the rules never
+see the union, and `join` declares it where its first member is stored, as
+it does for any local. The member that has the integer's own type is the
+integer itself and may be updated in place or have its address taken. The
+other members are values, not places: `u.flt += 1`, `&u.flt` and a store
+whose value is used have no rule yet, nor has a union's initialiser. A
+union with members of different sizes, with an array, a record or a pointer
+is refused: of those, bytes beside a number would be `to_ne_bytes`, and a
+union that is one of several kinds of value would be an `enum`.
+
 ## Not yet built
 
 The direction for each, so that the first rule for it starts in the right
@@ -229,8 +260,8 @@ place:
   `until_nul` (R15), and a string literal that such a pointer meets is
   `b"…\0"`. `argv[i]` is text too, `&args[i]`, and has no rule yet where
   it meets bytes. Still to build: text that a record or a global holds
-  (`&'static str` when only literals reach it), `strcmp` and the other
-  functions of `string.h` that read text, a width in `%s`, and above all a `String`
+  (`&'static str` when only literals reach it), the functions of `string.h`
+  that return a pointer (`strchr`, `strstr`, `strtok`), a width in `%s`, and above all a `String`
   for a buffer that the program only fills and reads as a whole, which
   needs a fact that says so.
 - **Input.** `scanf` and `fgets` read through helpers over
@@ -239,7 +270,6 @@ place:
   `read_line` in `library.rs`). `getchar`, `fread`, `%s` and `%f` belong
   there too. The result of `scanf` has a rule only where it is compared
   with the number of conversions: it is also -1 at the end of the input.
-  `fprintf(stderr, …)` is `eprint!`.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result. The end
   pointer of `strtol` is the one case built (R21), as a second result of
@@ -260,7 +290,8 @@ place:
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
 - **Others.** `goto`, a `case` that falls through, pointers to functions
-  (`fn` types), unions (an `enum` when a tag says which member is live),
+  (`fn` types), unions other than the bits of a number (an `enum` when a
+  tag says which member is live, `to_ne_bytes` for bytes beside a number),
   `+=` and `++` on a bit-field, variadic functions, an array whose length is an expression
   (Clang prints it only as text), a local that gets its first value in a branch or
   in a loop (`let x;`).

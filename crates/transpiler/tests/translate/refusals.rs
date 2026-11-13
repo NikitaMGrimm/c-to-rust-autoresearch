@@ -8,9 +8,9 @@ fn a_construct_without_a_rule_is_refused() {
     assert_eq!(
         refused(
             "union",
-            "union both { int i; float f; };\nint main(void) { return 0; }\n"
+            "union both { int i; double d; };\nint main(void) { return 0; }\n"
         ),
-        "unsupported: the union `both`"
+        "unsupported: a union whose members are not all numbers of one size: no rule yet"
     );
     assert_eq!(
         refused(

@@ -47,6 +47,9 @@ struct Reader {
     locals: HashMap<String, Vec<VarId>>,
     /// The names declared in each block that is open.
     scopes: Vec<Vec<String>>,
+    /// The union without a tag that was read last and that no type names
+    /// yet.
+    unnamed: Option<RecordId>,
 }
 
 /// Whether an attribute of this kind changes where a record's members lie.
@@ -124,6 +127,7 @@ impl Reader {
         if self.typedefs.get(&name).is_some_and(|known| *known != ty) {
             return unsupported(format!("the typedef `{name}` with two meanings"), decl);
         }
+        self.unnamed = None;
         self.typedefs.insert(name, ty);
         Ok(())
     }
@@ -155,6 +159,7 @@ impl Reader {
     }
 
     fn record(&mut self, decl: &Value, own: bool) -> R<()> {
+        self.unnamed = None;
         let name = text(decl, "name");
         let union = text(decl, "tagUsed") == "union";
         let tag = format!("{} {name}", text(decl, "tagUsed"));
@@ -215,6 +220,9 @@ impl Reader {
                 }
                 _ => {}
             }
+        }
+        if name.is_empty() && union {
+            self.unnamed = Some(id);
         }
         Ok(())
     }
@@ -693,6 +701,16 @@ impl Reader {
 
     fn type_of(&mut self, ty: &Value, node: &Value) -> R<Type> {
         let spelled = text(ty, "qualType");
+        // A union without a tag has only the name that Clang prints for
+        // it, and the declaration right after it is the first to use it.
+        if let Some(id) = self.unnamed.take()
+            && spelled.starts_with("union (unnamed ")
+            && spelled.ends_with(')')
+        {
+            self.types
+                .entry(spelled.to_owned())
+                .or_insert(Ok(Type::Record(id)));
+        }
         let mut read = self.type_str(spelled);
         if read.is_err()
             && let Some(desugared) = ty["desugaredQualType"].as_str()

@@ -93,6 +93,7 @@ impl Lower<'_> {
             ExprKind::Unary(op, operand) => self.unary(expr, *op, operand),
             ExprKind::Binary(op, left, right) => self.binary(expr, *op, left, right),
             ExprKind::Cast(inner) => self.cast(expr, inner, typed),
+            ExprKind::Bits(inner) => self.bits(expr, inner),
             ExprKind::Cond(cond, then, other) => match self.decided(cond)? {
                 Some(true) => self.value(then, typed),
                 Some(false) => self.value(other, typed),
@@ -237,6 +238,37 @@ impl Lower<'_> {
         } else {
             rust::cast(value, target)
         })
+    }
+
+    /// R33: the bits of a floating-point number, or the number that has
+    /// these bits.
+    fn bits(&mut self, expr: &Expr, inner: &Expr) -> R<syn::Expr> {
+        match (&inner.ty, &expr.ty) {
+            (Type::Float { .. }, Type::Int { .. }) => {
+                // A method needs a receiver whose type Rust knows, which
+                // a literal and arithmetic on literals do not have.
+                let named = matches!(
+                    inner.uncast().kind,
+                    ExprKind::Var(_)
+                        | ExprKind::Member { .. }
+                        | ExprKind::Index(..)
+                        | ExprKind::Deref(_)
+                        | ExprKind::Call(..)
+                );
+                Ok(match (named, self.ty(&inner.ty, expr.at)?) {
+                    (true, _) => rust::method(self.expr(inner)?, "to_bits", []),
+                    (false, float) => {
+                        let value = self.typed(inner)?;
+                        parse_quote!(#float::to_bits(#value))
+                    }
+                })
+            }
+            (Type::Int { .. }, Type::Float { .. }) => {
+                let (float, bits) = (self.ty(&expr.ty, expr.at)?, self.typed(inner)?);
+                Ok(parse_quote!(#float::from_bits(#bits)))
+            }
+            _ => unsupported("the bits of a value that is no number", expr.at),
+        }
     }
 
     fn unary(&mut self, expr: &Expr, op: UnOp, operand: &Expr) -> R<syn::Expr> {

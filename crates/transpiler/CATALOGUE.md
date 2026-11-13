@@ -578,3 +578,28 @@ Entry format, newest last:
 - Motivation: `g4_dataentry` was refused for a `break` that leaves a case
   early when an allocation failed
 - Changes: extends R3
+
+## R33: a union that holds the bits of a number
+
+- C: a `union` whose members are all integers and floating-point numbers
+  of one size, such as `union { float flt; uint32_t num; }`, with or
+  without a tag, as a local, a global, a parameter, a result, a field, an
+  array element or behind a pointer; a store into a member and a read of
+  one
+- Rust: the unsigned integer of that size, with no type for the union.
+  `u.flt = x` is `u = x.to_bits()` (`f32::to_bits(…)` for a value whose
+  type a method call would not know), `u.i = k` is `u = k as u32`, and a
+  store into the unsigned member is a plain store; `u.flt` is
+  `f32::from_bits(u)`, `u.i` is `u as i32` and `u.num` is `u`, which is
+  also a place, so `u.num |= 1` and `&u.num` work on it. The first store
+  into a local union declares it (R1)
+- Needs: nothing; `normalise::unions` rewrites the tree before every other
+  stage
+- Refused: a union with members of different sizes or with a member that
+  is no number; `+=`, `++` and `&` on a member other than the unsigned
+  one; a store into such a member whose value is used; the initialiser of
+  a union
+- Motivation: `g5_float2half` and `g5_half2float` convert between `float`
+  and its bits through a union, as do `g5_memchra2` and `g5_agglom`, which
+  are refused next for other constructs
+- Changes: nothing
