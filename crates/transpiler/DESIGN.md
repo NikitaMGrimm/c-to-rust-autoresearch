@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> facts -> normalise -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> join -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> facts -> normalise -> facts -> lower -> r
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing | The facts |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `join` declares a local where it gets its first value, `narrow` names a pointer that a test found not to be NULL | The facts, for `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -88,7 +88,7 @@ Keep to these:
 | Unsigned arithmetic | `wrapping_add`, `wrapping_sub`, `wrapping_mul` |
 | `struct s` | `struct S` with `Clone`, and `Copy` and `Default` where its fields allow |
 | `T a[N]` | `[T; N]` |
-| A local without an initialiser | Starts at zero |
+| A local without an initialiser | Declared where the block first assigns it, or by the `for` that does; otherwise it starts at zero |
 | A global that never changes | `const` or `static`, in upper case |
 | A global that changes | A field of `Globals`, which `main` creates and each function that uses it takes as `globals: &Globals` or `&mut Globals` |
 | `main` | `fn main()`, with `-> ExitCode` unless it only returns 0; `argc` and `argv` from `std::env::args()` |
@@ -164,8 +164,8 @@ place:
 - **Others.** `goto`, a `case` that falls through, pointers to functions
   (`fn` types), unions (an `enum` when a tag says which member is live),
   bit-fields, variadic functions, arrays whose length is not a constant
-  (`Vec`), `%e` and `%g`, a local that is assigned before every read
-  (`let x;`).
+  (`Vec`), `%e` and `%g`, a local that gets its first value in a branch or
+  in a loop (`let x;`).
 
 ## Known weak spots
 

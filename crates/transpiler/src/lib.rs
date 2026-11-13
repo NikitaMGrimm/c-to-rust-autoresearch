@@ -59,6 +59,7 @@ pub fn read(ast: &serde_json::Value) -> Result<c::Program, Unsupported> {
 /// describes or not at all.
 pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     let mut program = clang::program(ast)?;
+    normalise::join(&mut program);
     let facts = facts::Facts::of(&program);
     normalise::narrow(&mut program, &facts);
     let facts = facts::Facts::of(&program);

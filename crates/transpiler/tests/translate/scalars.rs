@@ -130,3 +130,49 @@ int main(void) {
         ],
     );
 }
+
+/// C89 declares at the top of a block; the translation declares where the
+/// first value is known.
+#[test]
+fn a_local_is_declared_where_it_gets_its_first_value() {
+    let rust = check(
+        "join",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    int limit, i, j, total, last;
+    const char *label;
+    limit = atoi(argv[1]);
+    total = 0;
+    label = "total";
+    for (i = 0; i < limit; i++) {
+        int square;
+        square = i * i;
+        total += square;
+    }
+    for (j = 0; j < limit; j++) {
+        if (j * j > limit) break;
+    }
+    last = 0;
+    if (limit > 3) last = j;
+    printf("%s %d %d\n", label, total, last);
+    return 0;
+}
+"#,
+        &[&["0"], &["5"], &["30"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let limit: i32 = parse_int(&args[1]) as i32;",
+            "let mut total: i32 = 0;",
+            "let label: &str = \"total\";",
+            "for i in 0..limit {",
+            "let square: i32 = i * i;",
+            "let mut j: i32 = 0;",
+            "let mut last: i32 = 0;",
+        ],
+    );
+}

@@ -3,9 +3,13 @@
 //! of the analysis: they read the facts of the tree as written, and the
 //! rules read the facts of the tree they leave.
 //!
-//! The one rewrite so far, R10, names the pointer that a test has found not
-//! to be NULL. C tests `p` and goes on using `p`; Rust opens an `Option`
-//! once and uses what was in it, as `if let Some(p) = p` and
+//! `join` gives a local its first value where it is declared: C89 declares
+//! at the top of a block and assigns later, and Rust declares where the
+//! value is known. It needs no facts and runs before the first analysis.
+//!
+//! `narrow`, R10, names the pointer that a test has found not to be NULL.
+//! C tests `p` and goes on using `p`; Rust opens an `Option` once and uses
+//! what was in it, as `if let Some(p) = p` and
 //! `let Some(p) = p else { return; }` do.
 
 use crate::c::{
@@ -13,6 +17,102 @@ use crate::c::{
 };
 use crate::facts::{Facts, Slot};
 use std::collections::HashSet;
+
+pub fn join(program: &mut Program) {
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        join_block(&mut body, &mut program.vars);
+        program.functions[function].body = body;
+    }
+}
+
+/// Whether the statement names the variable, at any depth.
+fn names(stmt: &Stmt, vars: &[Var], var: VarId) -> bool {
+    any_expr(
+        std::slice::from_ref(stmt),
+        vars,
+        &mut |expr| matches!(expr.kind, ExprKind::Var(named) if named == var),
+    )
+}
+
+/// The value of `var = value`, if the expression is that and the value
+/// does not read the variable.
+fn first_value(expr: &Expr, var: VarId) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Assign {
+            op: None,
+            target,
+            value,
+        } if matches!(target.kind, ExprKind::Var(named) if named == var)
+            && !value
+                .any(&mut |part| matches!(part.kind, ExprKind::Var(named) if named == var)) =>
+        {
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
+fn join_block(stmts: &mut Vec<Stmt>, vars: &mut [Var]) {
+    // A label can be reached without the statements before it.
+    let labelled = stmts
+        .iter()
+        .any(|stmt| matches!(stmt, Stmt::Case(_) | Stmt::Default | Stmt::Label(_)));
+    let mut index = 0;
+    while !labelled && index < stmts.len() {
+        let Stmt::Decl(var) = stmts[index] else {
+            index += 1;
+            continue;
+        };
+        let declared = &vars[var];
+        let first = (index + 1..stmts.len()).find(|&later| names(&stmts[later], vars, var));
+        let (Some(first), VarKind::Local, None) = (first, declared.kind, &declared.init) else {
+            index += 1;
+            continue;
+        };
+        let used_after = stmts[first + 1..].iter().any(|stmt| names(stmt, vars, var));
+        match &mut stmts[first] {
+            // `int x; …; x = value;`
+            Stmt::Expr(expr) if first_value(expr, var).is_some() => {
+                vars[var].init = first_value(expr, var).cloned();
+                stmts[first] = Stmt::Decl(var);
+                stmts.remove(index);
+            }
+            // `int i; …; for (i = 0; …)`: the loop declares `i` if nothing
+            // after it uses `i`, and otherwise the declaration comes just
+            // before the loop.
+            Stmt::For { init, .. } if matches!(init.as_slice(), [Stmt::Expr(expr)] if first_value(expr, var).is_some()) =>
+            {
+                if let [Stmt::Expr(expr)] = init.as_slice() {
+                    vars[var].init = first_value(expr, var).cloned();
+                }
+                match used_after {
+                    true => {
+                        init.clear();
+                        stmts.insert(first, Stmt::Decl(var));
+                    }
+                    false => *init = vec![Stmt::Decl(var)],
+                }
+                stmts.remove(index);
+            }
+            _ => index += 1,
+        }
+    }
+    for stmt in stmts {
+        match stmt {
+            Stmt::Block(body)
+            | Stmt::While(_, body)
+            | Stmt::DoWhile(body, _)
+            | Stmt::Switch(_, body)
+            | Stmt::For { body, .. } => join_block(body, vars),
+            Stmt::If(_, then, other) => {
+                join_block(then, vars);
+                join_block(other, vars);
+            }
+            _ => {}
+        }
+    }
+}
 
 pub fn narrow(program: &mut Program, facts: &Facts) {
     // A variable whose address is taken may change where no assignment
