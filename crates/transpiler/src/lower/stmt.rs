@@ -1,8 +1,10 @@
 //! Rules for statements.
 
+use super::input::Read;
 use super::{Lower, Nest, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, VarId, VarKind, any_expr};
 use crate::facts::Slot;
+use crate::normalise::leaves;
 use crate::rust;
 use syn::parse_quote;
 
@@ -30,7 +32,13 @@ impl Lower<'_> {
             }
             Stmt::If(cond, then, other) => match self.decided(cond)? {
                 Some(truth) => self.inline(if truth { then } else { other }, out)?,
-                None => out.push(syn::Stmt::Expr(self.if_else(cond, then, other)?, None)),
+                None => match self.scan_test(cond)? {
+                    Some((reads, found)) => {
+                        let (found, missing) = if found { (then, other) } else { (other, then) };
+                        out.extend(self.if_scanned(&reads, found, missing)?);
+                    }
+                    None => out.push(syn::Stmt::Expr(self.if_else(cond, then, other)?, None)),
+                },
             },
             Stmt::While(cond, body) => match self.decided(cond)? {
                 Some(false) => {}
@@ -143,6 +151,45 @@ impl Lower<'_> {
             },
         )?;
         Ok((parse_quote!(Some(#mutability #name)), value))
+    }
+
+    /// R11: an `if` on whether `scanf` found its values: `found` runs when
+    /// it did and `missing` when it did not.
+    fn if_scanned(
+        &mut self,
+        reads: &[Read],
+        found: &[Stmt],
+        missing: &[Stmt],
+    ) -> R<Vec<syn::Stmt>> {
+        let values = reads
+            .iter()
+            .filter(|read| matches!(read, Read::Value { .. }))
+            .count();
+        if found.is_empty()
+            && leaves(missing)
+            && let Some(stmts) = {
+                let missing = self.block(missing)?;
+                self.scan_or_leave(reads, missing)?
+            }
+        {
+            return Ok(stmts);
+        }
+        let other = match missing.is_empty() {
+            true => None,
+            false => Some(self.block(missing)?),
+        };
+        // With several conversions, `missing` would be written once for
+        // each.
+        if values > 1 && other.is_some() {
+            let cond = self.scan_cond(reads, true)?;
+            let (found, other) = (self.block(found)?, other.iter());
+            return Ok(vec![syn::Stmt::Expr(
+                parse_quote!(if #cond #found #(else #other)*),
+                None,
+            )]);
+        }
+        let found = self.stmts(found)?;
+        self.scan_chain(reads, found, other.as_ref())
     }
 
     /// R3: `if`, with `else if` for an `else` that holds only an `if`.

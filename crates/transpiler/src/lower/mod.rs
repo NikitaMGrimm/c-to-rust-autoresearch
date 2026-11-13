@@ -3,6 +3,7 @@
 //! `CATALOGUE.md` lists the rules; what has none is `Unsupported`.
 
 mod expr;
+mod input;
 mod library;
 mod pointer;
 mod stmt;
@@ -28,9 +29,27 @@ fn unsupported<T>(what: impl Into<String>, at: u32) -> R<T> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Helper {
     ParseInt,
+    PeekByte,
+    ReadByte,
+    SkipSpace,
+    ScanInt,
 }
 
 impl Helper {
+    /// The helpers that this one calls.
+    fn needs(self) -> &'static [Helper] {
+        match self {
+            Helper::ParseInt | Helper::PeekByte => &[],
+            Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
+            Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
+        }
+    }
+
+    /// Whether it calls the methods of `std::io::BufRead`.
+    fn reads_input(self) -> bool {
+        matches!(self, Helper::PeekByte | Helper::ReadByte)
+    }
+
     fn item(self) -> syn::Item {
         match self {
             Helper::ParseInt => parse_quote! {
@@ -52,6 +71,59 @@ impl Helper {
                         } else {
                             value.saturating_add(digit)
                         };
+                    }
+                    value
+                }
+            },
+            Helper::PeekByte => parse_quote! {
+                /// The next byte of standard input, which stays there, or `None`
+                /// at its end.
+                fn peek_byte() -> Option<u8> {
+                    std::io::stdin().lock().fill_buf().ok()?.first().copied()
+                }
+            },
+            Helper::ReadByte => parse_quote! {
+                /// Takes the next byte of standard input, or returns `None` at
+                /// its end.
+                fn read_byte() -> Option<u8> {
+                    let byte = peek_byte()?;
+                    std::io::stdin().lock().consume(1);
+                    Some(byte)
+                }
+            },
+            Helper::SkipSpace => parse_quote! {
+                /// Takes the white space at the start of standard input, as a
+                /// space in a `scanf` format does.
+                fn skip_space() {
+                    while peek_byte().is_some_and(|byte| byte == b' ' || (b'\t'..=b'\r').contains(&byte)) {
+                        std::io::stdin().lock().consume(1);
+                    }
+                }
+            },
+            Helper::ScanInt => parse_quote! {
+                /// Reads a number from standard input as C's `scanf("%ld")` does:
+                /// white space, a sign, then digits, with the nearest limit for
+                /// a number out of range. Without a digit it returns `None` and
+                /// leaves what it did not read.
+                fn scan_int() -> Option<i64> {
+                    skip_space();
+                    let negative = match peek_byte()? {
+                        sign @ (b'-' | b'+') => {
+                            read_byte();
+                            sign == b'-'
+                        }
+                        _ => false,
+                    };
+                    let mut value: Option<i64> = None;
+                    while let Some(digit @ b'0'..=b'9') = peek_byte() {
+                        read_byte();
+                        let digit = i64::from(digit - b'0');
+                        let shifted = value.unwrap_or(0).saturating_mul(10);
+                        value = Some(if negative {
+                            shifted.saturating_sub(digit)
+                        } else {
+                            shifted.saturating_add(digit)
+                        });
                     }
                     value
                 }
@@ -124,6 +196,11 @@ pub fn program(program: &Program, facts: &Facts) -> R<syn::File> {
         return unsupported("a program without `main`", 0);
     }
     let mut items: Vec<syn::Item> = Vec::new();
+    if lower.helpers.iter().any(|helper| helper.reads_input()) {
+        items.push(parse_quote!(
+            use std::io::BufRead;
+        ));
+    }
     if uses_exit_code {
         items.push(parse_quote!(
             use std::process::ExitCode;
@@ -150,6 +227,15 @@ pub fn program(program: &Program, facts: &Facts) -> R<syn::File> {
 }
 
 impl Lower<'_> {
+    /// Notes that the translation calls the helper, with those it calls.
+    fn helper(&mut self, helper: Helper) {
+        if self.helpers.insert(helper) {
+            for &needed in helper.needs() {
+                self.helper(needed);
+            }
+        }
+    }
+
     /// R5: a `struct` for each record, with the traits its uses need.
     fn record(&mut self, id: usize) -> R<Vec<syn::Item>> {
         let record = &self.program.records[id];

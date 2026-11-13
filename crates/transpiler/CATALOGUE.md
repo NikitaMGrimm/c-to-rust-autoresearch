@@ -171,3 +171,22 @@ Entry format, newest last:
   which gives the tested pointer a variable of its own
 - Motivation: skeleton
 - Changes: none
+
+## R11: `scanf` of numbers and characters
+
+- C: `scanf`, and `fscanf` on `stdin`, with a literal format of white space
+  and `%d`, `%u` with `hh` or `h`, `%ld`, `%lld` and `%c`, each into a
+  variable of the conversion's size; the call as a statement, or its result
+  compared with its number of conversions
+- Rust: `if let Some(scanned) = scan_int() { x = scanned as i32; }`, one
+  inside the other for several conversions, since `scanf` stops at the first
+  that finds nothing; `let Some(scanned) = scan_int() else { … };` for
+  `if (scanf(…) != 1)` that leaves the block; `read_byte()` for `%c` and
+  `skip_space()` for white space in the format that no number follows. The
+  helpers read `std::io::stdin().lock()` a byte at a time and leave what a
+  conversion does not take, as C does
+- Needs: nothing
+- Motivation: `g1_040_storage_class_auto`, `g1_010_integer_overflow` and
+  `g3_024_struct_and_static` were refused for `scanf` or `fscanf`; seven more
+  development programs read their input this way
+- Changes: none

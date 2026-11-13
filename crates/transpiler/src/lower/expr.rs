@@ -277,6 +277,9 @@ impl Lower<'_> {
                 false => parse_quote!(false),
             });
         }
+        if let Some((reads, found)) = self.scan_test(cond)? {
+            return self.scan_cond(&reads, found);
+        }
         match &cond.kind {
             ExprKind::Unary(UnOp::Not, inner) if inner.ty.is_pointer() => {
                 Ok(rust::method(self.optional(inner)?, "is_none", []))
@@ -546,6 +549,9 @@ impl Lower<'_> {
     /// An expression evaluated for what it does, as statements.
     pub(super) fn effect(&mut self, expr: &Expr) -> R<Vec<syn::Stmt>> {
         let statement = |expr: syn::Expr| vec![syn::Stmt::Expr(expr, Some(Default::default()))];
+        if let Some(reads) = self.scan(expr)? {
+            return self.scan_chain(&reads, Vec::new(), None);
+        }
         Ok(match &expr.kind {
             ExprKind::Assign { op, target, value } => {
                 statement(self.assign(expr, op.as_ref(), target, value)?)

@@ -180,7 +180,7 @@ fn guard(cond: Expr, set_in_then: bool, none: Vec<Stmt>) -> Stmt {
 }
 
 /// Whether the statements end by leaving the block they are in.
-fn leaves(stmts: &[Stmt]) -> bool {
+pub(crate) fn leaves(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Goto(_)) => true,
         Some(Stmt::Expr(expr)) => match &expr.kind {

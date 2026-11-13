@@ -4,6 +4,7 @@
 mod common;
 mod globals;
 mod heap;
+mod input;
 mod pointers;
 mod records;
 mod refusals;

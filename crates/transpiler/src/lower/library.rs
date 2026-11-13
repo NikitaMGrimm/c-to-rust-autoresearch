@@ -68,7 +68,7 @@ impl Lower<'_> {
     /// `parse_int` of one of `main`'s arguments.
     fn parse_int(&mut self, text: &Expr) -> R<syn::Expr> {
         let argument = self.argument(text)?;
-        self.helpers.insert(Helper::ParseInt);
+        self.helper(Helper::ParseInt);
         Ok(rust::call("parse_int", [rust::borrow(false, argument)]))
     }
 

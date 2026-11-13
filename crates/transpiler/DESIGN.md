@@ -42,8 +42,8 @@ Clang's JSON -> clang -> c::Program -> facts -> normalise -> facts -> lower -> r
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
 
 The rules are split by subject: `lower/mod.rs` (the program, records, globals,
-functions, `main`), `types.rs`, `expr.rs`, `stmt.rs`, `pointer.rs` and
-`library.rs` (the C library).
+functions, `main`), `types.rs`, `expr.rs`, `stmt.rs`, `pointer.rs`,
+`library.rs` (the C library) and `input.rs` (standard input).
 
 ## Where a change goes
 
@@ -97,6 +97,7 @@ Keep to these:
 | `printf` with a literal format | `print!` or `println!`, the format converted at translation time |
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
 | `malloc`, `calloc`, `free` | `Box::new`, `vec![zero; n]`, `drop` |
+| `scanf("%d", &x)` | `if let Some(scanned) = scan_int() { x = scanned as i32; }` |
 
 ### Pointers
 
@@ -133,8 +134,12 @@ place:
 - **Text.** `char *` that only ever holds text is `&str` or `String`, which
   needs a fact that says so; other `char` arrays stay bytes. String literals,
   `%s` of a variable, `strlen`, `strcmp`, `strcpy` and the rest wait for it.
-- **Input.** `scanf`, `fgets` and `getchar` read from `std::io::stdin().lock()`.
-  `fprintf(stderr, …)` is `eprint!`.
+- **Input.** `scanf` reads numbers and characters through helpers over
+  `std::io::stdin().lock()` that take a byte at a time, so that every way
+  of reading shares what is left, as in C (`lower/input.rs`). `fgets`,
+  `getchar`, `%s` and `%f` belong there too. The result of `scanf` has a
+  rule only where it is compared with the number of conversions: it is also
+  -1 at the end of the input. `fprintf(stderr, …)` is `eprint!`.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result.
 - **Cursors.** A pointer that walks an array (`p++`, `*p`) is an index beside
