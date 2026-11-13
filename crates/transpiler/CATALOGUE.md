@@ -509,3 +509,31 @@ Entry format, newest last:
   bytes between and within buffers, and `g5_str_put`, `g5_intput`,
   `g5_hm_geti` and `g5_sh_puts` move elements with `memmove`
 - Changes: none
+
+## R30: `strcmp` and `strncmp`
+
+- C: `strcmp(a, b)` and `strncmp(a, b, n)` where the program reads only the
+  sign of the result or whether it is zero: compared with 0 by any of the
+  six operators, on either side, negated with `!` or used as a test by
+  itself, in `if`, `while`, `&&`, `||` and `?:`
+- Rust: a comparison of the two texts with the test's operator, since Rust
+  orders `&str` and `&[u8]` as unsigned bytes, as C does: `mode == "fast"`
+  and `args[1].as_str() < args[2].as_str()` when both sides are `&str`;
+  otherwise the bytes without the NUL, `until_nul(&word) == b"fast"`,
+  `text.as_bytes()`, `args[1].as_bytes()`, and `b"fat".as_slice()` for an
+  ordering; `text.is_empty()` against `""`. `strncmp` compares
+  `text_within(&word, n as usize)`, a helper that gives the bytes before
+  the first NUL among the first `n`, or all `n`, or the whole slice where
+  it ends before either (C reads beyond it there unless the texts have
+  differed by then), with `first_bytes(text.as_bytes(), n)` for
+  a `&str`, an argument or a literal, which end where they end. Two literals,
+  a side compared with itself and a count of 0 give `true` or `false` here.
+  Refused: any other use of the value, which C fixes only in its sign and
+  C libraries give differently, and a count of `strncmp` that calls or
+  assigns, since it is read for each side
+- Needs: `strcmp` and `strncmp` among the readers of text as a whole
+  (`TEXT_READERS`), so that a pointer they read stays a `&str`
+- Motivation: `g5_cleanup` was refused for `strncmp`; `g3_strcmp`,
+  `g5_hm_geti`, `g5_intput`, `g5_memchra2`, `g5_sh_puts` and `g5_str_put`
+  call `strcmp` or `strncmp` and are refused first for other constructs
+- Changes: extends R13 and R15

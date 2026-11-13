@@ -9,7 +9,7 @@ use crate::facts::{Access, Slot, place_slot};
 use crate::rust;
 use syn::parse_quote;
 
-fn symbol(op: BinOp) -> &'static str {
+pub(super) fn symbol(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "+",
         BinOp::Sub => "-",
@@ -29,6 +29,17 @@ fn symbol(op: BinOp) -> &'static str {
         BinOp::Ne => "!=",
         BinOp::And => "&&",
         BinOp::Or => "||",
+    }
+}
+
+/// The operator that tests the same with its operands swapped.
+fn mirrored(op: BinOp) -> BinOp {
+    match op {
+        BinOp::Lt => BinOp::Gt,
+        BinOp::Gt => BinOp::Lt,
+        BinOp::Le => BinOp::Ge,
+        BinOp::Ge => BinOp::Le,
+        op => op,
     }
 }
 
@@ -308,6 +319,14 @@ impl Lower<'_> {
         if let Some((reads, found)) = self.scan_test(cond)? {
             return self.scan_cond(&reads, found);
         }
+        // R30: `strcmp(a, b)` as a test, and `!strcmp(a, b)`.
+        let sign = match &cond.kind {
+            ExprKind::Unary(UnOp::Not, inner) => self.sign_test(inner, BinOp::Eq),
+            _ => self.sign_test(cond, BinOp::Ne),
+        };
+        if let Some(test) = sign {
+            return test;
+        }
         match &cond.kind {
             ExprKind::Unary(UnOp::Not, inner) if inner.ty.is_pointer() => self.is_set(inner, false),
             ExprKind::Unary(UnOp::Not, inner) => Ok(rust::unary("!", self.cond(inner)?)),
@@ -402,6 +421,15 @@ impl Lower<'_> {
                 BinOp::Ne => nan,
                 _ => rust::unary("!", nan),
             });
+        }
+        // R30: a comparing function of `string.h` against 0, whose sign is
+        // all that C fixes.
+        for (call, zero, op) in [(left, right, op), (right, left, mirrored(op))] {
+            if zero.constant(self.program) == Some(0)
+                && let Some(test) = self.sign_test(call, op)
+            {
+                return test;
+            }
         }
         // `*text == '\0'`: the text is empty.
         if matches!(op, BinOp::Eq | BinOp::Ne) {

@@ -2,10 +2,12 @@
 //! standard library where that behaves the same, and to a `Helper`
 //! otherwise.
 
+use super::expr::symbol;
 use super::pointer::Repr;
 use super::{Helper, Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type};
 use crate::rust;
+use quote::ToTokens;
 use syn::parse_quote;
 
 /// One conversion of a `printf` format, such as `%-5.2f`.
@@ -78,6 +80,12 @@ impl Lower<'_> {
                 self.helper(Helper::AppendAtMost);
                 Ok(rust::call("append_at_most", [target, source, count]))
             }
+            // R30: C fixes only the sign of the result, and C libraries
+            // differ in the number.
+            ("strcmp" | "strncmp", _) => unsupported(
+                format!("the value of `{name}` other than its sign: no rule yet"),
+                at,
+            ),
             ("putchar", [value]) => {
                 let value = self.character(value)?;
                 Ok(parse_quote!(print!("{}", #value)))
@@ -186,6 +194,183 @@ impl Lower<'_> {
         let bytes = self.pointer(text, Repr::BYTES)?;
         self.helper(Helper::UntilNul);
         Ok(rust::call("until_nul", [bytes]))
+    }
+
+    /// R30: `call op 0`, if the call is one of the comparing functions of
+    /// `string.h`.
+    pub(super) fn sign_test(&mut self, call: &Expr, op: BinOp) -> Option<R<syn::Expr>> {
+        let ExprKind::Call(callee, args) = &call.kind else {
+            return None;
+        };
+        let name = callee.function()?;
+        if self.program.function(name).is_some() {
+            return None;
+        }
+        Some(match (name, args.as_slice()) {
+            ("strcmp", [left, right]) => self.compare_texts(left, right, None, op),
+            ("strncmp", [left, right, count]) => self.compare_texts(left, right, Some(count), op),
+            _ => return None,
+        })
+    }
+
+    /// R30: two texts compared as `strcmp` does, as unsigned bytes up to
+    /// the NUL, which is how Rust orders `&str` and `&[u8]` too. With a
+    /// count, as `strncmp` does within that many bytes.
+    fn compare_texts(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        count: Option<&Expr>,
+        op: BinOp,
+    ) -> R<syn::Expr> {
+        let ordering = !matches!(op, BinOp::Eq | BinOp::Ne);
+        let truth = |order: std::cmp::Ordering| -> syn::Expr {
+            let holds = match op {
+                BinOp::Eq => order.is_eq(),
+                BinOp::Ne => order.is_ne(),
+                BinOp::Lt => order.is_lt(),
+                BinOp::Gt => order.is_gt(),
+                BinOp::Le => order.is_le(),
+                _ => order.is_ge(),
+            };
+            match holds {
+                true => parse_quote!(true),
+                false => parse_quote!(false),
+            }
+        };
+        // Two literals compare here, where Clippy refuses `"a" == "a"`.
+        if let (Some(mut first), Some(mut second)) = (literal_bytes(left), literal_bytes(right)) {
+            let count = match count {
+                None => Some(usize::MAX),
+                Some(count) => count
+                    .constant(self.program)
+                    .filter(|count| *count >= 0)
+                    .map(|count| usize::try_from(count).unwrap_or(usize::MAX)),
+            };
+            if let Some(count) = count {
+                first = &first[..first.len().min(count)];
+                second = &second[..second.len().min(count)];
+                return Ok(truth(first.cmp(second)));
+            }
+        }
+        // `text == ""`: the text is empty.
+        if !ordering && count.is_none() {
+            for (empty, text) in [(left, right), (right, left)] {
+                if literal_bytes(empty) == Some(&[]) {
+                    let text = match self.reads_bytes(text) {
+                        true => self.bytes_of(text, false)?,
+                        false => self.str_of(text, false)?,
+                    };
+                    let empty = rust::method(text, "is_empty", []);
+                    return Ok(match op {
+                        BinOp::Eq => empty,
+                        _ => rust::unary("!", empty),
+                    });
+                }
+            }
+        }
+        let pure = left.is_pure() && right.is_pure();
+        // No bytes are equal to no bytes.
+        if pure && count.is_some_and(|count| count.constant(self.program) == Some(0)) {
+            return Ok(truth(std::cmp::Ordering::Equal));
+        }
+        let helpers = self.helpers.clone();
+        // A literal is an array, which orders only against an array of its
+        // own length.
+        let sliced = ordering;
+        let (left, right) = match count {
+            None if !self.reads_bytes(left) && !self.reads_bytes(right) => {
+                (self.str_of(left, ordering)?, self.str_of(right, ordering)?)
+            }
+            None => (self.bytes_of(left, sliced)?, self.bytes_of(right, sliced)?),
+            Some(count) => {
+                // The count is read once for each side.
+                if !self.repeatable(count) {
+                    return unsupported(
+                        "a count of `strncmp` that calls or assigns: no rule yet",
+                        count.at,
+                    );
+                }
+                (
+                    self.bytes_within(left, count, sliced)?,
+                    self.bytes_within(right, count, sliced)?,
+                )
+            }
+        };
+        // A text is equal to itself, and Clippy refuses `x == x`.
+        let tokens = |side: &syn::Expr| side.to_token_stream().to_string();
+        if pure && tokens(&left) == tokens(&right) {
+            self.helpers = helpers;
+            return Ok(truth(std::cmp::Ordering::Equal));
+        }
+        Ok(rust::binary(left, symbol(op), right))
+    }
+
+    /// R30: text that is a `&str` in Rust, to compare with another. A
+    /// `String` orders only against a `String`.
+    fn str_of(&mut self, text: &Expr, ordering: bool) -> R<syn::Expr> {
+        if !self.is_argument(text) {
+            return self.pointer(text, Repr::TEXT);
+        }
+        let argument = self.argument(text)?;
+        Ok(match ordering {
+            true => rust::method(argument, "as_str", []),
+            false => argument,
+        })
+    }
+
+    /// R30: the text that a pointer points to as bytes, without its NUL:
+    /// a byte-string literal, the bytes of a `&str` or of an argument, or
+    /// the bytes up to the NUL. `sliced` asks for a slice where a literal
+    /// would be an array.
+    fn bytes_of(&mut self, text: &Expr, sliced: bool) -> R<syn::Expr> {
+        if let Some(bytes) = literal_bytes(text) {
+            return Ok(byte_string(bytes, sliced));
+        }
+        if self.is_argument(text) {
+            return Ok(rust::method(self.argument(text)?, "as_bytes", []));
+        }
+        if self.is_text(text) {
+            let text = self.pointer(text, Repr::TEXT)?;
+            return Ok(rust::method(text, "as_bytes", []));
+        }
+        self.until_nul(text)
+    }
+
+    /// R30: the text that `strncmp` reads within `count` bytes. Bytes from
+    /// memory need no NUL among the first `count`, and a `&str` or a
+    /// literal ends where it ends.
+    fn bytes_within(&mut self, text: &Expr, count: &Expr, sliced: bool) -> R<syn::Expr> {
+        let literal = literal_bytes(text);
+        if let (Some(bytes), Some(count @ 0..)) = (literal, count.constant(self.program)) {
+            let end = bytes
+                .len()
+                .min(usize::try_from(count).unwrap_or(usize::MAX));
+            return Ok(byte_string(&bytes[..end], sliced));
+        }
+        let ended = match literal {
+            Some(bytes) => Some(byte_string(bytes, false)),
+            None if self.is_argument(text) => {
+                Some(rust::method(self.argument(text)?, "as_bytes", []))
+            }
+            None if self.is_text(text) => {
+                let text = self.pointer(text, Repr::TEXT)?;
+                Some(rust::method(text, "as_bytes", []))
+            }
+            None => None,
+        };
+        let count = self.index_value(count)?;
+        Ok(match ended {
+            Some(bytes) => {
+                self.helper(Helper::FirstBytes);
+                rust::call("first_bytes", [bytes, count])
+            }
+            None => {
+                let bytes = self.pointer(text, Repr::BYTES)?;
+                self.helper(Helper::TextWithin);
+                rust::call("text_within", [bytes, count])
+            }
+        })
     }
 
     /// R15: `fgets` on `stdin` as `read_line`, which is true where `fgets`
@@ -821,6 +1006,27 @@ fn same_place(one: &Expr, other: &Expr) -> bool {
             same_index && same_place(one, other)
         }
         _ => false,
+    }
+}
+
+/// The bytes of a string literal up to its first NUL, where C's readers of
+/// text stop.
+fn literal_bytes(text: &Expr) -> Option<&[u8]> {
+    let ExprKind::Decay(literal) = &text.uncast().kind else {
+        return None;
+    };
+    let ExprKind::Str(bytes) = &literal.kind else {
+        return None;
+    };
+    bytes.split(|&byte| byte == 0).next()
+}
+
+/// A byte-string literal, `b"fast"`, or a slice of it, `b"fast".as_slice()`.
+fn byte_string(bytes: &[u8], sliced: bool) -> syn::Expr {
+    let literal = syn::LitByteStr::new(bytes, proc_macro2::Span::call_site());
+    match sliced {
+        true => parse_quote!(#literal.as_slice()),
+        false => parse_quote!(#literal),
     }
 }
 

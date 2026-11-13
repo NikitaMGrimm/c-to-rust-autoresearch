@@ -49,6 +49,8 @@ enum Helper {
     CopyString,
     AppendString,
     AppendAtMost,
+    TextWithin,
+    FirstBytes,
 }
 
 impl Helper {
@@ -62,6 +64,8 @@ impl Helper {
             | Helper::CopyText
             | Helper::StoreText
             | Helper::StoreTextCut
+            | Helper::TextWithin
+            | Helper::FirstBytes
             | Helper::PeekByte
             | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
@@ -418,6 +422,28 @@ impl Helper {
                         .unwrap_or(count);
                     target[end..][..length].copy_from_slice(&source[..length]);
                     target[end + length] = 0;
+                }
+            },
+            Helper::TextWithin => parse_quote! {
+                /// The text that C's `strncmp` reads in `bytes` within `count`
+                /// bytes: those before the first NUL among them, or all `count`
+                /// where there is none. Bytes that end before either are
+                /// compared as far as they reach, where C reads beyond them
+                /// unless the other text has differed by then.
+                fn text_within(bytes: &[u8], count: usize) -> &[u8] {
+                    let end = bytes
+                        .iter()
+                        .take(count)
+                        .position(|&byte| byte == 0)
+                        .unwrap_or(count.min(bytes.len()));
+                    &bytes[..end]
+                }
+            },
+            Helper::FirstBytes => parse_quote! {
+                /// The first `count` bytes of `text`, or all of it where it is
+                /// shorter: what C's `strncmp` reads of text that ends there.
+                fn first_bytes(text: &[u8], count: usize) -> &[u8] {
+                    &text[..count.min(text.len())]
                 }
             },
             Helper::TextOf => parse_quote! {

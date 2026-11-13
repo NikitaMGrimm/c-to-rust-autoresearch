@@ -76,6 +76,8 @@ const RESERVED: &[&str] = &[
     "format_g",
     "until_nul",
     "text_of",
+    "text_within",
+    "first_bytes",
 ];
 
 pub struct Names {
