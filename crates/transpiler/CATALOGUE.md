@@ -342,3 +342,16 @@ Entry format, newest last:
 - Motivation: `g2_017_signed_length_confusion` was refused for `memset`,
   and copies with `strncpy`
 - Changes: none
+
+## R23: bit-fields
+
+- C: a bit-field of an integer type or of `_Bool`, read, assigned and
+  given a value by an initialiser
+- Rust: a field of the declared type; a store keeps what the bit-field
+  holds, `flags.level = value & 7` for three unsigned bits and
+  `value << 28 >> 28` for four signed ones, so that a read needs nothing.
+  `+=`, `++` and the like on a bit-field are refused, and so is the size of
+  its record
+- Needs: nothing
+- Motivation: `g3_033_bitfield` was refused for the bit-field `x`
+- Changes: extends R5

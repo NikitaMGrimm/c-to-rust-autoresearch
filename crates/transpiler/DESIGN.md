@@ -87,6 +87,7 @@ Keep to these:
 | Signed arithmetic | Rust's operators: an overflow, undefined in C, stops the program |
 | Unsigned arithmetic | `wrapping_add`, `wrapping_sub`, `wrapping_mul` |
 | `struct s` | `struct S` with `Clone`, and `Copy` and `Default` where its fields allow |
+| A bit-field `unsigned level : 3` | A field `level: u32`; every store keeps the low bits, `value & 7` |
 | `T a[N]` | `[T; N]` |
 | `T a[n]`, a local whose length is a variable | `Vec<T>`, `vec![zero; n as usize]` |
 | A local without an initialiser | Declared where the block first assigns it, or by the `for` that does; otherwise it starts at zero |
@@ -173,7 +174,7 @@ place:
   default.
 - **Others.** `goto`, a `case` that falls through, pointers to functions
   (`fn` types), unions (an `enum` when a tag says which member is live),
-  bit-fields, variadic functions, an array whose length is an expression
+  `+=` and `++` on a bit-field, variadic functions, an array whose length is an expression
   (Clang prints it only as text), a local that gets its first value in a branch or
   in a loop (`let x;`).
 

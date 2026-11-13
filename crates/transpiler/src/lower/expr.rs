@@ -507,10 +507,15 @@ impl Lower<'_> {
             let value = self.pointer(value, repr)?;
             return Ok(rust::assign(self.place(target, true)?, value));
         }
+        let width = self.bit_field(target);
         let Some((op, compute)) = op else {
             let value = self.init(&target.ty, None, value)?;
+            let value = self.in_bits(value, &target.ty, width);
             return Ok(rust::assign(self.place(target, true)?, value));
         };
+        if width.is_some() {
+            return unsupported("an update of a bit-field in place: no rule yet", expr.at);
+        }
         let place = self.place(target, true)?;
         let narrower = match (target.ty.int(), compute.int()) {
             (Some((target, _)), Some((compute, _))) => target < compute,
@@ -572,6 +577,9 @@ impl Lower<'_> {
 
     /// R2: `target++` or `target--` for its effect.
     pub(super) fn step(&mut self, target: &Expr, increment: bool) -> R<syn::Expr> {
+        if self.bit_field(target).is_some() {
+            return unsupported("an update of a bit-field in place: no rule yet", target.at);
+        }
         let place = self.place(target, true)?;
         let (op, method) = match increment {
             true => ("+=", "wrapping_add"),

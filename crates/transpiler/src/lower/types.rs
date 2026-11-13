@@ -123,6 +123,32 @@ impl Lower<'_> {
         })
     }
 
+    /// R23: the width of the bit-field that the place is, if it is one
+    /// that is narrower than its type.
+    pub(super) fn bit_field(&self, place: &Expr) -> Option<u32> {
+        let ExprKind::Member { record, field, .. } = &place.kind else {
+            return None;
+        };
+        let field = &self.program.records[*record].fields[*field];
+        let (bits, _) = field.ty.int()?;
+        field.bits.filter(|&width| width < u32::from(bits))
+    }
+
+    /// R23: a value as a bit-field of `width` bits holds it: the low bits,
+    /// with the sign of the highest of them for a signed type.
+    pub(super) fn in_bits(&self, value: syn::Expr, ty: &Type, width: Option<u32>) -> syn::Expr {
+        let (Some(width), Some((bits, signed))) = (width, ty.int()) else {
+            return value;
+        };
+        match signed {
+            true => {
+                let unused = rust::int(i128::from(bits) - i128::from(width), "");
+                rust::binary(rust::binary(value, "<<", unused.clone()), ">>", unused)
+            }
+            false => rust::binary(value, "&", rust::int((1 << width) - 1, "")),
+        }
+    }
+
     /// Whether an initialiser gives the zero of its type and no pointer.
     fn is_zero(&self, init: &Expr) -> bool {
         match &init.kind {
@@ -151,7 +177,18 @@ impl Lower<'_> {
                 for (index, field) in program.records[*id].fields.iter().enumerate() {
                     let slot = field.ty.is_pointer().then_some(Slot::Field(*id, index));
                     let value = match items.get(index) {
-                        Some(item) => self.init(&field.ty, slot, item)?,
+                        Some(item) => {
+                            let value = self.init(&field.ty, slot, item)?;
+                            // Zero has no bits to cut off.
+                            let width = field.bits.filter(|&width| {
+                                !self.is_zero(item)
+                                    && field
+                                        .ty
+                                        .int()
+                                        .is_some_and(|(bits, _)| width < u32::from(bits))
+                            });
+                            self.in_bits(value, &field.ty, width)
+                        }
                         None => self.zero_of(&field.ty, slot, init.at)?,
                     };
                     let field = rust::ident(&plain(&field.name));

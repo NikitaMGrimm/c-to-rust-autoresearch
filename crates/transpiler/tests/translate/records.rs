@@ -132,3 +132,63 @@ int main(int argc, char *argv[]) {
         "unsupported: an array whose length is not a constant or one variable, at line 4"
     );
 }
+
+#[test]
+fn a_bit_field_keeps_the_bits_it_has() {
+    let rust = check(
+        "bit-fields",
+        r#"
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+struct flags {
+    unsigned int level : 3;
+    int offset : 4;
+    bool on : 1;
+    unsigned int whole : 32;
+    int plain;
+};
+void show(const struct flags *flags) {
+    printf("%u %d %d %u %d %d\n", flags->level, flags->offset, flags->on, flags->whole,
+           flags->plain, flags->level + flags->offset);
+}
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct flags flags = {.level = n, .offset = n, .on = n > 2, .whole = n, .plain = n};
+    struct flags zero = {0};
+    show(&flags);
+    show(&zero);
+    flags.level = n * 3;
+    flags.offset = -n;
+    flags.on = n & 1;
+    zero.level = 9;
+    zero.offset = 8;
+    show(&flags);
+    show(&zero);
+    return 0;
+}
+"#,
+        &[&["0"], &["1"], &["5"], &["7"], &["8"], &["-9"], &["100"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "level: u32,",
+            "offset: i32,",
+            "on: bool,",
+            "level: n as u32 & 7,",
+            "offset: n << 28 >> 28,",
+            "flags.level = (n * 3) as u32 & 7;",
+            "flags.offset = -n << 28 >> 28;",
+        ],
+    );
+    assert_eq!(
+        translate(
+            "bit-field-update",
+            "struct s { unsigned a : 3; };\nint main(void) {\n    struct s s = {1};\n    s.a += 7;\n    return s.a;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: an update of a bit-field in place: no rule yet, at line 4"
+    );
+}

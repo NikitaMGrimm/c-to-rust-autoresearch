@@ -444,9 +444,6 @@ impl Lower<'_> {
         let mut fields: Vec<syn::Field> = Vec::new();
         let mut zeros: Vec<syn::FieldValue> = Vec::new();
         for (index, field) in record.fields.iter().enumerate() {
-            if field.bits.is_some() {
-                return unsupported(format!("the bit-field `{}`", field.name), 0);
-            }
             let slot = Slot::Field(id, index);
             let ty = self.field_type(slot, &field.ty)?;
             let zero = self.zero_of(&field.ty, Some(slot), 0)?;
