@@ -192,3 +192,43 @@ int main(int argc, char *argv[]) {
         "unsupported: an update of a bit-field in place: no rule yet, at line 4"
     );
 }
+
+#[test]
+fn a_bit_field_of_a_number_holds_its_bits() {
+    let rust = check(
+        "bit-field-number",
+        r#"
+#include <stdio.h>
+struct flags {
+    unsigned on : 1;
+    int level : 3;
+    unsigned wide : 31;
+};
+int main(void) {
+    struct flags flags = {1, 3, 2147483647};
+    printf("%u %d %u\n", flags.on, flags.level, flags.wide);
+    flags.on = 1;
+    flags.level = 7;
+    flags.wide = 7;
+    printf("%u %d %u\n", flags.on, flags.level, flags.wide);
+    flags.on = 2;
+    flags.level = 12;
+    printf("%u %d %u\n", flags.on, flags.level, flags.wide);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "on: 1,",
+            "wide: 2147483647,",
+            "flags.on = 1;",
+            "flags.level = -1;",
+            "flags.on = 0;",
+            "flags.level = -4;",
+        ],
+    );
+}

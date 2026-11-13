@@ -45,6 +45,7 @@ const RESERVED: &[&str] = &[
     "true",
     "false",
     "virtual",
+    "_",
     "args",
     "globals",
     "drop",

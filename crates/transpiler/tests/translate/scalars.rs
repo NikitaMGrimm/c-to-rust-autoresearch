@@ -375,3 +375,14 @@ fn printf_f_in_capitals_is_refused() {
         "unsupported: the `printf` conversion `%F`: no rule yet, at line 4"
     );
 }
+
+#[test]
+fn a_local_named_underscore_gets_a_name() {
+    let rust = check(
+        "underscore",
+        "#include <stdio.h>\nint main(void) {\n    int _ = 3;\n    printf(\"%d\\n\", _ + 1);\n    return 0;\n}\n",
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["let __: i32 = 3;"]);
+}

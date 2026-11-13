@@ -140,6 +140,24 @@ impl Lower<'_> {
         let (Some(width), Some((bits, signed))) = (width, ty.int()) else {
             return value;
         };
+        // The bits of a number are known here, and `1 & 1` is an error to
+        // the compiler's lints.
+        if let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(number),
+            ..
+        }) = &value
+            && number.suffix().is_empty()
+            && let Ok(number) = number.base10_parse::<i128>()
+        {
+            let low = number & ((1 << width) - 1);
+            return rust::int(
+                match signed && low >> (width - 1) == 1 {
+                    true => low - (1 << width),
+                    false => low,
+                },
+                "",
+            );
+        }
         match signed {
             true => {
                 let unused = rust::int(i128::from(bits) - i128::from(width), "");
