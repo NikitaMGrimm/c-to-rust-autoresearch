@@ -751,18 +751,28 @@ impl<'a> Walk<'a> {
         {
             self.flow_of(text, slot, true);
         }
-        for arg in args.iter().filter(|arg| arg.ty.is_pointer()) {
-            match TEXT_READERS.contains(&name) {
-                // Text is an array of `char` up to its NUL.
-                true if arg.ty.element() == Some(&Type::Char) => {
-                    for source in self.sources(arg) {
-                        if let Source::Slot(slot) = source {
-                            self.seed(slot).many = true;
-                        }
+        // `sprintf` and `snprintf` store bytes into their first argument
+        // and read the others as text.
+        let text_from = match name {
+            "sprintf" | "snprintf" => 1,
+            _ if TEXT_READERS.contains(&name) => 0,
+            _ => args.len(),
+        };
+        for (index, arg) in args.iter().enumerate() {
+            if !arg.ty.is_pointer() {
+                continue;
+            }
+            // Text is an array of `char` up to its NUL, and so are the
+            // bytes that the library reads or stores.
+            if arg.ty.element() == Some(&Type::Char) {
+                for source in self.sources(arg) {
+                    if let Source::Slot(slot) = source {
+                        self.seed(slot).many = true;
                     }
                 }
-                true => {}
-                false => self.bytes(arg),
+            }
+            if index < text_from {
+                self.bytes(arg);
             }
         }
         let stores = STORES.iter().find(|(function, ..)| *function == name);

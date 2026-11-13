@@ -43,6 +43,9 @@ enum Helper {
     UntilNul,
     TextOf,
     CopyText,
+    StoreText,
+    StoreTextCut,
+    StoreTextWithin,
 }
 
 impl Helper {
@@ -54,6 +57,8 @@ impl Helper {
             | Helper::ParseFloat
             | Helper::FormatE
             | Helper::CopyText
+            | Helper::StoreText
+            | Helper::StoreTextCut
             | Helper::PeekByte
             | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
@@ -63,6 +68,7 @@ impl Helper {
             Helper::TextOf => &[Helper::UntilNul],
             Helper::ParseIntPrefix => &[Helper::ParseInt],
             Helper::FormatG => &[Helper::FormatE],
+            Helper::StoreTextWithin => &[Helper::StoreTextCut],
         }
     }
 
@@ -337,6 +343,44 @@ impl Helper {
                         .unwrap_or(target.len());
                     target[..length].copy_from_slice(&source[..length]);
                     target[length..].fill(0);
+                }
+            },
+            Helper::StoreText => parse_quote! {
+                /// Stores `text` at the start of `target` with a NUL after it,
+                /// as C's `sprintf` does, and returns its length. Text that
+                /// does not fit stops the program, where C writes beyond
+                /// `target`.
+                fn store_text(text: &str, target: &mut [u8]) -> i32 {
+                    let length = text.len();
+                    target[..length].copy_from_slice(text.as_bytes());
+                    target[length] = 0;
+                    length as i32
+                }
+            },
+            Helper::StoreTextCut => parse_quote! {
+                /// Stores as much of `text` at the start of `target` as leaves
+                /// room for a NUL after it, and the NUL, as C's `snprintf` does
+                /// with the length of `target` as its size. Returns the length
+                /// of all of `text`; an empty `target` gets nothing.
+                fn store_text_cut(text: &str, target: &mut [u8]) -> i32 {
+                    if let Some(room) = target.len().checked_sub(1) {
+                        let length = text.len().min(room);
+                        target[..length].copy_from_slice(&text.as_bytes()[..length]);
+                        target[length] = 0;
+                    }
+                    text.len() as i32
+                }
+            },
+            Helper::StoreTextWithin => parse_quote! {
+                /// `store_text_cut` into the first `size` bytes of `target`, or
+                /// into all of it where it has fewer: C's `snprintf` is right
+                /// with a size beyond its buffer as long as the text fits, and
+                /// writes beyond it otherwise, which stops the program here.
+                fn store_text_within(text: &str, target: &mut [u8], size: u64) -> i32 {
+                    let size = usize::try_from(size).unwrap_or(usize::MAX);
+                    let room = size.min(target.len());
+                    assert!(room == size || text.len() < room, "text beyond its buffer");
+                    store_text_cut(text, &mut target[..room])
                 }
             },
             Helper::TextOf => parse_quote! {

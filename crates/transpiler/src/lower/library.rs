@@ -30,6 +30,12 @@ impl Lower<'_> {
                 let stream = Stream::of(stream, name, at)?;
                 self.printf(format, values, stream, at)
             }
+            ("sprintf", [target, format, values @ ..]) => {
+                self.sprintf(target, None, format, values, at)
+            }
+            ("snprintf", [target, size, format, values @ ..]) => {
+                self.sprintf(target, Some(size), format, values, at)
+            }
             ("puts", [text]) => self.puts(text, Stream::Out, true),
             ("fputs", [text, stream]) => {
                 let stream = Stream::of(stream, name, at)?;
@@ -321,7 +327,7 @@ impl Lower<'_> {
     /// R4: `printf` with a literal format as `print!` or `println!`, and
     /// R26 as `eprint!` or `eprintln!` on `stderr`.
     fn printf(&mut self, format: &Expr, values: &[Expr], stream: Stream, at: u32) -> R<syn::Expr> {
-        let (text, arguments) = self.format(format, values, at)?;
+        let (text, arguments) = self.format(format, values, false, at)?;
         let (print, println) = (stream.print(), stream.println());
         Ok(match text.strip_suffix('\n') {
             Some(line) => {
@@ -336,8 +342,15 @@ impl Lower<'_> {
     }
 
     /// A literal `printf` format converted to Rust's, with the values it
-    /// prints.
-    fn format(&mut self, format: &Expr, values: &[Expr], at: u32) -> R<(String, Vec<syn::Expr>)> {
+    /// prints. `exact` asks for text whose bytes are those that C writes,
+    /// to be stored rather than printed.
+    fn format(
+        &mut self,
+        format: &Expr,
+        values: &[Expr],
+        exact: bool,
+        at: u32,
+    ) -> R<(String, Vec<syn::Expr>)> {
         let ExprKind::Decay(literal) = &format.uncast().kind else {
             return unsupported("`printf` with a format that is not a literal", at);
         };
@@ -368,7 +381,7 @@ impl Lower<'_> {
             let Some(value) = values.next() else {
                 return unsupported("a `printf` conversion without a value", at);
             };
-            let (spec, argument) = self.converted(&conversion, value, at)?;
+            let (spec, argument) = self.converted(&conversion, value, exact, at)?;
             text.push_str(&spec);
             arguments.push(argument);
         }
@@ -379,11 +392,56 @@ impl Lower<'_> {
         Ok((text, arguments))
     }
 
+    /// R27: `sprintf` and `snprintf`, with the size of `snprintf`, as the
+    /// text of `format!` stored by a helper that returns what C does. The
+    /// text comes first, so that its values may read the target.
+    fn sprintf(
+        &mut self,
+        target: &Expr,
+        size: Option<&Expr>,
+        format: &Expr,
+        values: &[Expr],
+        at: u32,
+    ) -> R<syn::Expr> {
+        let (text, arguments) = self.format(format, values, true, at)?;
+        let text: syn::Expr = match arguments.is_empty() {
+            true => rust::string(&text.replace("{{", "{").replace("}}", "}")),
+            false => {
+                let text = rust::string(&text);
+                parse_quote!(&format!(#text #(, #arguments)*))
+            }
+        };
+        let bytes = Repr {
+            mutable: true,
+            ..Repr::BYTES
+        };
+        let Some(size) = size else {
+            let target = self.pointer(target.uncast(), bytes)?;
+            self.helper(Helper::StoreText);
+            return Ok(rust::call("store_text", [text, target]));
+        };
+        if let (Some(count), Some(room)) = (size.constant(self.program), self.room(target)) {
+            if count > room {
+                return unsupported("an `snprintf` size beyond its buffer", at);
+            }
+            let target = rust::borrow(true, self.first(target, Ok(count))?);
+            self.helper(Helper::StoreTextCut);
+            return Ok(rust::call("store_text_cut", [text, target]));
+        }
+        // As for `fgets`, a size beyond the buffer is no error in C until
+        // the text needs the room.
+        let target = self.pointer(target.uncast(), bytes)?;
+        let size = self.expr(size)?;
+        self.helper(Helper::StoreTextWithin);
+        Ok(rust::call("store_text_within", [text, target, size]))
+    }
+
     /// Rust's format for one conversion, and the value it prints.
     fn converted(
         &mut self,
         conversion: &Conversion,
         value: &Expr,
+        exact: bool,
         at: u32,
     ) -> R<(String, syn::Expr)> {
         let Conversion {
@@ -463,6 +521,13 @@ impl Lower<'_> {
                     _ => rust::call("format_g", [value, precision]),
                 }
             }
+            // `as char` of a byte above 127 is two bytes of UTF-8.
+            b'c' if exact && !matches!(value.constant(self.program), Some(0..=127)) => {
+                return unsupported(
+                    "`%c` of a value that may be above 127 into bytes: no rule yet",
+                    at,
+                );
+            }
             b'c' => self.character(value)?,
             b's' => {
                 if precision.is_some() {
@@ -477,6 +542,10 @@ impl Lower<'_> {
                     // What the pointer holds may not be ASCII either.
                     None if width.is_some() && !self.is_argument(value) => {
                         return unsupported("a `printf` width for text in a variable", at);
+                    }
+                    // `text_of` writes bytes that are not UTF-8 as U+FFFD.
+                    None if exact && self.reads_bytes(value) => {
+                        return unsupported("`%s` of bytes into bytes: no rule yet", at);
                     }
                     None => self.text(value, false)?,
                 }
