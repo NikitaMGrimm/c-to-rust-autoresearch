@@ -174,7 +174,9 @@ Entry format, newest last:
   value; `if let Some(p) = …` and `let Some(p) = … else { … };`, with `p`
   inside as the type without `Option`; `is_some()` and `is_none()` for a
   test with no such form; `as_deref()`, `as_deref_mut()` and `unwrap()` for
-  other uses
+  other uses, and `.map(|found| &*found)` for a call's result that may be
+  stored through and is kept to read, since `as_deref()` would borrow from
+  a value that ends with its statement
 - Needs: `Facts::pointer` (`nullable`); the rewrite `normalise::narrow`,
   which gives the tested pointer a variable of its own
 - Motivation: skeleton

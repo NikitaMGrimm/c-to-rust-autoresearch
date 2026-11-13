@@ -344,6 +344,11 @@ become a fact and a refusal:
   there: a program that only stores `argv[argc]` runs on in C.
 - `%08.2f` of an infinity is padded with zeros in Rust and with spaces in
   C.
+- A pointer that a function returns into what a parameter may store
+  through keeps the argument borrowed for as long as the result is used.
+  A C program that reads the argument meanwhile, as
+  `e = find(entries, …); printf("%d %d", entries[0].value, e->value);`
+  does, is translated and does not compile.
 
 ## Tests
 

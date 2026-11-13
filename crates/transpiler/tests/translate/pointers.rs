@@ -141,3 +141,36 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn a_result_that_may_be_stored_through_is_kept_to_read() {
+    let rust = check(
+        "result-reborrow",
+        r#"
+#include <stdio.h>
+struct entry { int id; int value; };
+struct entry *find(struct entry *entries, int count, int id) {
+    for (int i = 0; i < count; i++) {
+        if (entries[i].id == id) return &entries[i];
+    }
+    return NULL;
+}
+int main(void) {
+    struct entry entries[3] = {{1, 10}, {2, 20}, {3, 30}};
+    struct entry *found = find(entries, 3, 2);
+    if (found) found->value += 1;
+    const struct entry *missing = find(entries, 3, 9);
+    printf("%d %d\n", missing == NULL, entries[1].value);
+    const struct entry *last = find(entries, 3, 3);
+    printf("%d\n", last ? last->value : -1);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["let missing: Option<&Entry> = find(&mut entries, 3, 9).map(|found| &*found);"],
+    );
+}

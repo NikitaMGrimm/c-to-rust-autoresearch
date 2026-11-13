@@ -413,6 +413,9 @@ impl Lower<'_> {
                     // `&T` and `Option<&T>` are copied.
                     (false, _) => value,
                     _ if result && from.mutable == to.mutable => value,
+                    // `as_deref` would borrow from the result, which ends
+                    // with its statement.
+                    (true, true) if result => parse_quote!(#value.map(|found| &*found)),
                     (true, true) => as_deref(value),
                     (true, false) => rust::borrow(to.mutable, rust::unary("*", value)),
                 };
