@@ -328,23 +328,36 @@ Entry format, newest last:
 ## R21: where a number ends
 
 - C: `strtol` and `strtoll` in base 10 of text, with `&end` for a local
-  `char *end`; `end == text` and `end != text`; `*end`, and `*end == '\0'`;
+  `char *end`, as a statement, a declaration's value or what an assignment
+  stores; `end == text` and `end != text`, `end - text`; `*end`, and
+  `*end == '\0'`; `end` as text, and as the text of the next call;
   `argv[i]` handed to a pointer that holds text
-- Rust: `let mut end: &str = "";` and `parse_int_rest(&args[1], &mut end)`,
-  a helper that sets `end` to the text after the number, or to all of the
-  text when it starts with none; `end.as_ptr() == args[1].as_ptr()`, which
-  is C's comparison of the two addresses; `end.is_empty()`, and
-  `end.bytes().next().unwrap_or(0)` for the byte at `*end`; `&args[i]` for
-  `argv[i]`, and `args.get(i).map(String::as_str)` for a pointer that may
-  be NULL, which `argv[argc]` is. Refused: a test for NULL of `argv[i]` or
-  of a pointer that holds it and nothing that is NULL; a comparison of two
-  addresses of which one may be NULL, or which may both be arguments (two
-  empty arguments are two places in C and one in Rust); an `end` that also
-  holds NULL
-- Needs: the analysis lets the text flow into `end`, counts `argv[i]` as a
-  source of text (`Source::Argument`) and no longer counts `*p` as reading
-  bytes; the fact `argument` for a slot that `argv[i]` reaches;
-  `Facts::addressed`, for the first value of `end`
+- Rust: `let (n, end) = parse_int_prefix(&args[1]);`, a helper that also
+  returns the index where the number ends, 0 when the text starts with
+  none; each call declares an `end` of its own. The end is a cursor (R24)
+  on the text that was read: `end == 0`, `end == args[1].len()` for
+  `*end == '\0'`, `args[1].as_bytes().get(end).copied().unwrap_or(0)` for
+  the byte at `*end`, `&args[1][end..]` for the text from there, and
+  `buf[end]` in an array of bytes. A call that reads from an index gives
+  `let (n, read) = parse_int_prefix(&text[end..]); let end = end + read;`.
+  A call whose end nothing reads is `parse_int`. `&args[i]` for `argv[i]`,
+  and `args.get(i).map(String::as_str)` for a pointer that may be NULL,
+  which `argv[argc]` is. Refused: an end that is read where not one call
+  is the last before it on every path (before the first call, after an
+  `if` or a loop that holds a call); a call inside a larger expression; a
+  text that is no array, no pointer that keeps its value and no
+  `argv[constant]`; text from an index that is not such an end; a test for
+  NULL of `argv[i]` or of a pointer that holds it and nothing that is
+  NULL; a comparison of two addresses of which one may be NULL, or which
+  may both be in arguments (two empty arguments are two places in C and
+  one in Rust)
+- Needs: `normalise::ends`, which gives each call its own variable for the
+  end and makes the call the statement `Stmt::Parse`; `cursors` (R24),
+  which makes that variable an index and keeps a base that only such ends
+  index as text, `text + index` in the tree; the analysis counts `argv[i]`
+  as a source of text (`Source::Argument`) and does not count `*p` or an
+  offset by an index as reading bytes; the fact `argument` for a slot that
+  `argv[i]` reaches
 - Motivation: `g1_005_static_loop` and `g1_011_static_dag` were refused for
   `strtol` with an end pointer, which they compare with the argument to see
   whether it held a number

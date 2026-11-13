@@ -29,7 +29,7 @@ fn unsupported<T>(what: impl Into<String>, at: u32) -> R<T> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Helper {
     ParseInt,
-    ParseIntRest,
+    ParseIntPrefix,
     ParseUint,
     ParseFloat,
     FormatE,
@@ -61,7 +61,7 @@ impl Helper {
             Helper::ReadLine => &[Helper::ReadByte],
             Helper::ReadLineWithin => &[Helper::ReadLine, Helper::PeekByte],
             Helper::TextOf => &[Helper::UntilNul],
-            Helper::ParseIntRest => &[Helper::ParseInt],
+            Helper::ParseIntPrefix => &[Helper::ParseInt],
             Helper::FormatG => &[Helper::FormatE],
         }
     }
@@ -96,16 +96,18 @@ impl Helper {
                     value
                 }
             },
-            Helper::ParseIntRest => parse_quote! {
-                /// As `parse_int`, and sets `rest` to what follows the number
-                /// in `text`, or to all of `text` if it starts with no number,
-                /// as C's `strtoll` sets its end pointer.
-                fn parse_int_rest<'a>(text: &'a str, rest: &mut &'a str) -> i64 {
+            Helper::ParseIntPrefix => parse_quote! {
+                /// As `parse_int`, with the index in `text` where the number
+                /// ends, as C's `strtoll` sets its end pointer: 0 if the text
+                /// starts with no number.
+                fn parse_int_prefix(text: &str) -> (i64, usize) {
                     let trimmed = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
                     let unsigned = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
                     let digits = unsigned.bytes().take_while(u8::is_ascii_digit).count();
-                    *rest = if digits == 0 { text } else { &unsigned[digits..] };
-                    parse_int(text)
+                    match digits {
+                        0 => (0, 0),
+                        _ => (parse_int(text), text.len() - unsigned.len() + digits),
+                    }
                 }
             },
             Helper::ParseUint => parse_quote! {

@@ -299,7 +299,7 @@ impl BinOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Stmt {
     Expr(Expr),
     /// The declaration of a local variable; its initialiser is in `Var`.
@@ -338,6 +338,19 @@ pub enum Stmt {
         var: VarId,
         source: Expr,
         otherwise: Vec<Stmt>,
+    },
+    /// `normalise::ends` writes this for a call of `strtol` that stores
+    /// where its number ends. `call` is the call without its end pointer.
+    /// The statement declares `number` for the call's value, if the
+    /// program uses it, and `end` for the end, which `cursors` makes an
+    /// index into the text. Where the text that the call reads is not the
+    /// start of its array, `cursors` sets `start` to its index there, with
+    /// a variable for the number of bytes that the call read.
+    Parse {
+        number: Option<VarId>,
+        end: VarId,
+        call: Expr,
+        start: Option<(Expr, VarId)>,
     },
 }
 
@@ -519,6 +532,9 @@ pub fn any_expr(stmts: &[Stmt], vars: &[Var], test: &mut impl FnMut(&Expr) -> bo
         Stmt::LetSome {
             source, otherwise, ..
         } => source.any(test) || any_expr(otherwise, vars, test),
+        Stmt::Parse { call, start, .. } => {
+            call.any(test) || start.iter().any(|(start, _)| start.any(test))
+        }
         Stmt::Return(None)
         | Stmt::Case(_)
         | Stmt::Default
@@ -623,6 +639,12 @@ pub fn each_expr_mut(stmts: &mut [Stmt], vars: &mut [Var], change: &mut impl FnM
             } => {
                 source.each_mut(change);
                 each_expr_mut(otherwise, vars, change);
+            }
+            Stmt::Parse { call, start, .. } => {
+                call.each_mut(change);
+                if let Some((start, _)) = start {
+                    start.each_mut(change);
+                }
             }
             Stmt::Return(None)
             | Stmt::Case(_)

@@ -9,7 +9,7 @@
 //! translation for.
 
 use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind};
-use crate::facts::{Facts, Slot};
+use crate::facts::{Facts, Slot, is_argv};
 use std::collections::{HashMap, HashSet};
 
 pub fn cursors(program: &mut Program, facts: &Facts) {
@@ -22,7 +22,7 @@ pub fn cursors(program: &mut Program, facts: &Facts) {
         // Every value of a cursor must have an index in its array. A group
         // with one that has none is no group of cursors.
         loop {
-            let mut rewrite = Rewrite::new(program, facts, groups.clone(), &taken);
+            let mut rewrite = Rewrite::new(program, facts, groups.clone(), &scan.ends, &taken);
             let without: HashSet<&String> = groups
                 .iter()
                 .filter(|(cursor, (key, _))| {
@@ -40,9 +40,14 @@ pub fn cursors(program: &mut Program, facts: &Facts) {
             groups.retain(|_, (key, _)| !without.contains(key));
         }
         if !groups.is_empty() {
-            let mut rewrite = Rewrite::new(program, facts, groups, &taken);
+            let mut rewrite = Rewrite::new(program, facts, groups, &scan.ends, &taken);
             rewrite.stmts(&mut body);
-            let Rewrite { added, changed, .. } = rewrite;
+            let Rewrite {
+                added,
+                reads,
+                changed,
+                ..
+            } = rewrite;
             for (var, changed) in changed {
                 program.vars[var] = changed;
             }
@@ -51,6 +56,7 @@ pub fn cursors(program: &mut Program, facts: &Facts) {
                 body.insert(position, Stmt::Decl(program.vars.len()));
                 program.vars.push(index);
             }
+            program.vars.extend(reads);
         }
         program.functions[function].body = body;
     }
@@ -101,6 +107,9 @@ struct Scan<'a> {
     values: HashMap<VarId, Vec<&'a Expr>>,
     /// The expressions that move each pointer variable.
     moves: HashMap<VarId, Vec<&'a Expr>>,
+    /// The variables for the end of a number that `strtol` read, R21: each
+    /// is an offset of the text that was read, which is its one value.
+    ends: HashSet<VarId>,
     /// The locals in scope where each local is declared.
     visible: HashMap<VarId, Vec<VarId>>,
     scope: Vec<VarId>,
@@ -120,6 +129,7 @@ impl<'a> Scan<'a> {
             compared: HashSet::new(),
             values: HashMap::new(),
             moves: HashMap::new(),
+            ends: HashSet::new(),
             visible: HashMap::new(),
             scope: Vec::new(),
             declared: params.to_vec(),
@@ -194,6 +204,22 @@ impl<'a> Scan<'a> {
                 self.expr(source);
                 self.block(otherwise);
             }
+            Stmt::Parse {
+                number, end, call, ..
+            } => {
+                self.expr(call);
+                if let ExprKind::Call(_, args) = &call.kind
+                    && let Some(text) = args.first()
+                {
+                    self.values.entry(*end).or_default().push(text);
+                    self.ends.insert(*end);
+                }
+                for &var in number.iter().chain([end]) {
+                    self.visible.insert(var, self.scope.clone());
+                    self.scope.push(var);
+                    self.declared.push(var);
+                }
+            }
             Stmt::Return(None)
             | Stmt::Case(_)
             | Stmt::Default
@@ -260,15 +286,19 @@ impl<'a> Scan<'a> {
         let no_params = HashSet::new();
         // A local whose every value is an offset of a variable or of an
         // array. One that gets memory from elsewhere, such as `malloc`, is
-        // no cursor, and may be a base.
+        // no cursor, and may be a base; so may one that holds a program
+        // argument, which has no elements to walk.
         let derived = |var: VarId| {
             vars[var].kind == VarKind::Local
                 && fits(var)
                 && self.values.get(&var).is_some_and(|values| {
                     values.iter().all(|value| {
                         let from = root(value);
-                        matches!(from.kind, ExprKind::Var(_))
-                            || self.stable(from, &no_params).is_some()
+                        match from.kind {
+                            ExprKind::Var(_) => true,
+                            ExprKind::Index(..) => false,
+                            _ => self.stable(from, &no_params).is_some(),
+                        }
                     })
                 })
         };
@@ -281,7 +311,10 @@ impl<'a> Scan<'a> {
                 && (pointer.bytes || vars[var].ty.element() != Some(&Type::Char))
         };
         let mut members: Vec<VarId> = (0..vars.len())
-            .filter(|var| fits(*var) && (self.moved.contains(var) || compared(*var)))
+            .filter(|var| {
+                fits(*var)
+                    && (self.moved.contains(var) || compared(*var) || self.ends.contains(var))
+            })
             .collect();
         // So does a local that a member gets a value from: `q` in
         // `q = p + 2; p = q;`.
@@ -372,6 +405,12 @@ impl<'a> Scan<'a> {
             if hidden || of_group().any(|var| failed.contains(&var) || !in_scope(var)) {
                 continue;
             }
+            // A program argument is text and has no elements to walk; the
+            // end of a number in it is all that is an index into it.
+            let argument = matches!(base.kind, ExprKind::Index(..));
+            if argument && !of_group().all(|var| self.ends.contains(&var)) {
+                continue;
+            }
             for member in of_group() {
                 groups.insert(member, (key.clone(), base.clone()));
             }
@@ -414,6 +453,11 @@ fn stable(
             stable(program, facts, inner, moved_params)
         }
         ExprKind::Decay(array) => place(program, facts, array, moved_params),
+        // One of the program's arguments.
+        ExprKind::Index(base, index) if is_argv(program, base) => {
+            let (argv, index) = (base.root_var()?, index.constant(program)?);
+            (!facts.mutated(argv)).then(|| format!("v{argv}[{index}]"))
+        }
         _ => None,
     }
 }
@@ -461,8 +505,18 @@ struct Rewrite<'a> {
     /// The variable that holds each cursor's index: the cursor itself for
     /// a local, and a new local for a parameter.
     index: HashMap<VarId, VarId>,
-    /// The new locals, in the order of their numbers.
+    /// The keys of the bases that stay text: those of which only the ends
+    /// of numbers are offsets. Rust's text has no elements, so an offset
+    /// of it stays `text + index` for the rules for text.
+    text: HashSet<String>,
+    /// The new locals for the indices of parameters, in the order of
+    /// their numbers.
     added: Vec<Var>,
+    /// The new locals for the number of bytes that a `Stmt::Parse` read,
+    /// whose numbers follow those of `added`.
+    reads: Vec<Var>,
+    /// The names of the variables in whose scope the function is.
+    taken: HashSet<String>,
     /// The variables that change their type or their first value.
     changed: HashMap<VarId, Var>,
     moved_params: HashSet<VarId>,
@@ -471,11 +525,33 @@ struct Rewrite<'a> {
 impl<'a> Rewrite<'a> {
     /// `taken` are the variables in whose scope the function is: its own
     /// and the globals.
-    fn new(program: &'a Program, facts: &'a Facts, groups: Groups, taken: &[VarId]) -> Self {
+    fn new(
+        program: &'a Program,
+        facts: &'a Facts,
+        groups: Groups,
+        ends: &HashSet<VarId>,
+        taken: &[VarId],
+    ) -> Self {
+        let mut text: HashSet<String> = groups
+            .values()
+            .filter(|(_, base)| !matches!(base.kind, ExprKind::Decay(_)))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for (cursor, (key, _)) in &groups {
+            if !ends.contains(cursor) {
+                text.remove(key);
+            }
+        }
         let mut rewrite = Rewrite {
             program,
             facts,
             index: HashMap::new(),
+            text,
+            reads: Vec::new(),
+            taken: taken
+                .iter()
+                .map(|&var| program.vars[var].name.clone())
+                .collect(),
             added: Vec::new(),
             changed: HashMap::new(),
             moved_params: HashSet::new(),
@@ -492,7 +568,7 @@ impl<'a> Rewrite<'a> {
                     .insert(cursor, program.vars.len() + rewrite.added.len());
                 // A name that no variable has where the index is in scope.
                 let mut name = format!("{}_at", var.name);
-                while taken.iter().any(|&other| program.vars[other].name == name) {
+                while rewrite.taken.contains(&name) {
                     name.push('_');
                 }
                 rewrite.added.push(Var {
@@ -583,6 +659,35 @@ impl<'a> Rewrite<'a> {
                 self.expr(source);
                 self.stmts(otherwise);
             }
+            Stmt::Parse {
+                end, call, start, ..
+            } => {
+                let key = self.groups.get(end).map(|(key, _)| key.clone());
+                if let (Some(key), ExprKind::Call(_, args)) = (key, &call.kind) {
+                    // `cursors` found an index for the text.
+                    let from = self.index_of(&args[0], &key);
+                    if let Some(from) = from.filter(|from| !matches!(from.kind, ExprKind::Int(0))) {
+                        let mut name = "read".to_owned();
+                        while self.taken.contains(&name) {
+                            name.push('_');
+                        }
+                        let read = self.program.vars.len() + self.added.len() + self.reads.len();
+                        self.reads.push(Var {
+                            name,
+                            ty: Type::Index,
+                            init: None,
+                            len: None,
+                            kind: VarKind::Local,
+                            at: call.at,
+                        });
+                        *start = Some((from, read));
+                    }
+                    let mut declared = self.program.vars[*end].clone();
+                    declared.ty = Type::Index;
+                    self.changed.insert(*end, declared);
+                }
+                self.expr(call);
+            }
             Stmt::Return(None)
             | Stmt::Case(_)
             | Stmt::Default
@@ -599,10 +704,14 @@ impl<'a> Rewrite<'a> {
     }
 
     /// The base and the index of a pointer expression that is an offset of
-    /// a cursor.
-    fn cursor(&mut self, pointer: &Expr) -> Option<(Expr, Expr)> {
+    /// a cursor, and whether the base stays text.
+    fn cursor(&mut self, pointer: &Expr) -> Option<(Expr, Expr, bool)> {
         let (key, base) = self.groups.get(&self.cursor_of(pointer)?)?.clone();
-        Some((base, self.index_of(pointer, &key)?))
+        Some((
+            base,
+            self.index_of(pointer, &key)?,
+            self.text.contains(&key),
+        ))
     }
 
     /// The index of a pointer expression in the array with this key, if the
@@ -732,7 +841,7 @@ impl<'a> Rewrite<'a> {
     fn test(&mut self, cond: &mut Expr) {
         if cond.ty.is_pointer()
             && cond.is_pure()
-            && let Some((base, _)) = self.cursor(cond)
+            && let Some((base, ..)) = self.cursor(cond)
         {
             *cond = base;
             return;
@@ -766,32 +875,28 @@ impl<'a> Rewrite<'a> {
 
     fn expr(&mut self, expr: &mut Expr) {
         let at = expr.at;
-        let element = |base: &Expr| base.ty.element().cloned().unwrap_or(Type::Void);
-        let indexed = |base: Expr, index: Expr| Expr {
-            ty: element(&base),
-            kind: ExprKind::Index(Box::new(base), Box::new(index)),
-            at,
-        };
         let null = |side: &Expr| matches!(side.uncast().kind, ExprKind::Null);
         let replacement = match &mut expr.kind {
             ExprKind::Deref(pointer) => self
                 .cursor(pointer)
-                .map(|(base, index)| indexed(base, index).kind),
-            ExprKind::Index(pointer, offset) => self.cursor(pointer).map(|(base, index)| {
+                .map(|(base, index, text)| element(base, index, text, at).kind),
+            ExprKind::Index(pointer, offset) => self.cursor(pointer).map(|(base, index, text)| {
                 let index = self.offset(index, BinOp::Add, offset);
-                indexed(base, index).kind
+                element(base, index, text, at).kind
             }),
             ExprKind::Member {
                 base: pointer,
                 record,
                 field,
                 arrow: true,
-            } => self.cursor(pointer).map(|(base, index)| ExprKind::Member {
-                base: Box::new(indexed(base, index)),
-                record: *record,
-                field: *field,
-                arrow: false,
-            }),
+            } => self
+                .cursor(pointer)
+                .map(|(base, index, text)| ExprKind::Member {
+                    base: Box::new(element(base, index, text, at)),
+                    record: *record,
+                    field: *field,
+                    arrow: false,
+                }),
             ExprKind::Binary(op, left, right)
                 if (op.is_comparison() || *op == BinOp::Sub)
                     && left.ty.is_pointer()
@@ -852,14 +957,38 @@ impl<'a> Rewrite<'a> {
             return;
         }
         // A cursor where the program needs the pointer itself.
-        if let Some((base, index)) = self.cursor(expr) {
-            expr.kind = ExprKind::AddrOf(Box::new(indexed(base, index)));
+        if let Some((base, index, text)) = self.cursor(expr) {
+            expr.kind = address(base, index, text, at);
             return;
         }
         for child in expr.children_mut() {
             self.expr(child);
         }
     }
+}
+
+/// The pointer to the element of a base at an index: `&base[index]`, or
+/// `base + index` for text.
+fn address(base: Expr, index: Expr, text: bool, at: u32) -> ExprKind {
+    match text {
+        true => ExprKind::Binary(BinOp::Add, Box::new(base), Box::new(index)),
+        false => ExprKind::AddrOf(Box::new(element(base, index, false, at))),
+    }
+}
+
+/// The element of a base at an index: `base[index]`, or `*(base + index)`
+/// for text.
+fn element(base: Expr, index: Expr, text: bool, at: u32) -> Expr {
+    let ty = base.ty.element().cloned().unwrap_or(Type::Void);
+    let kind = match text {
+        true => ExprKind::Deref(Box::new(Expr {
+            ty: base.ty.clone(),
+            kind: address(base, index, true, at),
+            at,
+        })),
+        false => ExprKind::Index(Box::new(base), Box::new(index)),
+    };
+    Expr { ty, kind, at }
 }
 
 fn index_literal(value: i128, at: u32) -> Expr {

@@ -64,7 +64,7 @@ const RESERVED: &[&str] = &[
     "read_line_within",
     "parse_uint",
     "copy_text",
-    "parse_int_rest",
+    "parse_int_prefix",
     "parse_float",
     "format_e",
     "format_g",

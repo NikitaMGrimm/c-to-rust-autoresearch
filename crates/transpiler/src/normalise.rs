@@ -7,6 +7,10 @@
 //! at the top of a block and assigns later, and Rust declares where the
 //! value is known. It needs no facts and runs before the first analysis.
 //!
+//! `ends`, R21, makes the end of a number that `strtol` stores through a
+//! pointer a result of the call. It needs no facts either, and is in a file
+//! of its own.
+//!
 //! `cursors`, R24, makes a pointer that walks an array an index beside the
 //! array; it is in a file of its own.
 //!
@@ -16,8 +20,10 @@
 //! `let Some(p) = p else { return; }` do.
 
 mod cursors;
+mod ends;
 
 pub use cursors::cursors;
+pub use ends::ends;
 
 use crate::c::{
     BinOp, Expr, ExprKind, Program, Stmt, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,

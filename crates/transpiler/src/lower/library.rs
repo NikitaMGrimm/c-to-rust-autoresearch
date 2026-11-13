@@ -5,7 +5,6 @@
 use super::pointer::Repr;
 use super::{Helper, Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type};
-use crate::facts::place_slot;
 use crate::rust;
 use syn::parse_quote;
 
@@ -71,29 +70,13 @@ impl Lower<'_> {
                 let (base, exponent) = (self.expr(base)?, self.typed(exponent)?);
                 Ok(rust::method(base, "powf", [exponent]))
             }
-            // R21: a number, and where it ends in the text.
-            ("strtol" | "strtoll", [text, end, base])
-                if !matches!(end.uncast().kind, ExprKind::Null)
-                    && base.constant(self.program) == Some(10) =>
-            {
-                let ExprKind::AddrOf(rest) = &end.uncast().kind else {
-                    return unsupported("an end pointer that is not `&end`: no rule yet", at);
-                };
-                if self.reads_bytes(text) || !self.is_text(rest) {
-                    return unsupported("an end pointer into bytes: no rule yet", at);
-                }
-                // The helper stores a `&str`, and NULL makes it an `Option`.
-                if let Some(slot) = place_slot(rest)
-                    && self.repr(slot, at)?.nullable
-                {
-                    return unsupported("an end pointer that may be NULL: no rule yet", at);
-                }
-                let (text, rest) = (self.text(text, true)?, self.place(rest, true)?);
-                self.helper(Helper::ParseIntRest);
-                Ok(rust::call(
-                    "parse_int_rest",
-                    [text, rust::borrow(true, rest)],
-                ))
+            // R21 covers an end pointer where `normalise::ends` made the
+            // call a statement of its own.
+            ("strtol" | "strtoll", [_, end, _]) if !matches!(end.uncast().kind, ExprKind::Null) => {
+                unsupported(
+                    "an end pointer other than a local `char *` that one call sets before each read: no rule yet",
+                    at,
+                )
             }
             // R4: a number from a program argument.
             ("strtol" | "strtoll", [text, end, base])
@@ -141,7 +124,7 @@ impl Lower<'_> {
     /// R13: text that a library function reads as a whole: a string
     /// literal, a pointer that only holds text, or `argv[i]` as `args[i]`.
     /// `borrowed` asks for a `&str`, where `args[i]` is a `String`.
-    fn text(&mut self, text: &Expr, borrowed: bool) -> R<syn::Expr> {
+    pub(super) fn text(&mut self, text: &Expr, borrowed: bool) -> R<syn::Expr> {
         if self.is_argument(text) {
             let argument = self.argument(text)?;
             return Ok(match borrowed {

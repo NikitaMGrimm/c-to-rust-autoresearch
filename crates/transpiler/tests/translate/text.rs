@@ -66,12 +66,62 @@ fn text_with_no_rule_is_refused() {
         ),
         "unsupported: a `printf` width for text in a variable, at line 4"
     );
+}
+
+#[test]
+fn an_end_with_no_one_call_before_its_read_is_refused() {
+    let refused = |name, body: &str| {
+        let c = format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {{\n    if (argc < 3) return 2;\n{body}    return 0;\n}}\n"
+        );
+        translate(name, &c).unwrap_err()
+    };
+    let no_call = "unsupported: an end pointer other than a local `char *` that one call sets before each read: no rule yet, at line ";
+    // Either call may have set the end that is read.
     assert_eq!(
         refused(
-            "end-null",
-            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    char *end = 0;\n    long n = strtol(argv[1], &end, 10);\n    printf(\"%ld %d\\n\", n, *end);\n    return 0;\n}\n"
+            "end-branches",
+            "    char *end;\n    long n;\n    if (argc > 3) n = strtol(argv[1], &end, 10);\n    else n = strtol(argv[2], &end, 10);\n    printf(\"%ld %d\\n\", n, *end);\n"
         ),
-        "unsupported: an end pointer that may be NULL: no rule yet, at line 5"
+        format!("{no_call}7")
+    );
+    assert_eq!(
+        refused(
+            "end-before",
+            "    char *end = 0;\n    if (end) puts(\"set\");\n    long n = strtol(argv[1], &end, 10);\n    printf(\"%ld %d\\n\", n, *end);\n"
+        ),
+        format!("{no_call}7")
+    );
+    assert_eq!(
+        refused(
+            "end-loop",
+            "    char *end = argv[1];\n    long n = 0;\n    while (*end) n += strtol(end, &end, 10);\n    printf(\"%ld\\n\", n);\n"
+        ),
+        format!("{no_call}7")
+    );
+    // Two empty arguments are two places in C, and Rust keeps no memory
+    // for either.
+    assert_eq!(
+        refused(
+            "end-two-arguments",
+            "    char *a, *b;\n    strtol(argv[1], &a, 10);\n    strtol(argv[2], &b, 10);\n    printf(\"%d\\n\", a == b);\n"
+        ),
+        "unsupported: a comparison of the addresses of two program arguments, at line 8"
+    );
+    // An argument that the program chooses as it runs has no index yet.
+    assert_eq!(
+        refused(
+            "end-any-argument",
+            "    char *end;\n    long n = strtol(argv[argc - 1], &end, 10);\n    printf(\"%ld %d\\n\", n, *end);\n"
+        ),
+        "unsupported: an end pointer that is not an offset of one text that stays in its place, at line 6"
+    );
+    assert_eq!(
+        refused(
+            "end-base",
+            "    char *end;\n    long n = strtol(argv[1], &end, 16);\n    printf(\"%ld %d\\n\", n, *end);\n"
+        ),
+        "unsupported: this call of the library's `strtol`: no rule yet, at line 6"
     );
 }
 
@@ -176,13 +226,14 @@ int main(int argc, char **argv) {
         &rust,
         &[
             "fn show(label: &str, text: &str) {",
-            "let mut end: &str = \"\";",
-            "let first: i64 = parse_int_rest(&args[1], &mut end);",
-            "if end.as_ptr() == args[1].as_ptr() {",
-            "if !end.is_empty() {",
-            "println!(\"then {}\", end.bytes().next().unwrap_or(0) as char);",
-            "show(\"rest\", end);",
-            "if end.as_ptr() != args[2].as_ptr() && end.is_empty() {",
+            "let (first, end) = parse_int_prefix(&args[1]);",
+            "if end == 0 {",
+            "if end != args[1].len() {",
+            "println!(\"then {}\", args[1].as_bytes().get(end).copied().unwrap_or(0) as char);",
+            "show(\"rest\", &args[1][end..]);",
+            "let (second, end) = parse_int_prefix(&args[2]);",
+            "let second: i32 = second as i32;",
+            "if end != 0 && end == args[2].len() {",
             "show(\"second\", &args[2]);",
         ],
     );
@@ -299,5 +350,106 @@ fn addresses_that_rust_does_not_tell_apart_are_refused() {
             "#include <stdio.h>\nint main(int argc, char **argv) {\n    char *a = argv[1], *b = argv[2];\n    printf(\"%d\\n\", a == b);\n    return 0;\n}\n"
         ),
         "unsupported: a comparison of the addresses of two program arguments, at line 4"
+    );
+}
+
+#[test]
+fn the_end_of_a_number_is_an_index_into_what_was_read() {
+    // Two numbers in one argument, the second read from the end of the
+    // first; an end that nothing reads; and a variable that holds the
+    // argument.
+    let rust = check(
+        "strtol-end-chain",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    if (argc != 3) return 2;
+    char *end = NULL;
+    long a = strtol(argv[1], &end, 10);
+    long b = 0;
+    b += strtol(end, &end, 10);
+    printf("%ld %ld [%s] %d\n", a, b, end, (int)(end - argv[1]));
+    const char *text = argv[2];
+    int read = (int)strtol(text, &end, 10);
+    printf("%d\n", read);
+    long long c = strtoll(text, &end, 10);
+    if (end == text || *end != '\0') {
+        printf("not a number: %lld\n", c);
+    }
+    return 0;
+}
+"#,
+        &[
+            &["1+2x", "7"],
+            &["7-8", "x"],
+            &["5", ""],
+            &["", "12 "],
+            &["3+4+5", "-9223372036854775809"],
+            &["\u{e9}1", "1\u{e9}"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let (a, end) = parse_int_prefix(&args[1]);",
+            "let (parsed, read_) = parse_int_prefix(&args[1][end..]);",
+            "let end: usize = end + read_;",
+            "b += parsed;",
+            "println!(\"{} {} [{}] {}\", a, b, &args[1][end..], end as i64 as i32);",
+            "let text: &str = &args[2];",
+            "let read: i32 = parse_int(text) as i32;",
+            "let (c, end) = parse_int_prefix(text);",
+            "if end == 0 || end != text.len() {",
+        ],
+    );
+    // In bytes that the program reads, the end is an index like that of
+    // any pointer that walks them.
+    let rust = check(
+        "strtol-end-bytes",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+static int number(const char *s, int *out) {
+    char *end;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0') return 0;
+    *out = (int)v;
+    return 1;
+}
+int main(void) {
+    char buf[64];
+    if (!fgets(buf, sizeof buf, stdin)) return 1;
+    char *p = buf;
+    long sum = 0;
+    while (*p) {
+        char *end;
+        long v = strtol(p, &end, 10);
+        if (end == p) break;
+        sum += v;
+        p = end;
+        if (*p == ',') p++;
+    }
+    int out = -1;
+    int found = number("23", &out);
+    printf("%ld %d %d %d\n", sum, *p, found, out);
+    return 0;
+}
+"#,
+        &[&[]],
+        "1,2,-3,x\n",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn number(s: &str, out: &mut i32) -> i32 {",
+            "let (v, end) = parse_int_prefix(s);",
+            "if end == 0 || end != s.len() {",
+            "let (v, read) = parse_int_prefix(&text_of(&buf[p..]));",
+            "let end: usize = p + read;",
+            "if end == p {",
+            "p = end;",
+        ],
     );
 }

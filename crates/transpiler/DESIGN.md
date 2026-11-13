@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> join -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> join, ends -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> join -> facts -> narrow -> facts -> lower
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `join` declares a local where it gets its first value, `narrow` names a pointer that a test found not to be NULL | The facts, for `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -200,12 +200,23 @@ becomes a statement of its own:
 | `char *end; long n = strtol(text, &end, 10);` | `let (n, end) = parse_int_prefix(text);` |
 | `end == text`, `*end == '\0'`, `*end` | `end == 0`, `end == text.len()`, the byte of `text` at `end`, or 0 at its end |
 | `puts(end)` | `println!("{}", &text[end..])` |
+| `m = strtol(end, &end, 10);` | `let (m, read) = parse_int_prefix(&text[end..]);`<br>`let end = end + read;` |
 
 Nothing is stored through `&mut end`, and no address is compared, so an
-empty argument needs no memory of its own. An end pointer is refused where
-the call is inside a larger expression, where the pointer is read before
-the call or after the block of the call has ended, and where it is assigned
-in any other way.
+empty argument needs no memory of its own. `ends` does this before the first
+analysis, and writes the call as `Stmt::Parse`; `cursors` then treats the new
+variable as a cursor whose one value is the text that was read. Text has no
+elements in Rust, so a base that only such ends index stays text: its
+offsets stay `text + index` in the tree, which the rules for text read, and
+a `&str` is cut only at the end of a number, which is never inside a
+character. In an array of bytes the end is an index like any other cursor.
+
+A read of `end` means the end of one call only where that call is the last
+before it on every path: in the statements that follow the call in its
+block, and in the branches of an `if` there, up to the next call. An end
+pointer is refused where it is read anywhere else, where the call is inside
+a larger expression than a declaration or an assignment, and where it is
+assigned in any other way.
 
 ## Not yet built
 
@@ -231,10 +242,11 @@ place:
   `fprintf(stderr, …)` is `eprint!`.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result. The end
-  pointer of `strtol` is the one case built (R21): `&mut end` for a `&str`
-  that the helper sets to the rest of the text. `strtoul`, `strtod` and an
-  end pointer into bytes wait for it, as does `errno`, which should become
-  a result of the helper rather than a global.
+  pointer of `strtol` is the one case built (R21), as a second result of
+  the call (see Cursors above). `strtoul` and `strtod` wait for the same
+  rule, as do an end in `argv[i]` for an `i` that changes, which needs the
+  argument in a variable of its own, and `errno`, which should become a
+  result of the helper rather than a global.
 - **Cursors that may be NULL.** A cursor is an index (see Cursors above). One
   that NULL reaches, or that a library function returns (`strchr`,
   `memchr`, `strstr`), should be an `Option<usize>` from `position`; a
@@ -296,14 +308,15 @@ C's promotions, checked arithmetic and the input it consumes:
 - **Bytes read as numbers through text.** `parse_int(&text_of(&buffer))`
   makes a `String` of bytes only to read digits; the parse helpers should
   take `until_nul(&buffer)`.
-- **The end pointer as a result.** Where `end` is only compared with the
-  text (R21), `let Some(n) = … else { … }` on a helper that returns
-  nothing when it read no digit, instead of `&mut end` and `as_ptr()`.
+- **The end of a number that is only tested.** Where `end` is only
+  compared with the text (R21), `let Some(n) = … else { … }` on a helper
+  that returns nothing when it read no digit, instead of an index that is
+  compared with 0.
 - **Operations the standard library has.** `x.min(120)` for a conditional,
   `reverse_bits`, `div_euclid`. Only by rules for exact shapes: a
   near-miss such as `d ^ (d >> 31)` is not `abs`.
 - **The helpers.** One `StdinLock` held by `main` and passed on, rather
-  than a lock for every byte; `parse_int_rest` scans its text twice.
+  than a lock for every byte; `parse_int_prefix` scans its text twice.
 
 ## Known weak spots
 
@@ -329,11 +342,6 @@ become a fact and a refusal:
   some bytes it returns them, where `fgets` returns NULL.
 - `&args[i]` stops the program where `i` is `argc`, and C reads NULL
   there: a program that only stores `argv[argc]` runs on in C.
-- An empty argument has no memory of its own in Rust, so two pointers into
-  two different empty arguments are equal there and not in C. A comparison
-  of two arguments is refused; one of an end pointer with an argument
-  (R21) is not, and is wrong when the end pointer is of another argument
-  and both are empty.
 - `%08.2f` of an infinity is padded with zeros in Rust and with spaces in
   C.
 

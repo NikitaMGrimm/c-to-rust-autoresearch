@@ -1,7 +1,7 @@
 //! Rules for statements.
 
 use super::input::Read;
-use super::{Lower, Nest, R, unsupported};
+use super::{Helper, Lower, Nest, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, VarId, VarKind, any_expr};
 use crate::facts::Slot;
 use crate::normalise::leaves;
@@ -115,6 +115,12 @@ impl Lower<'_> {
                 let otherwise = self.block(otherwise)?;
                 out.push(parse_quote!(let #pattern = #value else #otherwise;));
             }
+            Stmt::Parse {
+                number,
+                end,
+                call,
+                start,
+            } => out.extend(self.parse(*number, *end, call, start.as_ref())?),
             Stmt::Case(_) | Stmt::Default => {
                 return unsupported("a `case` outside the top of its `switch`", 0);
             }
@@ -123,6 +129,70 @@ impl Lower<'_> {
             }
         }
         Ok(())
+    }
+
+    /// R21: `strtol` with an end pointer gives the number and the index
+    /// in the text where it ends.
+    fn parse(
+        &mut self,
+        number: Option<VarId>,
+        end: VarId,
+        call: &Expr,
+        start: Option<&(Expr, VarId)>,
+    ) -> R<Vec<syn::Stmt>> {
+        let at = call.at;
+        let (text, base) = match &call.kind {
+            ExprKind::Call(_, args) if args.len() == 3 => (&args[0], &args[2]),
+            _ => return unsupported("this call of the library's `strtol`: no rule yet", at),
+        };
+        if base.constant(self.program) != Some(10) {
+            return unsupported("this call of the library's `strtol`: no rule yet", at);
+        }
+        if self.program.vars[end].ty != Type::Index {
+            return unsupported(
+                "an end pointer that is not an offset of one text that stays in its place",
+                at,
+            );
+        }
+        let text = self.text(text, true)?;
+        // A variable that nothing reads gets no name.
+        let body = match self.function {
+            Some(function) => self.program.functions[function].body.as_slice(),
+            None => &[],
+        };
+        let read = |var: VarId| {
+            any_expr(
+                body,
+                &self.program.vars,
+                &mut |part| matches!(part.kind, ExprKind::Var(named) if named == var),
+            )
+        };
+        let pattern = |lower: &Self, var: Option<VarId>| -> syn::Pat {
+            match var.filter(|var| read(*var)) {
+                Some(var) => {
+                    let name = rust::ident(lower.names.var(var));
+                    let mutability: Option<syn::Token![mut]> =
+                        lower.needs_mut(var).then(Default::default);
+                    parse_quote!(#mutability #name)
+                }
+                None => parse_quote!(_),
+            }
+        };
+        let number = pattern(self, number);
+        let end = pattern(self, Some(end));
+        self.helper(Helper::ParseIntPrefix);
+        Ok(match start {
+            None => vec![parse_quote!(let (#number, #end) = parse_int_prefix(#text);)],
+            // The helper counts from where it starts to read.
+            Some((start, read)) => {
+                let read = rust::ident(self.names.var(*read));
+                let start = self.expr(start)?;
+                vec![
+                    parse_quote!(let (#number, #read) = parse_int_prefix(#text);),
+                    parse_quote!(let #end: usize = #start + #read;),
+                ]
+            }
+        })
     }
 
     /// The statements of a branch that always runs, in the place of its
@@ -237,10 +307,6 @@ impl Lower<'_> {
                     parse_quote!(let #mutability #name: #ty = #value;)
                 }
                 None if repr.nullable => parse_quote!(let #mutability #name: #ty = None;),
-                // A function that is handed `&mut end` needs a value there.
-                None if repr.text && self.facts.addressed(id) => {
-                    parse_quote!(let #mutability #name: #ty = "";)
-                }
                 None => parse_quote!(let #mutability #name: #ty;),
             }]);
         }

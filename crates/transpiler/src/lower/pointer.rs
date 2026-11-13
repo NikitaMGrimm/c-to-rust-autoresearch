@@ -91,8 +91,22 @@ impl Lower<'_> {
                 .slot_of(pointer)
                 .and_then(|slot| self.repr(slot, pointer.at))
                 .is_ok_and(|repr| repr.text),
+            // R21: text from the index where a number ends in it.
+            ExprKind::Binary(BinOp::Add, text, index) if index.ty == Type::Index => {
+                self.is_text(text) || self.is_argument(text)
+            }
             _ => false,
         }
+    }
+
+    /// The parts of `text + index`, where a number ends in text: the
+    /// whole text and the index.
+    pub(super) fn text_at(&mut self, text: &Expr, index: &Expr) -> R<(syn::Expr, syn::Expr)> {
+        let text = match self.is_argument(text) {
+            true => self.argument(text)?,
+            false => self.pointer(text, Repr::TEXT)?,
+        };
+        Ok((text, self.expr(index)?))
     }
 
     /// R7, R8: the type of a slot: `Box<T>` or `Vec<T>` for an owner, `&T`,
@@ -279,6 +293,15 @@ impl Lower<'_> {
                     },
                 )))
             }
+            ExprKind::Binary(BinOp::Add, text, index) if to.text && self.is_text(pointer) => {
+                // A `&str` cannot start inside a character. The end of a
+                // number never is, and other indices have no rule.
+                if !matches!(index.kind, ExprKind::Var(_)) {
+                    return unsupported("text from an index that is not the end of a number", at);
+                }
+                let (text, index) = self.text_at(text, index)?;
+                Ok(wrap(parse_quote!(&#text[#index..])))
+            }
             ExprKind::Binary(BinOp::Add, left, right) if to.many && !to.owned => {
                 let (base, offset) = match left.ty.is_pointer() {
                     true => (left, right),
@@ -430,6 +453,15 @@ impl Lower<'_> {
                 } else {
                     rust::unary("*", value)
                 })
+            }
+            // R21: the byte of text at an index, or the NUL that ends it
+            // in C.
+            ExprKind::Binary(BinOp::Add, text, index) if self.is_text(pointer) => {
+                if write {
+                    return unsupported("a store into text", pointer.at);
+                }
+                let (text, index) = self.text_at(text, index)?;
+                Ok(parse_quote!(#text.as_bytes().get(#index).copied().unwrap_or(0)))
             }
             ExprKind::Decay(_) | ExprKind::Binary(BinOp::Add, ..) => {
                 Ok(rust::index(self.slice(pointer, write)?, rust::int(0, "")))

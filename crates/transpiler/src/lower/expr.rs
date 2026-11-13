@@ -411,6 +411,12 @@ impl Lower<'_> {
                     && self.is_text(pointer)
                     && other.constant(self.program) == Some(0)
                 {
+                    // R21: text ends at the index that is its length.
+                    if let ExprKind::Binary(BinOp::Add, text, index) = &pointer.kind {
+                        let (text, index) = self.text_at(text, index)?;
+                        let len = rust::method(text, "len", []);
+                        return Ok(rust::binary(index, symbol(op), len));
+                    }
                     let empty = rust::method(self.pointer(pointer, Repr::TEXT)?, "is_empty", []);
                     return Ok(match op {
                         BinOp::Eq => empty,
@@ -455,6 +461,11 @@ impl Lower<'_> {
         // Two arguments that are empty are two places in C and one in
         // Rust, where an empty `String` has no memory of its own.
         let holds_argument = |side: &Expr| {
+            // The end of a number in text is in the memory of the text.
+            let side = match &side.kind {
+                ExprKind::Binary(BinOp::Add, text, index) if index.ty == Type::Index => text,
+                _ => side,
+            };
             self.is_argument(side)
                 || place_slot(side.uncast()).is_some_and(|slot| self.facts.pointer(slot).argument)
         };

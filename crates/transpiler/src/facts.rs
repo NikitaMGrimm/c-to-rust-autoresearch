@@ -618,6 +618,12 @@ impl<'a> Walk<'a> {
                 self.expr(source);
                 self.stmts(otherwise);
             }
+            Stmt::Parse { call, start, .. } => {
+                self.expr(call);
+                if let Some((start, _)) = start {
+                    self.expr(start);
+                }
+            }
             Stmt::Return(None)
             | Stmt::Case(_)
             | Stmt::Default
@@ -672,8 +678,10 @@ impl<'a> Walk<'a> {
                 }
             }
             ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right) => {
-                for side in [left, right] {
-                    if side.ty.is_pointer() {
+                // An index beside text is where a number ends in it, and
+                // the text stays text.
+                for (side, other) in [(left, right), (right, left)] {
+                    if side.ty.is_pointer() && other.ty != Type::Index {
                         self.many(side);
                     }
                 }
