@@ -123,6 +123,16 @@ impl Lower<'_> {
         })
     }
 
+    /// Whether an initialiser gives the zero of its type and no pointer.
+    fn is_zero(&self, init: &Expr) -> bool {
+        match &init.kind {
+            ExprKind::Zero => !init.ty.is_pointer(),
+            ExprKind::Float(value) => *value == 0.0 && value.is_sign_positive(),
+            ExprKind::InitList(items) => items.iter().all(|item| self.is_zero(item)),
+            _ => init.ty.is_integer() && init.constant(self.program) == Some(0),
+        }
+    }
+
     /// R5, R6: what an initialiser gives a place of type `ty`.
     pub(super) fn init(&mut self, ty: &Type, slot: Option<Slot>, init: &Expr) -> R<syn::Expr> {
         let program = self.program;
@@ -151,7 +161,8 @@ impl Lower<'_> {
             }
             (Type::Array(element, Some(length)), ExprKind::InitList(items)) => {
                 let length = usize::try_from(*length).unwrap_or(usize::MAX);
-                if items.is_empty() {
+                // `{0}` and `{}` are the array of zeros, whatever its length.
+                if items.iter().all(|item| self.is_zero(item)) {
                     return self.zero(ty, init.at);
                 }
                 let mut values = Vec::new();

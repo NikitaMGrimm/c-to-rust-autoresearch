@@ -221,3 +221,12 @@ Entry format, newest last:
   `g2_019_integer_overflow_char_max_multiply` were refused for text other
   than a program argument
 - Changes: extends R4, whose `%s` took a literal or `argv[i]`, and R7
+
+## R14: an initialiser of zeros
+
+- C: `{0}`, `{}` or any list of zeros for an array, of numbers or of records
+- Rust: the array of zeros, `[0; 40]`, whatever its length
+- Needs: nothing
+- Motivation: `g2_009_stack_buffer_overflow` was refused for
+  `int buffer[10] = { 0 }`, an array whose initialiser leaves much of it out
+- Changes: extends R6, which wrote out up to eight missing elements

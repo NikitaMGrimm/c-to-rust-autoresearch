@@ -47,3 +47,33 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn an_initialiser_of_zeros_fills_an_array_of_any_length() {
+    let rust = check(
+        "zeros",
+        r#"
+#include <stdio.h>
+struct pair { int a; double b; };
+int main(void) {
+    int counts[40] = {0};
+    double sums[100] = {0.0};
+    struct pair pairs[50] = {0};
+    unsigned char few[3] = {0, 0};
+    counts[39] = 7;
+    printf("%d %d %.1f %d %.1f %d\n", counts[0], counts[39], sums[99], pairs[49].a, pairs[49].b, few[2]);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut counts: [i32; 40] = [0; 40];",
+            "let sums: [f64; 100] = [0.0; 100];",
+            "let few: [u8; 3] = [0; 3];",
+        ],
+    );
+}
