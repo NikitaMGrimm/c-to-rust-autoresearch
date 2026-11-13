@@ -78,7 +78,7 @@ int main(void) {
             "let end: usize = size as usize;",
             "while ptr < end {",
             "if entries[ptr].id == id {",
-            "return Some(&mut entries[ptr]);",
+            "return Some(&mut entries[ptr..]);",
             "let mut ptr: usize = size as usize;",
             "let first: usize = start as usize;",
             "ptr -= 1;",
@@ -155,6 +155,40 @@ int main(void) {
             "squares += heap[h];",
             "let second: usize = first + 2;",
             "first = second;",
+        ],
+    );
+}
+
+#[test]
+fn a_cursor_handed_on_may_be_the_end_of_its_array() {
+    // C may hand on the address one past the last element; Rust has no
+    // element there, but an empty rest of the array.
+    let rust = check(
+        "cursor-end",
+        r#"
+#include <stdio.h>
+int *after(int *p, int n) {
+    while (n-- > 0) p++;
+    return p;
+}
+int show(const int *p, int inside) {
+    return inside ? *p : -1;
+}
+int main(int argc, char **argv) {
+    int a[3] = {4, 5, 6};
+    printf("%d\n", show(after(a, argc - 1), argc < 4));
+    return 0;
+}
+"#,
+        &[&[], &["x"], &["x", "y", "z"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn after(p: &[i32], mut n: i32) -> &[i32] {",
+            "&p[p_at..]",
+            "if inside != 0 { p[0] } else { -1 }",
         ],
     );
 }

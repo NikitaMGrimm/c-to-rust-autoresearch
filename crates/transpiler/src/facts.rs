@@ -268,9 +268,11 @@ impl Facts {
                 (_, true) => sources(inner),
                 (_, false) => vec![Source::Unknown("a pointer made from a number")],
             },
+            // The address of the element at a cursor is a position in the
+            // array, which may be its end, where there is no element.
             ExprKind::AddrOf(place) => vec![Source::Place {
                 root: self.root(program, place),
-                array: false,
+                array: matches!(&place.kind, ExprKind::Index(_, index) if index.ty == Type::Index),
             }],
             ExprKind::Decay(array) => match array.kind {
                 ExprKind::Str(_) => vec![Source::Literal],

@@ -406,8 +406,9 @@ Entry format, newest last:
   returned or tested for NULL
 - Rust: the slice stays where it is and the pointer is an index beside it:
   `let mut p: usize = 0;`, `a[p]`, `a[p + i]`, `a[p].field`, `p += 1`,
-  `p < end`, `p as i64 - q as i64`, `&a[p..]` or `&a[p]` where the pointer
-  itself is needed, and the test of `a` for a test of `p`. A parameter that
+  `p < end`, `p as i64 - q as i64`, `&a[p..]` where the pointer itself is
+  needed, also where the slot it goes to is one element, since the cursor
+  may be at the end of the array, and the test of `a` for a test of `p`. A parameter that
   the function moves stays the slice and gets a local `s_at`. A signed
   offset that is no constant is added with `wrapping_add_signed`. Left as
   they are, and so refused: pointers that walk no single array, whose

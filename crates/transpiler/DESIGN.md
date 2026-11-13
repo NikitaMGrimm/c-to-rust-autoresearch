@@ -155,7 +155,7 @@ where it is, under its own name, and the pointer variable becomes a `usize`.
 | `p++`, `p--`, `p += n`, `p = q + 1` | `p += 1`, `p -= 1`, `p += n`, `p = q + 1` |
 | `p < end`, `p == q`, `p != a` | `p < end`, `p == q`, `p != 0` |
 | `p - q` | `p as i64 - q as i64` |
-| `f(p)`, `return p;`, `q = p` for a `q` that is no cursor | `f(&a[p..])` or `f(&a[p])`, as the slot it goes to holds an array or one element |
+| `f(p)`, `return p;`, `q = p` for a `q` that is no cursor | `f(&a[p..])`: C may hand on the end of the array, where Rust has an empty rest and no element |
 | a parameter `char *s` that the function itself moves | `s` stays the slice, and a local `s_at` is the index |
 | `if (p)`, `p == NULL` | the same test of `a`: `a + n` is NULL only where `a` is |
 
@@ -177,7 +177,8 @@ to C, before the pointers are analysed:
 2. A group has exactly one base. Its variables get the type `Type::Index`,
    the one type of the tree that C does not have, and every use of them is
    rewritten as the table says. A use that needs the pointer itself becomes
-   `&a[p]`, which the rules for borrows translate as before.
+   `&a[p]`, which the analysis takes for a pointer into an array, and so
+   `&a[p..]`.
 3. A group without one base, with a base that may change, with a variable
    whose address is taken or with a value from anywhere else (NULL, `malloc`,
    a library function's result) is left as it is, and the program is refused
@@ -362,6 +363,12 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 - **A field named twice.** `Node { id: id, value: value }` where the value
   is the variable of the field's name: `Node { id, value }`. Needs only
   the two Rust names after `names` has chosen them.
+- **A search that returns an element.** A cursor that a function returns
+  or hands on is the rest of the array from there, `&a[p..]`, and the
+  caller reads `found[0].value`, since the cursor may be at the end of the
+  array. Where the return is under the loop's test `p < end`, the cursor
+  is an element, `&a[p]`, and the caller reads `found.value`. Needs the
+  range that the test proves, up to the return.
 - **Two ranges for one.** `b[1..][..2]` for a copy of a count from an
   offset (R29) is `b[1..3]` where both are constants.
 
