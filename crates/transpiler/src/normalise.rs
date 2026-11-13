@@ -7,10 +7,17 @@
 //! at the top of a block and assigns later, and Rust declares where the
 //! value is known. It needs no facts and runs before the first analysis.
 //!
+//! `cursors`, R24, makes a pointer that walks an array an index beside the
+//! array; it is in a file of its own.
+//!
 //! `narrow`, R10, names the pointer that a test has found not to be NULL.
 //! C tests `p` and goes on using `p`; Rust opens an `Option` once and uses
 //! what was in it, as `if let Some(p) = p` and
 //! `let Some(p) = p else { return; }` do.
+
+mod cursors;
+
+pub use cursors::cursors;
 
 use crate::c::{
     BinOp, Expr, ExprKind, Program, Stmt, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,

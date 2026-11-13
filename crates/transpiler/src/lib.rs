@@ -61,6 +61,8 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     let mut program = clang::program(ast)?;
     normalise::join(&mut program);
     let facts = facts::Facts::of(&program);
+    normalise::cursors(&mut program, &facts);
+    let facts = facts::Facts::of(&program);
     normalise::narrow(&mut program, &facts);
     let facts = facts::Facts::of(&program);
     let file = lower::program(&program, &facts)?;

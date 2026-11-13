@@ -2,6 +2,7 @@
 //! and checks the Rust that a rule should give.
 
 mod common;
+mod cursors;
 mod globals;
 mod heap;
 mod input;

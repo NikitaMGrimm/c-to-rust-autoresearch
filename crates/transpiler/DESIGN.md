@@ -270,6 +270,10 @@ C's promotions, checked arithmetic and the input it consumes:
 - **Promotions with no effect.** `args.len() as i32 != 2`, `foo.x as i32 as
   u32` for a `u32`, `!!(b != 0)`. Only where the widths make the casts an
   identity: a `char`'s sign extension and a narrowing stay.
+- **A step inside an index.** `*dst++ = *src++` is `dst[{ let before =
+  dst_at; dst_at += 1; before }] = …`; the steps belong after the
+  statement, `dst[dst_at] = src[src_at]; dst_at += 1; src_at += 1;`, where
+  nothing else in the statement reads the cursors.
 - **Statements of C in conditions and at the end.** `if !({ x -= e; x } >
   0)` for a store in a condition, `return;` as a function's last
   statement, `x = x * y` for `x *= y`. The compound form needs a place
@@ -309,9 +313,12 @@ become a fact and a refusal:
 - An owner moved out of a field or a global leaves `None` behind
   (`take()`); a C program that reads the field again before storing to it
   would see NULL in Rust.
-- A pointer into the middle of an array is the rest of the array from
-  there (`&a[1..]`), so an index or a step back before it (`p[-1]`) stops
-  the program where C reads the element.
+- A pointer into the middle of an array that is no cursor is the rest of
+  the array from there (`&a[1..]`), so an index or a step back before it
+  (`p[-1]`) stops the program where C reads the element.
+- A cursor that steps one before its array, as the last `p--` of
+  `for (p = end - 1; p >= a; p--)` does, stops the program there. C leaves
+  that undefined, the sanitizers do not report it, and compiled C runs on.
 - `%c`, `%s` of a program argument and `argv` assume ASCII; C passes any
   bytes through. `text_of` prints bytes that are not UTF-8 as U+FFFD.
 - A conversion from a floating-point number to an integer saturates in Rust

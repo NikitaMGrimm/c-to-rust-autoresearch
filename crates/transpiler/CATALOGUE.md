@@ -377,3 +377,24 @@ Entry format, newest last:
 - Needs: nothing
 - Motivation: `g3_033_bitfield` was refused for the bit-field `x`
 - Changes: extends R5
+
+## R24: cursors
+
+- C: a local pointer or a parameter that walks one array: `p++`, `p--`,
+  `p += n`, `p -= n`, `p = q + n`; `*p`, `p[i]`, `p->field`; `p < end`,
+  `p == q` and `p - q` for two pointers into that array; `p` handed on,
+  returned or tested for NULL
+- Rust: the slice stays where it is and the pointer is an index beside it:
+  `let mut p: usize = 0;`, `a[p]`, `a[p + i]`, `a[p].field`, `p += 1`,
+  `p < end`, `p as i64 - q as i64`, `&a[p..]` or `&a[p]` where the pointer
+  itself is needed, and the test of `a` for a test of `p`. A parameter that
+  the function moves stays the slice and gets a local `s_at`. A signed
+  offset that is no constant is added with `wrapping_add_signed`. Left as
+  they are, and so refused: pointers that walk no single array, whose
+  array is named by an expression that may come to mean other memory, or
+  whose address is taken; a comparison of pointers into two arrays
+- Needs: the rewrite `normalise::cursors` and `Type::Index`; the analysis
+  counts text that a library function reads as an array
+- Motivation: `g3_maxnmin` was refused for `++` on a pointer, `g3_jumpnode`
+  and `g4_dataentry` for a comparison of two addresses
+- Changes: extends R7; `p = p + 1` was the rest of the slice, `&p[1..]`

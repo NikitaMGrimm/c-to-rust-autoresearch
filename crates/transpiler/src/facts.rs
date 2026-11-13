@@ -743,11 +743,18 @@ impl<'a> Walk<'a> {
         {
             self.flow_of(text, slot, true);
         }
-        if !TEXT_READERS.contains(&name) {
-            for arg in args {
-                if arg.ty.is_pointer() {
-                    self.bytes(arg);
+        for arg in args.iter().filter(|arg| arg.ty.is_pointer()) {
+            match TEXT_READERS.contains(&name) {
+                // Text is an array of `char` up to its NUL.
+                true if arg.ty.element() == Some(&Type::Char) => {
+                    for source in self.sources(arg) {
+                        if let Source::Slot(slot) = source {
+                            self.seed(slot).many = true;
+                        }
+                    }
                 }
+                true => {}
+                false => self.bytes(arg),
             }
         }
         let stores = STORES.iter().find(|(function, ..)| *function == name);
