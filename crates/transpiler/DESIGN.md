@@ -95,6 +95,7 @@ Keep to these:
 | `for (int i = a; i < b; i++)` | `for i in a..b`, when the body changes neither `i` nor the bound |
 | `switch` without fall-through | `match` |
 | `printf` with a literal format | `print!` or `println!`, the format converted at translation time |
+| `const char *` that only holds string literals | `&str` |
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
 | `malloc`, `calloc`, `free` | `Box::new`, `vec![zero; n]`, `drop` |
 | `scanf("%d", &x)` | `if let Some(scanned) = scan_int() { x = scanned as i32; }` |
@@ -102,7 +103,7 @@ Keep to these:
 ### Pointers
 
 A *slot* is a place that holds a pointer: a variable, a field or a function's
-result. The analysis gives each slot five facts, and they decide its type:
+result. The analysis gives each slot six facts, and they decide its type:
 
 | Fact | Set when | Effect |
 | --- | --- | --- |
@@ -110,12 +111,13 @@ result. The analysis gives each slot five facts, and they decide its type:
 | `many` | It is indexed, moved, or holds an array | `Vec` or a slice rather than one element |
 | `written` | Something is stored through it, here or wherever it is handed on | `&mut` rather than `&` |
 | `nullable` | NULL may reach it | Wrapped in `Option` |
+| `bytes` | It points to `char` that is read or written one by one, or to another type | A `char` pointer without it is `&str` |
 | `conflict` | No single type fits, with the reason | The program is refused |
 
 Every assignment, argument and `return` is a flow from a source into a slot,
 and the facts spread along the flows until they stop changing: `written` and
-`owned` go back to where the pointer came from, `many` goes both ways, and
-`nullable` goes forward unless a test has ruled NULL out. A use of a pointer
+`owned` go back to where the pointer came from, `many` and `bytes` go both
+ways, and `nullable` goes forward unless a test has ruled NULL out. A use of a pointer
 converts between the types of two slots (`lower/pointer.rs`, `adapt`): a move
 between owners, `&mut *b` or `as_deref_mut()` from an owner to a borrow, and
 so on. What the borrow checker then rejects is refused by `rustc`, which is
@@ -135,9 +137,14 @@ write for it.
 The direction for each, so that the first rule for it starts in the right
 place:
 
-- **Text.** `char *` that only ever holds text is `&str` or `String`, which
-  needs a fact that says so; other `char` arrays stay bytes. String literals,
-  `%s` of a variable, `strlen`, `strcmp`, `strcpy` and the rest wait for it.
+- **Text.** A `char *` that only holds string literals and is read as a
+  whole is `&str` (R13). Still to build: text that a record or a global
+  holds (`&'static str` when only literals reach it, `String` when the
+  program builds it), `argv[i]` handed to a function, `strcmp` and the other
+  readers, and a width in `%s`. A `char` array stays bytes, as does every
+  pointer into one; `%s`, `fgets`, `strcpy` and the rest need rules for
+  text in bytes that ends at a NUL, and a string literal that such a
+  pointer meets is then `b"…\0"`.
 - **Input.** `scanf` reads numbers and characters through helpers over
   `std::io::stdin().lock()` that take a byte at a time, so that every way
   of reading shares what is left, as in C (`lower/input.rs`). `fgets`,

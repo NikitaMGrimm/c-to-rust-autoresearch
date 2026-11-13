@@ -2,6 +2,7 @@
 //! standard library where that behaves the same, and to a `Helper`
 //! otherwise.
 
+use super::pointer::Repr;
 use super::{Helper, Lower, R, unsupported};
 use crate::c::{Expr, ExprKind, Type};
 use crate::rust;
@@ -29,8 +30,15 @@ impl Lower<'_> {
                     let line = rust::string(&text.replace('{', "{{").replace('}', "}}"));
                     Ok(parse_quote!(println!(#line)))
                 }
-                None => unsupported("`puts` of text that is not a literal: no rule yet", at),
+                None => {
+                    let text = self.text(text, false)?;
+                    Ok(parse_quote!(println!("{}", #text)))
+                }
             },
+            ("strlen", [text]) => {
+                let length = rust::method(self.text(text, false)?, "len", []);
+                Ok(rust::cast(length, parse_quote!(u64)))
+            }
             ("putchar", [value]) => {
                 let value = self.character(value)?;
                 Ok(parse_quote!(print!("{}", #value)))
@@ -65,23 +73,32 @@ impl Lower<'_> {
         }
     }
 
-    /// `parse_int` of one of `main`'s arguments.
+    /// `parse_int` of text.
     fn parse_int(&mut self, text: &Expr) -> R<syn::Expr> {
-        let argument = self.argument(text)?;
+        let text = self.text(text, true)?;
         self.helper(Helper::ParseInt);
-        Ok(rust::call("parse_int", [rust::borrow(false, argument)]))
+        Ok(rust::call("parse_int", [text]))
     }
 
-    /// `argv[i]` as `args[i]`, a `String`.
-    fn argument(&mut self, text: &Expr) -> R<syn::Expr> {
+    /// R12: text that a library function reads as a whole: a string
+    /// literal, a pointer that only holds text, or `argv[i]` as `args[i]`.
+    /// `borrowed` asks for a `&str`, where `args[i]` is a `String`.
+    fn text(&mut self, text: &Expr, borrowed: bool) -> R<syn::Expr> {
         if let ExprKind::Index(base, index) = &text.uncast().kind
             && let ExprKind::Var(var) = base.kind
             && Some(var) == self.argv
         {
             let index = self.index_value(index)?;
-            return Ok(rust::index(rust::name("args"), index));
+            let argument = rust::index(rust::name("args"), index);
+            return Ok(match borrowed {
+                true => rust::borrow(false, argument),
+                false => argument,
+            });
         }
-        unsupported("text other than a program argument: no rule yet", text.at)
+        if literal_text(text).is_some() || self.is_text(text) {
+            return self.pointer(text, Repr::TEXT);
+        }
+        unsupported("text in an array of bytes: no rule yet", text.at)
     }
 
     /// A value that C prints with `%c`, as a `char`.
@@ -221,7 +238,11 @@ impl Lower<'_> {
                         return unsupported("a `printf` width for text that is not ASCII", at);
                     }
                     Some(text) => rust::string(text),
-                    None => self.argument(value)?,
+                    // What the pointer holds may not be ASCII either.
+                    None if width.is_some() && self.is_text(value) => {
+                        return unsupported("a `printf` width for text in a variable", at);
+                    }
+                    None => self.text(value, false)?,
                 }
             }
             other => {

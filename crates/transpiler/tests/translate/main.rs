@@ -9,3 +9,4 @@ mod pointers;
 mod records;
 mod refusals;
 mod scalars;
+mod text;

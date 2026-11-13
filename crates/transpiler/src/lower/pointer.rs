@@ -18,6 +18,19 @@ pub(super) struct Repr {
     pub mutable: bool,
     /// Wrapped in `Option`.
     pub nullable: bool,
+    /// A `&str`: the pointer only ever holds text that is passed on whole.
+    pub text: bool,
+}
+
+impl Repr {
+    /// Text that is there, for a use that reads it.
+    pub(super) const TEXT: Repr = Repr {
+        owned: false,
+        many: false,
+        mutable: false,
+        nullable: false,
+        text: true,
+    };
 }
 
 impl Lower<'_> {
@@ -39,12 +52,38 @@ impl Lower<'_> {
         if let Some(why) = pointer.conflict {
             return unsupported(format!("{}: {why}", self.slot_name(slot)), at);
         }
+        let text = !(pointer.bytes || pointer.written || pointer.owned)
+            && self.slot_c_type(slot).element() == Some(&Type::Char);
         Ok(Repr {
             owned: pointer.owned,
-            many: pointer.many,
+            // A string literal is an array to the analysis; a `&str` is
+            // one value.
+            many: pointer.many && !text,
             mutable: pointer.written,
             nullable: pointer.nullable,
+            text,
         })
+    }
+
+    fn slot_c_type(&self, slot: Slot) -> &Type {
+        let program = self.program;
+        match slot {
+            Slot::Var(var) => &program.vars[var].ty,
+            Slot::Field(record, field) => &program.records[record].fields[field].ty,
+            Slot::Return(function) => &program.functions[function].ret,
+        }
+    }
+
+    /// Whether the pointer expression reads a slot that holds text.
+    pub(super) fn is_text(&self, pointer: &Expr) -> bool {
+        match &pointer.kind {
+            ExprKind::Cast(inner) if inner.ty.is_pointer() => self.is_text(inner),
+            ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Call(..) => self
+                .slot_of(pointer)
+                .and_then(|slot| self.repr(slot, pointer.at))
+                .is_ok_and(|repr| repr.text),
+            _ => false,
+        }
     }
 
     /// R7, R8: the type of a slot: `Box<T>` or `Vec<T>` for an owner, `&T`,
@@ -65,6 +104,7 @@ impl Lower<'_> {
         };
         let mutability: Option<syn::Token![mut]> = repr.mutable.then(Default::default);
         let ty: syn::Type = match (repr.owned, repr.many) {
+            _ if repr.text => parse_quote!(& #lifetime str),
             (true, false) => parse_quote!(Box<#element>),
             (true, true) => parse_quote!(Vec<#element>),
             (false, false) => parse_quote!(& #lifetime #mutability #element),
@@ -168,8 +208,20 @@ impl Lower<'_> {
                 if to.owned {
                     return unsupported("an array for a pointer that owns", at);
                 }
-                if matches!(array.kind, ExprKind::Str(_)) {
-                    return unsupported("a string literal as a pointer: no rule yet", at);
+                if let ExprKind::Str(bytes) = &array.kind {
+                    if !to.text {
+                        return unsupported(
+                            "a string literal as a pointer to bytes: no rule yet",
+                            at,
+                        );
+                    }
+                    // Text ends at its first NUL, as every reader of it
+                    // in C finds.
+                    let text = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
+                    return match std::str::from_utf8(text) {
+                        Ok(text) => Ok(wrap(rust::string(text))),
+                        Err(_) => unsupported("a string literal that is not UTF-8", at),
+                    };
                 }
                 let array = self.place(array, to.mutable)?;
                 Ok(wrap(rust::borrow(

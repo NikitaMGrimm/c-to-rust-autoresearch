@@ -28,6 +28,10 @@ pub struct Pointer {
     pub owned: bool,
     /// It may be NULL.
     pub nullable: bool,
+    /// It points to bytes that the program reads or writes one by one, or
+    /// to something other than `char`. A pointer to `char` without this
+    /// fact only ever holds text that is passed on whole.
+    pub bytes: bool,
     /// Why no rule can give it one Rust type, if so.
     pub conflict: Option<&'static str>,
 }
@@ -104,6 +108,10 @@ const STORES: [(&str, usize, bool); 16] = [
 
 /// The library functions whose result is fresh memory that `free` takes.
 pub const ALLOCATORS: [&str; 2] = ["malloc", "calloc"];
+
+/// The library functions that read the text their `char` pointers point to
+/// as a whole and keep none of them, so that the text can be a `&str`.
+const TEXT_READERS: [&str; 6] = ["printf", "puts", "strlen", "atoi", "atol", "atoll"];
 
 impl Facts {
     /// Analyses the program. A test that the facts decide, such as `!p` for
@@ -591,7 +599,10 @@ impl<'a> Walk<'a> {
                     match (op, place_slot(target)) {
                         (None, Some(slot)) => self.flow(value, slot),
                         // `p += n` moves within an array.
-                        (Some(_), Some(slot)) => self.seed(slot).many = true,
+                        (Some(_), Some(slot)) => {
+                            let moved = self.seed(slot);
+                            (moved.many, moved.bytes) = (true, true);
+                        }
                         (_, None) => {}
                     }
                 }
@@ -599,14 +610,17 @@ impl<'a> Walk<'a> {
             ExprKind::IncDec { target, .. } => {
                 self.write(target);
                 if let Some(slot) = place_slot(target) {
-                    self.seed(slot).many = true;
+                    let moved = self.seed(slot);
+                    (moved.many, moved.bytes) = (true, true);
                 }
             }
             ExprKind::Index(base, index) => {
                 if index.constant(program) != Some(0) {
                     self.many(base);
                 }
+                self.bytes(base);
             }
+            ExprKind::Deref(pointer) => self.bytes(pointer),
             ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right) => {
                 for side in [left, right] {
                     if side.ty.is_pointer() {
@@ -669,6 +683,13 @@ impl<'a> Walk<'a> {
             // What a field owned is taken out of its record.
             if matches!(freed.uncast().kind, ExprKind::Member { .. }) {
                 self.write(freed.uncast());
+            }
+        }
+        if !TEXT_READERS.contains(&name) {
+            for arg in args {
+                if arg.ty.is_pointer() {
+                    self.bytes(arg);
+                }
             }
         }
         let stores = STORES.iter().find(|(function, ..)| *function == name);
@@ -785,6 +806,28 @@ impl<'a> Walk<'a> {
                 self.seed(slot).many = true;
             }
         }
+        self.bytes(pointer);
+    }
+
+    /// Records that the program reads or writes single elements through
+    /// the pointer, or hands it to a function that may.
+    fn bytes(&mut self, pointer: &Expr) {
+        for source in self.sources(pointer) {
+            if let Source::Slot(slot) = source {
+                self.seed(slot).bytes = true;
+            }
+        }
+    }
+
+    /// Whether the slot's pointers point to `char`.
+    fn holds_chars(&self, slot: Slot) -> bool {
+        let program = self.program;
+        let ty = match slot {
+            Slot::Var(var) => &program.vars[var].ty,
+            Slot::Field(record, field) => &program.records[record].fields[field].ty,
+            Slot::Return(function) => &program.functions[function].ret,
+        };
+        ty.element() == Some(&Type::Char)
     }
 
     /// Records a store to the place.
@@ -842,9 +885,13 @@ impl<'a> Walk<'a> {
             );
             for flow in &flows {
                 let mut to = *self.seed(flow.to);
+                // Text is never stored through or freed, and a `&str`
+                // converts to no other pointer.
+                to.bytes |= to.written || to.owned || !self.holds_chars(flow.to);
                 match &flow.from {
                     Source::Slot(slot) => {
                         let mut from = *self.seed(*slot);
+                        from.bytes |= from.written || from.owned || !self.holds_chars(*slot);
                         // Rust reaches what a field or a global points to
                         // through its holder, so the holder must be
                         // writable too. Moving what it owns out of it
@@ -860,6 +907,10 @@ impl<'a> Walk<'a> {
                         from.written |= to.written;
                         from.many |= to.many;
                         to.many |= from.many;
+                        // One type holds either text or bytes, so both
+                        // ends of a flow hold the same.
+                        from.bytes |= to.bytes;
+                        to.bytes |= from.bytes;
                         from.owned |= to.owned;
                         // A result has no other owner, and what a record,
                         // a result or a global holds outlives a local.
@@ -871,10 +922,12 @@ impl<'a> Walk<'a> {
                     Source::Null => to.nullable |= !flow.set,
                     Source::Fresh { many } => {
                         to.owned = true;
+                        to.bytes = true;
                         to.many |= many;
                     }
                     Source::Place { root, array } => {
                         to.many |= array;
+                        to.bytes = true;
                         if to.written {
                             self.write_root(root, flow.function);
                         }

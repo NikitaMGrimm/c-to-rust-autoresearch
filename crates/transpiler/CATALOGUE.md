@@ -203,3 +203,21 @@ Entry format, newest last:
 - Motivation: `g3_012_uninit_int_ptr` did not compile: `let data: &i32;`
   was read without a value. `g2_011_uninit_char_ptr` has the same shape
 - Changes: extends R10
+
+## R13: text
+
+- C: a pointer to `char` that only ever holds string literals, in a local,
+  a parameter or a result, and is only handed on, tested against NULL or
+  read by `printf`'s `%s`, `puts`, `strlen`, `atoi`, `atol` or `atoll`
+- Rust: `&str`, or `Option<&str>` where NULL may reach it, and `&'static
+  str` for a result; the literal as written up to its first NUL, where its
+  readers stop; `println!("{}", text)` for `puts` and `%s`,
+  `text.len() as u64` for `strlen`, `parse_int(text)` for `atoi`
+- Needs: `Facts::pointer` (`bytes`): a pointer that is indexed, moved,
+  dereferenced, stored through, handed to another library function or that
+  meets one such pointer or the address of a variable holds bytes, and has
+  no rule for a literal yet
+- Motivation: `g2_011_uninit_char_ptr` and
+  `g2_019_integer_overflow_char_max_multiply` were refused for text other
+  than a program argument
+- Changes: extends R4, whose `%s` took a literal or `argv[i]`, and R7
