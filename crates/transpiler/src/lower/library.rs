@@ -82,7 +82,7 @@ impl Lower<'_> {
             }
             // R30: C fixes only the sign of the result, and C libraries
             // differ in the number.
-            ("strcmp" | "strncmp", _) => unsupported(
+            ("strcmp" | "strncmp" | "memcmp", _) => unsupported(
                 format!("the value of `{name}` other than its sign: no rule yet"),
                 at,
             ),
@@ -209,6 +209,7 @@ impl Lower<'_> {
         Some(match (name, args.as_slice()) {
             ("strcmp", [left, right]) => self.compare_texts(left, right, None, op),
             ("strncmp", [left, right, count]) => self.compare_texts(left, right, Some(count), op),
+            ("memcmp", [left, right, size]) => self.compare_memory(left, right, size, op, call.at),
             _ => return None,
         })
     }
@@ -224,20 +225,6 @@ impl Lower<'_> {
         op: BinOp,
     ) -> R<syn::Expr> {
         let ordering = !matches!(op, BinOp::Eq | BinOp::Ne);
-        let truth = |order: std::cmp::Ordering| -> syn::Expr {
-            let holds = match op {
-                BinOp::Eq => order.is_eq(),
-                BinOp::Ne => order.is_ne(),
-                BinOp::Lt => order.is_lt(),
-                BinOp::Gt => order.is_gt(),
-                BinOp::Le => order.is_le(),
-                _ => order.is_ge(),
-            };
-            match holds {
-                true => parse_quote!(true),
-                false => parse_quote!(false),
-            }
-        };
         // Two literals compare here, where Clippy refuses `"a" == "a"`.
         if let (Some(mut first), Some(mut second)) = (literal_bytes(left), literal_bytes(right)) {
             let count = match count {
@@ -250,7 +237,7 @@ impl Lower<'_> {
             if let Some(count) = count {
                 first = &first[..first.len().min(count)];
                 second = &second[..second.len().min(count)];
-                return Ok(truth(first.cmp(second)));
+                return Ok(truth(op, first.cmp(second)));
             }
         }
         // `text == ""`: the text is empty.
@@ -272,7 +259,7 @@ impl Lower<'_> {
         let pure = left.is_pure() && right.is_pure();
         // No bytes are equal to no bytes.
         if pure && count.is_some_and(|count| count.constant(self.program) == Some(0)) {
-            return Ok(truth(std::cmp::Ordering::Equal));
+            return Ok(truth(op, std::cmp::Ordering::Equal));
         }
         let helpers = self.helpers.clone();
         // A literal is an array, which orders only against an array of its
@@ -301,9 +288,133 @@ impl Lower<'_> {
         let tokens = |side: &syn::Expr| side.to_token_stream().to_string();
         if pure && tokens(&left) == tokens(&right) {
             self.helpers = helpers;
-            return Ok(truth(std::cmp::Ordering::Equal));
+            return Ok(truth(op, std::cmp::Ordering::Equal));
         }
         Ok(rust::binary(left, symbol(op), right))
+    }
+
+    /// R31: `memcmp` of two arrays of one element type, as a comparison of
+    /// their first elements: in their order for bytes, and only for
+    /// equality for wider numbers, whose bytes order differently from their
+    /// values.
+    fn compare_memory(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        size: &Expr,
+        op: BinOp,
+        at: u32,
+    ) -> R<syn::Expr> {
+        let program = self.program;
+        let (left, right) = (left.uncast(), right.uncast());
+        let byte = |ty: &Type| {
+            matches!(
+                ty,
+                Type::Char
+                    | Type::Int {
+                        bits: 8,
+                        signed: false
+                    }
+            )
+        };
+        let (Some(element), Some(other)) = (left.ty.element(), right.ty.element()) else {
+            return unsupported("`memcmp` of something that is no pointer", at);
+        };
+        // `char` and `unsigned char` are both `u8`.
+        let bytes = byte(element) && byte(other);
+        if element != other && !bytes {
+            return unsupported("`memcmp` of two different types: no rule yet", at);
+        }
+        // Padding, `-0.0` and NaN make the bytes of other types differ from
+        // their values.
+        if !element.is_integer() {
+            return unsupported("`memcmp` of other than integers: no rule yet", at);
+        }
+        if !bytes && !matches!(op, BinOp::Eq | BinOp::Ne) {
+            return unsupported(
+                "an ordering by `memcmp` of numbers wider than a byte: no rule yet",
+                at,
+            );
+        }
+        let Some((each, _)) = element.layout(program) else {
+            return unsupported("`memcmp` of a type without a size", at);
+        };
+        let each = i128::from(each);
+        let is_each = |bytes: &Expr| bytes.constant(program) == Some(each);
+        let count = match (&size.uncast().kind, size.constant(program)) {
+            (_, Some(size)) if size >= 0 && size % each == 0 => Ok(size / each),
+            _ if bytes => Err(size),
+            (ExprKind::Binary(BinOp::Mul, count, factor), _) if is_each(factor) => Err(&**count),
+            (ExprKind::Binary(BinOp::Mul, factor, count), _) if is_each(factor) => Err(&**count),
+            _ => return unsupported("a size of `memcmp` that is no whole number of elements", at),
+        };
+        // The size is written once for each side.
+        if count.is_err() && !self.repeatable(size) {
+            return unsupported("a size of `memcmp` that calls or assigns: no rule yet", at);
+        }
+        let pure = left.is_pure() && right.is_pure() && size.is_pure();
+        if pure && matches!(count, Ok(0)) {
+            return Ok(truth(op, std::cmp::Ordering::Equal));
+        }
+        let is_literal = |side: &Expr| match &side.kind {
+            ExprKind::Decay(array) => matches!(array.kind, ExprKind::Str(_)),
+            _ => false,
+        };
+        let whole = |side: &Expr, count: i128| match &side.kind {
+            ExprKind::Decay(array) => {
+                !is_literal(side)
+                    && matches!(array.ty, Type::Array(_, Some(length)) if i128::from(length) == count)
+            }
+            _ => false,
+        };
+        let helpers = self.helpers.clone();
+        let (left, right) = match count {
+            // One element each, which may be a variable of its own.
+            Ok(1) if !is_literal(left) && !is_literal(right) => (
+                self.pointee(left, false, false)?,
+                self.pointee(right, false, false)?,
+            ),
+            Ok(count) if whole(left, count) && whole(right, count) => {
+                (self.slice(left, false)?, self.slice(right, false)?)
+            }
+            count => {
+                let count = match count {
+                    Ok(count) => rust::int(count, ""),
+                    Err(count) => self.index_value(count)?,
+                };
+                (
+                    self.memory(left, count.clone())?,
+                    self.memory(right, count)?,
+                )
+            }
+        };
+        let tokens = |side: &syn::Expr| side.to_token_stream().to_string();
+        if pure && tokens(&left) == tokens(&right) {
+            self.helpers = helpers;
+            return Ok(truth(op, std::cmp::Ordering::Equal));
+        }
+        Ok(rust::binary(left, symbol(op), right))
+    }
+
+    /// R31: the first `count` elements that a pointer points to, to read:
+    /// `a[..count]`. A string literal is its bytes with the NUL.
+    fn memory(&mut self, pointer: &Expr, count: syn::Expr) -> R<syn::Expr> {
+        let literal = match &pointer.kind {
+            ExprKind::Decay(literal) => match &literal.kind {
+                ExprKind::Str(bytes) => Some(bytes),
+                _ => None,
+            },
+            _ => None,
+        };
+        let slice = match literal {
+            Some(bytes) => {
+                let mut bytes = bytes.clone();
+                bytes.push(0);
+                byte_string(&bytes, false)
+            }
+            None => self.slice(pointer, false)?,
+        };
+        Ok(rust::index(slice, rust::until(count)))
     }
 
     /// R30: text that is a `&str` in Rust, to compare with another. A
@@ -1006,6 +1117,23 @@ fn same_place(one: &Expr, other: &Expr) -> bool {
             same_index && same_place(one, other)
         }
         _ => false,
+    }
+}
+
+/// Whether `op` holds of two values in the order given, as `true` or
+/// `false`.
+fn truth(op: BinOp, order: std::cmp::Ordering) -> syn::Expr {
+    let holds = match op {
+        BinOp::Eq => order.is_eq(),
+        BinOp::Ne => order.is_ne(),
+        BinOp::Lt => order.is_lt(),
+        BinOp::Gt => order.is_gt(),
+        BinOp::Le => order.is_le(),
+        _ => order.is_ge(),
+    };
+    match holds {
+        true => parse_quote!(true),
+        false => parse_quote!(false),
     }
 }
 

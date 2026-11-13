@@ -136,3 +136,113 @@ fn the_value_of_a_comparison_other_than_its_sign_is_refused() {
         "unsupported: a count of `strncmp` that calls or assigns: no rule yet, at line 4"
     );
 }
+
+#[test]
+fn memcmp_tested_against_zero_compares_the_elements() {
+    let rust = check(
+        "memcmp",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+struct pair { int left[3]; int right[3]; };
+static int same(const short *x, const short *y, int n) {
+    return memcmp(x, y, n * sizeof(short)) == 0;
+}
+int main(int argc, char *argv[]) {
+    if (argc < 2) return 2;
+    int n = atoi(argv[1]);
+    if (n < 0 || n > 4) return 3;
+    unsigned char a[4] = {1, 2, 200, 4};
+    unsigned char b[4] = {1, 2, 3, 4};
+    char word[5] = "help";
+    short s[4] = {1, 2, 3, 4};
+    short t[4] = {1, 2, 9, 4};
+    struct pair p = {{7, 8, 9}, {7, 8, 0}};
+    int x = 3, y = 3;
+    printf("%d %d %d\n", memcmp(a, b, sizeof a) > 0, memcmp(a, b, n) < 0, !memcmp(a, b, 2));
+    printf("%d %d\n", memcmp(word, "hel", 3) == 0, memcmp(word, "help", 5) == 0);
+    printf("%d %d\n", same(s, t, n), memcmp(p.left, p.right, 2 * sizeof(int)) == 0);
+    printf("%d %d\n", memcmp(&x, &y, sizeof x) == 0, memcmp(s, t, 0) == 0);
+    if (memcmp(p.left, p.right, sizeof p.left)) printf("differ\n");
+    return 0;
+}
+"#,
+        &[&["0"], &["2"], &["3"], &["4"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "i32::from(x[..n as usize] == y[..n as usize])",
+            "i32::from(a > b),",
+            "i32::from(a[..n as usize] < b[..n as usize]),",
+            "i32::from(a[..2] == b[..2]),",
+            "i32::from(word[..3] == b\"hel\\0\"[..3]),",
+            "i32::from(word[..5] == b\"help\\0\"[..5]),",
+            "println!(\"{} {}\", same(&s, &t, n), i32::from(p.left[..2] == p.right[..2]));",
+            "println!(\"{} {}\", i32::from(x == y), i32::from(true));",
+            "if p.left != p.right {",
+        ],
+    );
+}
+
+#[test]
+fn memcmp_whose_bytes_differ_from_the_values_is_refused() {
+    let refused = |name: &str, c: &str| translate(name, c).unwrap_err();
+    let program = |declarations: &str, size: &str, test: &str| {
+        format!(
+            "#include <string.h>\n{declarations}\nint main(void) {{\n    return memcmp(a, b, {size}) {test};\n}}\n"
+        )
+    };
+    assert_eq!(
+        refused(
+            "memcmp-order",
+            &program("int a[2] = {1, 256}, b[2] = {2, 1};", "sizeof a", "< 0")
+        ),
+        "unsupported: an ordering by `memcmp` of numbers wider than a byte: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "memcmp-float",
+            &program("double a[1] = {0.0}, b[1] = {-0.0};", "sizeof a", "== 0")
+        ),
+        "unsupported: `memcmp` of other than integers: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "memcmp-record",
+            &program(
+                "struct s { char c; int i; } a[1] = {{1, 2}}, b[1] = {{1, 2}};",
+                "sizeof a",
+                "== 0"
+            )
+        ),
+        "unsupported: `memcmp` of other than integers: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "memcmp-part",
+            &program("int a[2] = {1, 2}, b[2] = {1, 2};", "6", "== 0")
+        ),
+        "unsupported: a size of `memcmp` that is no whole number of elements, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "memcmp-types",
+            &program(
+                "int a[2] = {1, 2}; unsigned b[2] = {1, 2};",
+                "sizeof a",
+                "== 0"
+            )
+        ),
+        "unsupported: `memcmp` of two different types: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "memcmp-value",
+            &program("char a[2] = \"a\", b[2] = \"b\";", "1", "+ 1 > 0")
+        ),
+        "unsupported: the value of `memcmp` other than its sign: no rule yet, at line 4"
+    );
+}

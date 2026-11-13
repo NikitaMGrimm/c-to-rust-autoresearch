@@ -537,3 +537,25 @@ Entry format, newest last:
   `g5_hm_geti`, `g5_intput`, `g5_memchra2`, `g5_sh_puts` and `g5_str_put`
   call `strcmp` or `strncmp` and are refused first for other constructs
 - Changes: extends R13 and R15
+
+## R31: `memcmp`
+
+- C: `memcmp(a, b, size)` tested against 0 as R30's functions are, of two
+  arrays of one integer type once the conversions to `void *` are taken off,
+  with a size of whole elements: any expression for bytes, otherwise a
+  constant multiple of the element's size or `count * sizeof(element)`
+- Rust: a comparison of the first elements with the test's operator,
+  `a[..n as usize] < b[..n as usize]`, `a == b` for two whole arrays,
+  `x == y` for one element each, and `b"hel\0"[..3]` for a string literal,
+  whose NUL C compares too. Slices of `u8` order as `memcmp` does; other
+  integers only compare for equality, so `<` and the other orderings of
+  them are refused, since `memcmp` orders their bytes, not their values.
+  Refused as well: floating-point numbers and records, where `memcmp`
+  compares padding, tells `0.0` from `-0.0` and finds a NaN equal to itself;
+  two different element types; a size that is no whole number of elements
+  or that calls or assigns, since it is written for each side;
+  and any other use of the value
+- Needs: nothing
+- Motivation: `g5_hm_geti`, `g5_intput`, `g5_sh_puts` and `g5_str_put`
+  call `memcmp` and are refused first for other constructs
+- Changes: extends R30
