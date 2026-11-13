@@ -42,6 +42,8 @@ struct Reader {
     globals: HashMap<String, VarId>,
     /// The labels of the function being read, by Clang's id.
     labels: HashMap<String, String>,
+    /// The parameters and locals of the function being read, by name.
+    locals: HashMap<String, Vec<VarId>>,
 }
 
 /// Whether an attribute of this kind changes where a record's members lie.
@@ -280,14 +282,22 @@ impl Reader {
             Some(id) => id,
             None => {
                 let ty = self.ty(decl)?;
+                let len = match (&ty, storage) {
+                    (Type::Array(_, None), VarKind::Local) => Some(self.length(decl)?),
+                    _ => None,
+                };
                 self.program.vars.push(Var {
                     name: name.to_owned(),
                     ty,
                     init: None,
+                    len,
                     kind: storage,
                     at: at(decl),
                 });
                 let id = self.program.vars.len() - 1;
+                if !storage.is_global() {
+                    self.locals.entry(name.to_owned()).or_default().push(id);
+                }
                 if storage.is_global() {
                     self.program.globals.push(id);
                 }
@@ -307,6 +317,37 @@ impl Reader {
         Ok(id)
     }
 
+    /// The length of a variable-length array. Clang prints it only in the
+    /// type, as in `int[n]`, so it is read from there when it is one
+    /// variable that the name can only mean.
+    fn length(&mut self, decl: &Value) -> R<Expr> {
+        let spelled = text(&decl["type"], "qualType");
+        let name = spelled
+            .split_once('[')
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map_or("", |(name, _)| name.trim());
+        let is_name = !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let var = match self.locals.get(name).map(Vec::as_slice) {
+            _ if !is_name => None,
+            Some([var]) => Some(*var),
+            Some(_) => None,
+            None => self.globals.get(name).copied(),
+        };
+        match var {
+            Some(var) if self.program.vars[var].ty.is_integer() => Ok(Expr {
+                ty: self.program.vars[var].ty.clone(),
+                kind: ExprKind::Var(var),
+                at: at(decl),
+            }),
+            _ => unsupported(
+                "an array whose length is not a constant or one variable",
+                decl,
+            ),
+        }
+    }
+
     fn function(&mut self, decl: &Value) -> R<()> {
         let Some(body) = children(decl)
             .iter()
@@ -318,6 +359,7 @@ impl Reader {
             Type::Function { ret, .. } => *ret,
             _ => return unsupported("a function without a function type", decl),
         };
+        self.locals.clear();
         let mut params = Vec::new();
         for param in children(decl) {
             if kind(param) == "ParmVarDecl" {

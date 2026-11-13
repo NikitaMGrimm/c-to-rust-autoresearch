@@ -259,6 +259,7 @@ impl Narrow<'_> {
         let set = self.vars.len();
         self.vars.push(Var {
             init: None,
+            len: None,
             kind: VarKind::Local,
             ..self.vars[var].clone()
         });

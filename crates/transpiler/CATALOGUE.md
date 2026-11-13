@@ -297,3 +297,15 @@ Entry format, newest last:
 - Motivation: `g2_ldexp_q2` and `g2_pow43` were refused for `%.9g`, which
   the benchmark's own `main` prints each `float` result with
 - Changes: extends R4
+
+## R20: arrays of a computed length
+
+- C: a local array whose length is one variable, `int out[len]`
+- Rust: `let mut out: Vec<i32> = vec![0; len as usize];`, which is indexed
+  and borrowed as an array is. A length that is an expression, or a name
+  that two variables of the function share, is refused: Clang prints the
+  length only as text in the type
+- Needs: the front end reads the length into `Var::len`
+- Motivation: `g3_031_disjoint_arrays` and `g3_048_mutable_buffer_overlap2`
+  were refused for an array whose length is not a constant
+- Changes: extends R6

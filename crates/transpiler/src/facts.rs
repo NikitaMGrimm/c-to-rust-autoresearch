@@ -499,6 +499,9 @@ impl<'a> Walk<'a> {
             Stmt::Decl(id) => {
                 let var = &program.vars[*id];
                 let slot = var.ty.is_pointer().then_some(Slot::Var(*id));
+                if let Some(len) = &var.len {
+                    self.expr(len);
+                }
                 match &var.init {
                     Some(init) => {
                         self.init(&var.ty, slot, init);

@@ -88,6 +88,7 @@ Keep to these:
 | Unsigned arithmetic | `wrapping_add`, `wrapping_sub`, `wrapping_mul` |
 | `struct s` | `struct S` with `Clone`, and `Copy` and `Default` where its fields allow |
 | `T a[N]` | `[T; N]` |
+| `T a[n]`, a local whose length is a variable | `Vec<T>`, `vec![zero; n as usize]` |
 | A local without an initialiser | Declared where the block first assigns it, or by the `for` that does; otherwise it starts at zero |
 | A global that never changes | `const` or `static`, in upper case |
 | A global that changes | A field of `Globals`, which `main` creates and each function that uses it takes as `globals: &Globals` or `&mut Globals` |
@@ -167,8 +168,8 @@ place:
   default.
 - **Others.** `goto`, a `case` that falls through, pointers to functions
   (`fn` types), unions (an `enum` when a tag says which member is live),
-  bit-fields, variadic functions, arrays whose length is not a constant
-  (`Vec`), a local that gets its first value in a branch or
+  bit-fields, variadic functions, an array whose length is an expression
+  (Clang prints it only as text), a local that gets its first value in a branch or
   in a loop (`let x;`).
 
 ## Known weak spots

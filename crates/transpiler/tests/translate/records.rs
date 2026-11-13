@@ -1,4 +1,4 @@
-use crate::common::{assert_lines, check};
+use crate::common::{assert_lines, check, translate};
 
 #[test]
 fn records_and_arrays_hold_values() {
@@ -75,5 +75,60 @@ int main(void) {
             "let sums: [f64; 100] = [0.0; 100];",
             "let few: [u8; 3] = [0; 3];",
         ],
+    );
+}
+
+#[test]
+fn an_array_of_a_computed_length_is_a_vec() {
+    let rust = check(
+        "vla",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+long total(const long *values, int count) {
+    long sum = 0;
+    for (int i = 0; i < count; i++) sum += values[i];
+    return sum;
+}
+int main(int argc, char *argv[]) {
+    int count = atoi(argv[1]);
+    if (count <= 0) return 1;
+    long squares[count];
+    unsigned char flags[count];
+    for (int i = 0; i < count; i++) {
+        squares[i] = (long)i * i;
+        flags[i] = i % 2;
+    }
+    count = 1;
+    printf("%ld %d %ld\n", total(squares, atoi(argv[1])), flags[atoi(argv[1]) - 1], total(squares, count));
+    return 0;
+}
+"#,
+        &[&["1"], &["2"], &["9"], &["0"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut squares: Vec<i64> = vec![0; count as usize];",
+            "let mut flags: Vec<u8> = vec![0; count as usize];",
+            "total(&squares, parse_int(&args[1]) as i32),",
+        ],
+    );
+    assert_eq!(
+        translate(
+            "vla-expression",
+            "int main(int argc, char *argv[]) {\n    int values[argc + 1];\n    values[0] = 0;\n    return values[0];\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: the type `int[argc + 1]`, at line 2"
+    );
+    assert_eq!(
+        translate(
+            "vla-shadow",
+            "int main(int argc, char *argv[]) {\n    int n = 2;\n    { int n = 3; argc += n; }\n    int values[n];\n    values[0] = 0;\n    return values[0];\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: an array whose length is not a constant or one variable, at line 4"
     );
 }

@@ -240,6 +240,14 @@ impl Lower<'_> {
                 None => parse_quote!(let #mutability #name: #ty;),
             }]);
         }
+        // R20: an array whose length the program computes is a `Vec`.
+        if let (Type::Array(element, None), Some(len)) = (&var.ty, &var.len) {
+            let (ty, zero) = (self.ty(element, var.at)?, self.zero(element, var.at)?);
+            let len = self.index_value(len)?;
+            return Ok(vec![
+                parse_quote!(let #mutability #name: Vec<#ty> = vec![#zero; #len];),
+            ]);
+        }
         let ty = self.ty(&var.ty, var.at)?;
         let value = match &var.init {
             Some(init) => self.init(&var.ty, None, init)?,

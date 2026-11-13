@@ -58,6 +58,8 @@ pub struct Var {
     pub name: String,
     pub ty: Type,
     pub init: Option<Expr>,
+    /// The number of elements of an array whose length is not a constant.
+    pub len: Option<Expr>,
     pub kind: VarKind,
     pub at: u32,
 }
@@ -474,11 +476,14 @@ impl Expr {
 }
 
 /// Whether the test holds for an expression in the statements, at any depth.
-/// `vars` holds the initialisers of the variables they declare.
+/// `vars` holds the initialisers and lengths of the variables they declare.
 pub fn any_expr(stmts: &[Stmt], vars: &[Var], test: &mut impl FnMut(&Expr) -> bool) -> bool {
     stmts.iter().any(|stmt| match stmt {
         Stmt::Expr(expr) | Stmt::Return(Some(expr)) => expr.any(test),
-        Stmt::Decl(var) => vars[*var].init.as_ref().is_some_and(|init| init.any(test)),
+        Stmt::Decl(var) => {
+            let var = &vars[*var];
+            var.init.iter().chain(&var.len).any(|part| part.any(test))
+        }
         Stmt::Block(body) => any_expr(body, vars, test),
         Stmt::If(cond, then, other) => {
             cond.any(test) || any_expr(then, vars, test) || any_expr(other, vars, test)
@@ -570,14 +575,15 @@ impl Expr {
 }
 
 /// Calls `change` on every expression in the statements, at any depth,
-/// and in the initialisers of the variables they declare.
+/// and in the initialisers and lengths of the variables they declare.
 pub fn each_expr_mut(stmts: &mut [Stmt], vars: &mut [Var], change: &mut impl FnMut(&mut Expr)) {
     for stmt in stmts {
         match stmt {
             Stmt::Expr(expr) | Stmt::Return(Some(expr)) => expr.each_mut(change),
             Stmt::Decl(var) => {
-                if let Some(init) = &mut vars[*var].init {
-                    init.each_mut(change);
+                let var = &mut vars[*var];
+                for part in var.init.iter_mut().chain(&mut var.len) {
+                    part.each_mut(change);
                 }
             }
             Stmt::Block(body) => each_expr_mut(body, vars, change),
