@@ -296,9 +296,9 @@ place:
   (Clang prints it only as text), a local that gets its first value in a branch or
   in a loop (`let x;`).
 
-What a review of the passing translations found that no rule writes as Rust
-would, most frequent first. Each needs the proof named with it, and keeps
-C's promotions, checked arithmetic and the input it consumes:
+What two reviews of the passing translations found that no rule writes as
+Rust would, most frequent first. Each needs the proof named with it, and
+keeps C's promotions, checked arithmetic and the input it consumes:
 
 - **Types that inference gives.** `let foo: FooT = FooT { … }` in every
   program. An annotation goes where the value alone fixes the type: a
@@ -348,6 +348,22 @@ C's promotions, checked arithmetic and the input it consumes:
   near-miss such as `d ^ (d >> 31)` is not `abs`.
 - **The helpers.** One `StdinLock` held by `main` and passed on, rather
   than a lock for every byte; `parse_int_prefix` scans its text twice.
+- **A test for NULL and then `unwrap`.** `if found.is_none() || found
+  .unwrap().id == 0` and `p = find(…); if p.is_none() { break; }` with
+  `p.unwrap()` after it, where `narrow` (R10) only knows the plain `if`.
+  `let Some(p) = find(…) else { break; }` and `match found { Some(found)
+  if found.id != 0 => …, _ => … }` need the narrowing for a condition with
+  `||` or `&&`, and for a pointer that a loop carries.
+- **A buffer that only holds text.** `store_text(&format!(…), &mut
+  buffer)` and `copy_string` between `[u8; N]` arrays where the program
+  fills the buffer as a whole and reads it as a whole: a `String`, as the
+  **Text** entry above says, with the fact that no byte of it is read or
+  stored by itself.
+- **A field named twice.** `Node { id: id, value: value }` where the value
+  is the variable of the field's name: `Node { id, value }`. Needs only
+  the two Rust names after `names` has chosen them.
+- **Two ranges for one.** `b[1..][..2]` for a copy of a count from an
+  offset (R29) is `b[1..3]` where both are constants.
 
 ## Known weak spots
 
