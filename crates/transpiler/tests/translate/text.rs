@@ -180,3 +180,55 @@ int main(int argc, char **argv) {
         ],
     );
 }
+
+#[test]
+fn memset_and_strncpy_fill_and_copy_slices() {
+    let rust = check(
+        "strncpy",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+struct point { int x; double y; };
+int main(int argc, char *argv[]) {
+    int count = atoi(argv[1]);
+    char source[20];
+    char target[20] = "";
+    char small[4];
+    int numbers[6] = {1, 2, 3, 4, 5, 6};
+    struct point point = {3, 4.5};
+    memset(source, 'x', 19);
+    source[19] = '\0';
+    memset(source + 10, argc + '0', 3);
+    if (count < 20) {
+        strncpy(target, source, count);
+        target[count] = '\0';
+    }
+    strncpy(small, "ab", sizeof(small));
+    printf("%s|%s|%d%d%d\n", target, small, small[2], small[3], point.x);
+    strncpy(small, "abcdefgh", 3);
+    small[3] = '\0';
+    memset(numbers, 0, 3 * sizeof(int));
+    memset(&point, 0, sizeof(point));
+    printf("%s %d %d %d %.1f\n", small, numbers[2], numbers[3], point.x, point.y);
+    memset(numbers, 0, sizeof(numbers));
+    return numbers[5];
+}
+"#,
+        &[&["0"], &["5"], &["12"], &["19"], &["40"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "source[..19].fill(b'x');",
+            "source[10..][..3].fill((args.len() as i32 + 48) as u8);",
+            "copy_text(&mut target[..count as usize], &source);",
+            "copy_text(&mut small, b\"ab\\0\");",
+            "copy_text(&mut small[..3], b\"abcdefgh\\0\");",
+            "numbers[..3].fill(0);",
+            "point = Point::default();",
+            "numbers.fill(0);",
+        ],
+    );
+}

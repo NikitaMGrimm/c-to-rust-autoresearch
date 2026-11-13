@@ -41,6 +41,7 @@ enum Helper {
     ReadLine,
     UntilNul,
     TextOf,
+    CopyText,
 }
 
 impl Helper {
@@ -51,6 +52,7 @@ impl Helper {
             | Helper::ParseUint
             | Helper::ParseFloat
             | Helper::FormatE
+            | Helper::CopyText
             | Helper::PeekByte
             | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
@@ -301,6 +303,21 @@ impl Helper {
                         .position(|&byte| byte == 0)
                         .expect("text ends with a NUL");
                     &bytes[..end]
+                }
+            },
+            Helper::CopyText => parse_quote! {
+                /// Copies the text in `source` to the start of `target` and
+                /// fills the rest of `target` with NUL bytes, as C's `strncpy`
+                /// does for the length of `target`. Text that is longer is cut
+                /// short, without a NUL.
+                fn copy_text(target: &mut [u8], source: &[u8]) {
+                    let length = source
+                        .iter()
+                        .take(target.len())
+                        .position(|&byte| byte == 0)
+                        .unwrap_or(target.len());
+                    target[..length].copy_from_slice(&source[..length]);
+                    target[length..].fill(0);
                 }
             },
             Helper::TextOf => parse_quote! {

@@ -43,6 +43,15 @@ impl Lower<'_> {
                 Ok(rust::cast(rust::method(text, "len", []), parse_quote!(u64)))
             }
             ("fgets", [buffer, size, stream]) => self.read_line(buffer, size, stream, at),
+            ("memset", [target, value, size]) => self.memset(target, value, size, at),
+            // R22: the text of `source`, cut short or filled up with NUL
+            // bytes to the size.
+            ("strncpy", [target, source, size]) => {
+                let target = rust::borrow(true, self.first(target, Err(size))?);
+                let source = self.pointer(source, Repr::BYTES)?;
+                self.helper(Helper::CopyText);
+                Ok(rust::call("copy_text", [target, source]))
+            }
             ("putchar", [value]) => {
                 let value = self.character(value)?;
                 Ok(parse_quote!(print!("{}", #value)))
@@ -170,31 +179,77 @@ impl Lower<'_> {
         if !matches!(&stream.uncast().kind, ExprKind::Extern(name) if name == "stdin") {
             return unsupported("`fgets` on a file other than `stdin`: no rule yet", at);
         }
-        // The whole array, when that is what the size says.
-        let whole = match &buffer.uncast().kind {
+        let target = rust::borrow(true, self.first(buffer, Err(size))?);
+        self.helper(Helper::ReadLine);
+        Ok(rust::call("read_line", [target]))
+    }
+
+    /// The first `count` elements that a pointer points to, as a place to
+    /// store to: the whole array when that is what the count says, and
+    /// `array[..count]` otherwise. The count is a number or an expression.
+    fn first(&mut self, pointer: &Expr, count: Result<i128, &Expr>) -> R<syn::Expr> {
+        let count = count.or_else(|count| count.constant(self.program).ok_or(count));
+        let whole = match &pointer.uncast().kind {
             ExprKind::Decay(array) => match &array.ty {
-                Type::Array(_, Some(length)) => {
-                    size.constant(self.program) == Some(i128::from(*length))
-                }
+                Type::Array(_, Some(length)) => count.ok() == Some(i128::from(*length)),
                 _ => false,
             },
             _ => false,
         };
-        let target = match whole {
-            true => self.pointer(
-                buffer,
-                Repr {
-                    mutable: true,
-                    ..Repr::BYTES
-                },
-            )?,
-            false => {
-                let size = rust::until(self.index_value(size)?);
-                rust::borrow(true, rust::index(self.slice(buffer, true)?, size))
-            }
+        let slice = self.slice(pointer.uncast(), true)?;
+        Ok(match (whole, count) {
+            (true, _) => slice,
+            (false, Ok(count @ 0..)) => rust::index(slice, rust::until(rust::int(count, ""))),
+            (false, Ok(_)) => return unsupported("a negative size", pointer.at),
+            (false, Err(count)) => rust::index(slice, rust::until(self.index_value(count)?)),
+        })
+    }
+
+    /// R22: `memset` as `fill`, of bytes with a byte and of numbers with
+    /// zero, or as the zero value of one variable.
+    fn memset(&mut self, target: &Expr, value: &Expr, size: &Expr, at: u32) -> R<syn::Expr> {
+        let program = self.program;
+        let target = target.uncast();
+        let Some(element) = target.ty.element() else {
+            return unsupported("`memset` of something that is no pointer", at);
         };
-        self.helper(Helper::ReadLine);
-        Ok(rust::call("read_line", [target]))
+        let byte = Type::Int {
+            bits: 8,
+            signed: false,
+        };
+        if *element == Type::Char || *element == byte {
+            let value = match value.constant(program) {
+                Some(value @ 0..=127) => rust::byte(value as u8),
+                _ => rust::cast(self.expr(value)?, parse_quote!(u8)),
+            };
+            return Ok(rust::method(
+                self.first(target, Err(size))?,
+                "fill",
+                [value],
+            ));
+        }
+        // Zero bytes are the zero of every number, and nothing else is the
+        // same for every type.
+        let (Some(0), Some(bytes), Some((each, _))) = (
+            value.constant(program),
+            size.constant(program),
+            element.layout(program),
+        ) else {
+            return unsupported("this `memset`: no rule yet", at);
+        };
+        let each = i128::from(each);
+        if !self.is_copy(element) || bytes % each != 0 {
+            return unsupported("this `memset`: no rule yet", at);
+        }
+        let zero = self.zero(element, at)?;
+        if let (ExprKind::AddrOf(place), true) = (&target.kind, bytes == each) {
+            return Ok(rust::assign(self.place(place, true)?, zero));
+        }
+        Ok(rust::method(
+            self.first(target, Ok(bytes / each))?,
+            "fill",
+            [zero],
+        ))
     }
 
     /// A value that C prints with `%c`, as a `char`.

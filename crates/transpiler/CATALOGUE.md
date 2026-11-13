@@ -328,3 +328,17 @@ Entry format, newest last:
   `strtol` with an end pointer, which they compare with the argument to see
   whether it held a number
 - Changes: extends R4 and R13
+
+## R22: `memset` and `strncpy`
+
+- C: `memset` of bytes with any value, of numbers with zero for a constant
+  size, and of one variable with zero for its own size; `strncpy` into bytes
+- Rust: `source[..19].fill(b'A')`, `numbers.fill(0)` when the size is the
+  whole array's, `point = Point::default()`;
+  `copy_text(&mut target[..n as usize], &source)`, a helper that copies the
+  text of `source` and fills the rest of the slice with NUL bytes, or cuts
+  the text short without one, as `strncpy` does
+- Needs: nothing
+- Motivation: `g2_017_signed_length_confusion` was refused for `memset`,
+  and copies with `strncpy`
+- Changes: none
