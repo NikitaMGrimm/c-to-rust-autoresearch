@@ -142,6 +142,71 @@ A local pointer that is declared without a value and never assigned counts
 as NULL: reading it is undefined in C, and `None` is a value that Rust can
 write for it.
 
+### Cursors
+
+A pointer that walks an array is not a borrow that moves. It is an index
+beside the slice it walks, as a Rust programmer writes it: the slice stays
+where it is, under its own name, and the pointer variable becomes a `usize`.
+
+| C, with `p` a cursor over `a` | Rust |
+| --- | --- |
+| `T *p = a;`, `T *end = a + n;` | `let mut p: usize = 0;`, `let end: usize = n as usize;` |
+| `*p`, `p[i]`, `p->field` | `a[p]`, `a[p + i]`, `a[p].field` |
+| `p++`, `p--`, `p += n`, `p = q + 1` | `p += 1`, `p -= 1`, `p += n`, `p = q + 1` |
+| `p < end`, `p == q`, `p != a` | `p < end`, `p == q`, `p != 0` |
+| `p - q` | `p as i64 - q as i64` |
+| `f(p)`, `return p;`, `q = p` for a `q` that is no cursor | `f(&a[p..])` or `f(&a[p])`, as the slot it goes to holds an array or one element |
+| a parameter `char *s` that the function itself moves | `s` stays the slice, and a local `s_at` is the index |
+| `if (p)`, `p == NULL` | the same test of `a`: `a + n` is NULL only where `a` is |
+
+The **base** of a cursor is the expression for the array it walks, and it
+must mean the same memory wherever the cursor is used. So it is one of: a
+pointer variable that is never assigned after its declaration; an array;
+a field of a record that such a variable or pointer holds; an element of
+one of these at a constant index. A parameter that the function moves is its
+own base.
+
+`normalise::cursors` finds the cursors of a function and rewrites it, from C
+to C, before the pointers are analysed:
+
+1. The variables that need an index are the local pointers and parameters
+   that the function moves (`++`, `--`, `+=`, `-=`, `p = p + n`) and the
+   locals that it compares with another pointer or subtracts from one. Every
+   value such a variable gets must be an offset from a base or from another
+   such variable, which joins the two into one group.
+2. A group has exactly one base. Its variables get the type `Type::Index`,
+   the one type of the tree that C does not have, and every use of them is
+   rewritten as the table says. A use that needs the pointer itself becomes
+   `&a[p]`, which the rules for borrows translate as before.
+3. A group without one base, with a base that may change, with a variable
+   whose address is taken or with a value from anywhere else (NULL, `malloc`,
+   a library function's result) is left as it is, and the program is refused
+   with the construct that has no rule.
+
+An index is a `usize`, and its arithmetic is Rust's: stepping before the
+array is undefined in C and stops the program in Rust, and the end of the
+array is a valid index for both. An offset that is signed and not a constant
+is added with `wrapping_add_signed`, which gives the same index whenever
+C's result is inside the array. Two pointers into different arrays have no
+order in C, and their comparison stays refused.
+
+The same holds for the end of a number that `strtol` and its like store
+through their second argument. `normalise` gives each such call a variable
+of its own for the end, an index into the text that was read, and the call
+becomes a statement of its own:
+
+| C | Rust |
+| --- | --- |
+| `char *end; long n = strtol(text, &end, 10);` | `let (n, end) = parse_int_prefix(text);` |
+| `end == text`, `*end == '\0'`, `*end` | `end == 0`, `end == text.len()`, the byte of `text` at `end`, or 0 at its end |
+| `puts(end)` | `println!("{}", &text[end..])` |
+
+Nothing is stored through `&mut end`, and no address is compared, so an
+empty argument needs no memory of its own. An end pointer is refused where
+the call is inside a larger expression, where the pointer is read before
+the call or after the block of the call has ended, and where it is assigned
+in any other way.
+
 ## Not yet built
 
 The direction for each, so that the first rule for it starts in the right
@@ -170,8 +235,12 @@ place:
   that the helper sets to the rest of the text. `strtoul`, `strtod` and an
   end pointer into bytes wait for it, as does `errno`, which should become
   a result of the helper rather than a global.
-- **Cursors.** A pointer that walks an array (`p++`, `*p`) is an index beside
-  the slice, by a rewrite.
+- **Cursors that may be NULL.** A cursor is an index (see Cursors above). One
+  that NULL reaches, or that a library function returns (`strchr`,
+  `memchr`, `strstr`), should be an `Option<usize>` from `position`; a
+  cursor over a program argument needs the bytes of the argument; and a
+  cursor that gets the end of a number (`p = end` in a loop over a line)
+  needs the end pointer in the cursor's group.
 - **Walking a list.** `while (p) { …; p = p->next; }` needs a narrowing for
   loops like the one for `if`; today it uses `is_some()` and `unwrap()`.
 - **Shared memory.** Two slots that own the same memory do not compile: the

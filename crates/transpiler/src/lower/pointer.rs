@@ -508,6 +508,9 @@ impl Lower<'_> {
         if let Some(index @ 0..) = index.constant(self.program) {
             return Ok(rust::int(index, ""));
         }
+        if index.ty == Type::Index {
+            return self.expr(index);
+        }
         // C widens an index to 64 bits first, which `as usize` does too.
         let index = match &index.kind {
             ExprKind::Cast(inner)

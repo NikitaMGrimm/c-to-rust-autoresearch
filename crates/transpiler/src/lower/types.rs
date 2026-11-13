@@ -22,6 +22,7 @@ impl Lower<'_> {
                 let name = rust::ident(&format!("f{bits}"));
                 parse_quote!(#name)
             }
+            Type::Index => parse_quote!(usize),
             Type::Array(element, Some(length)) => {
                 let (element, length) = (self.ty(element, at)?, rust::int((*length).into(), ""));
                 parse_quote!([#element; #length])
@@ -82,7 +83,7 @@ impl Lower<'_> {
     pub(super) fn zero(&self, ty: &Type, at: u32) -> R<syn::Expr> {
         Ok(match ty {
             Type::Bool => parse_quote!(false),
-            Type::Char | Type::Int { .. } => rust::int(0, ""),
+            Type::Char | Type::Int { .. } | Type::Index => rust::int(0, ""),
             Type::Float { .. } => rust::float(0.0, ""),
             Type::Array(element, Some(length)) => {
                 let (zero, length) = (self.zero(element, at)?, rust::int((*length).into(), ""));

@@ -159,10 +159,11 @@ impl Lower<'_> {
                 bits: 32,
                 signed: true,
             } => rust::int(value, ""),
-            Type::Int { .. } if typed => rust::int(value, ""),
+            Type::Int { .. } | Type::Index if typed => rust::int(value, ""),
             Type::Int { bits, signed } => {
                 rust::int(value, &format!("{}{bits}", if signed { 'i' } else { 'u' }))
             }
+            Type::Index => rust::int(value, "usize"),
             _ => return None,
         })
     }
@@ -232,6 +233,9 @@ impl Lower<'_> {
         if left.ty.is_pointer() || right.ty.is_pointer() {
             return unsupported("pointer arithmetic as a value: no rule yet", expr.at);
         }
+        if expr.ty == Type::Index {
+            return self.index_arithmetic(op, left, right);
+        }
         let unsigned = matches!(expr.ty.int(), Some((_, false)));
         match wrapping(op) {
             Some(method) if unsigned => {
@@ -243,6 +247,31 @@ impl Lower<'_> {
                 Ok(rust::binary(left, symbol(op), right))
             }
         }
+    }
+
+    /// Arithmetic on an index, which is Rust's: an index that leaves its
+    /// array is undefined in C and stops the program here. An offset that
+    /// is signed and not a constant may be negative, so it is added as the
+    /// number it is; where C's result is inside the array, this one is the
+    /// same.
+    fn index_arithmetic(&mut self, op: BinOp, left: &Expr, right: &Expr) -> R<syn::Expr> {
+        if let Some(offset) = signed_offset(right) {
+            let offset = self.expr(offset)?;
+            let left = self.expr(left)?;
+            return Ok(match op {
+                BinOp::Add => {
+                    let offset = rust::cast(offset, parse_quote!(isize));
+                    rust::method(left, "wrapping_add_signed", [offset])
+                }
+                BinOp::Sub => {
+                    let offset = rust::cast(offset, parse_quote!(usize));
+                    rust::method(left, "wrapping_sub", [offset])
+                }
+                _ => return unsupported("arithmetic on an index with no rule", right.at),
+            });
+        }
+        let (left, right) = self.operands(left, right)?;
+        Ok(rust::binary(left, symbol(op), right))
     }
 
     /// Two operands of one operator: a literal beside another value takes
@@ -578,6 +607,17 @@ impl Lower<'_> {
             _ => false,
         };
         let bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
+        if target.ty == Type::Index {
+            if signed_offset(value).is_some() {
+                self.simple(target)?;
+                return Ok(rust::assign(
+                    place,
+                    self.index_arithmetic(*op, target, value)?,
+                ));
+            }
+            let value = self.typed(value)?;
+            return Ok(rust::binary(place, &format!("{}=", symbol(*op)), value));
+        }
         if target.ty == *compute || (narrower && (bitwise || wrapping(*op).is_some())) {
             // The low bits of these operations do not depend on the wider
             // type that C computes in.
@@ -646,7 +686,8 @@ impl Lower<'_> {
             Type::Int {
                 bits: 32 | 64,
                 signed: true,
-            } => Ok(rust::binary(place, op, rust::int(1, ""))),
+            }
+            | Type::Index => Ok(rust::binary(place, op, rust::int(1, ""))),
             // C computes in `int` and keeps the low bits.
             Type::Char | Type::Int { .. } => {
                 self.simple(target)?;
@@ -726,6 +767,21 @@ fn place_parts(place: &Expr) -> Option<Vec<Part>> {
         // Any element stands for the array.
         ExprKind::Index(base, _) => pointed(base),
         ExprKind::Deref(pointer) => pointed(pointer),
+        _ => None,
+    }
+}
+
+/// The number under a conversion to an index, if it is signed and not a
+/// constant, so that it may be negative when the program runs.
+fn signed_offset(index: &Expr) -> Option<&Expr> {
+    match &index.kind {
+        ExprKind::Cast(inner)
+            if index.ty == Type::Index
+                && matches!(inner.ty.int(), Some((_, true)))
+                && !matches!(inner.kind, ExprKind::Int(_) | ExprKind::Char(_)) =>
+        {
+            Some(inner)
+        }
         _ => None,
     }
 }

@@ -104,6 +104,11 @@ pub enum Type {
     Float {
         bits: u8,
     },
+    /// An index into an array, which C does not have as a type of its
+    /// own: `normalise` gives it to a pointer that walks an array. Unlike
+    /// C's unsigned numbers it does not wrap around, since a pointer may
+    /// not leave its array.
+    Index,
     Pointer(Box<Type>),
     /// The length is `None` when it is not a constant, as in a
     /// variable-length array.
@@ -127,7 +132,10 @@ impl Type {
     }
 
     pub fn is_integer(&self) -> bool {
-        matches!(self, Type::Bool | Type::Char | Type::Int { .. })
+        matches!(
+            self,
+            Type::Bool | Type::Char | Type::Int { .. } | Type::Index
+        )
     }
 
     /// The type a pointer points to or an array holds.
@@ -144,6 +152,7 @@ impl Type {
             Type::Bool => Some((1, false)),
             Type::Char => Some((8, true)),
             Type::Int { bits, signed } => Some((bits, signed)),
+            Type::Index => Some((64, false)),
             _ => None,
         }
     }
@@ -156,7 +165,7 @@ impl Type {
             Type::Int { bits, .. } | Type::Float { bits } => {
                 (u64::from(*bits) / 8, u64::from(*bits) / 8)
             }
-            Type::Pointer(_) => (8, 8),
+            Type::Pointer(_) | Type::Index => (8, 8),
             Type::Array(of, len) => {
                 let (size, align) = of.layout(program)?;
                 (size * (*len)?, align)
@@ -521,9 +530,8 @@ pub fn any_expr(stmts: &[Stmt], vars: &[Var], test: &mut impl FnMut(&Expr) -> bo
 }
 
 impl Expr {
-    /// Calls `change` on this expression and on every one inside it.
-    pub fn each_mut(&mut self, change: &mut impl FnMut(&mut Expr)) {
-        change(self);
+    /// The expressions directly inside this one, to change them.
+    pub fn children_mut(&mut self) -> Vec<&mut Expr> {
         match &mut self.kind {
             ExprKind::Int(_)
             | ExprKind::Char(_)
@@ -535,14 +543,14 @@ impl Expr {
             | ExprKind::Extern(_)
             | ExprKind::Null
             | ExprKind::Zero
-            | ExprKind::SizeOf(_) => {}
+            | ExprKind::SizeOf(_) => Vec::new(),
             ExprKind::Unary(_, inner)
             | ExprKind::IncDec { target: inner, .. }
             | ExprKind::AddrOf(inner)
             | ExprKind::Deref(inner)
             | ExprKind::Decay(inner)
             | ExprKind::Cast(inner)
-            | ExprKind::Member { base: inner, .. } => inner.each_mut(change),
+            | ExprKind::Member { base: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)
             | ExprKind::Index(left, right)
@@ -550,26 +558,18 @@ impl Expr {
                 target: left,
                 value: right,
                 ..
-            } => {
-                left.each_mut(change);
-                right.each_mut(change);
-            }
-            ExprKind::Cond(cond, then, other) => {
-                for part in [cond, then, other] {
-                    part.each_mut(change);
-                }
-            }
-            ExprKind::Call(callee, args) => {
-                callee.each_mut(change);
-                for arg in args {
-                    arg.each_mut(change);
-                }
-            }
-            ExprKind::InitList(items) => {
-                for item in items {
-                    item.each_mut(change);
-                }
-            }
+            } => vec![left, right],
+            ExprKind::Cond(cond, then, other) => vec![cond, then, other],
+            ExprKind::Call(callee, args) => std::iter::once(&mut **callee).chain(args).collect(),
+            ExprKind::InitList(items) => items.iter_mut().collect(),
+        }
+    }
+
+    /// Calls `change` on this expression and on every one inside it.
+    pub fn each_mut(&mut self, change: &mut impl FnMut(&mut Expr)) {
+        change(self);
+        for child in self.children_mut() {
+            child.each_mut(change);
         }
     }
 }
