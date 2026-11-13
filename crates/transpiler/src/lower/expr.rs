@@ -9,6 +9,12 @@ use crate::facts::{Access, Slot, place_slot};
 use crate::rust;
 use syn::parse_quote;
 
+/// The library functions that print and whose rules give no value: C
+/// returns how much they wrote, or what.
+const PRINTERS: [&str; 7] = [
+    "printf", "fprintf", "puts", "fputs", "putchar", "fputc", "putc",
+];
+
 pub(super) fn symbol(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "+",
@@ -96,7 +102,16 @@ impl Lower<'_> {
                     Ok(parse_quote!(if #cond { #then } else { #other }))
                 }
             },
-            ExprKind::Call(callee, args) => self.call(expr, callee, args),
+            ExprKind::Call(callee, args) => {
+                // The macros that print have no value.
+                if let Some(name) = callee.function()
+                    && self.program.function(name).is_none()
+                    && PRINTERS.contains(&name)
+                {
+                    return unsupported(format!("the value of `{name}`: no rule yet"), at);
+                }
+                self.call(expr, callee, args)
+            }
             ExprKind::InitList(_) => self.init(&expr.ty, None, expr),
             // C's assignments have a value; Rust's do not.
             ExprKind::Assign { op, target, value } => {

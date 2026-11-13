@@ -32,6 +32,14 @@ fn a_construct_without_a_rule_is_refused() {
 #[test]
 fn a_program_that_a_rule_would_get_wrong_is_refused() {
     let refused = |name, c| translate(name, c).unwrap_err();
+    // `println!` has no value.
+    assert_eq!(
+        refused(
+            "printed",
+            "#include <stdio.h>\nint main(void) {\n    int n = printf(\"abc\\n\");\n    if (putchar('x') == 'x') n++;\n    return n;\n}\n"
+        ),
+        "unsupported: the value of `printf`: no rule yet, at line 3"
+    );
     // Rust would step `i` twice.
     assert_eq!(
         refused(

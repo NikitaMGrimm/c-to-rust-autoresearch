@@ -86,7 +86,8 @@ Entry format, newest last:
   converted to the type its conversion reads; `parse_int(&args[i])`, a
   helper emitted once that reads a number as `strtoll` does (leading white
   space, a sign, digits, 0 without digits, the nearest limit out of range);
-  the methods of `i32` and `f64` for the mathematics
+  the methods of `i32` and `f64` for the mathematics. The value that
+  `printf`, `puts` and `putchar` return is refused
 - Needs: nothing
 - Motivation: skeleton; `g1_div_euclid` and `g1_encode_quant` pass with R1 to
   R4
