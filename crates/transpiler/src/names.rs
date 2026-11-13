@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Rust's keywords that C allows as names, and the names that the
 /// translation itself uses.
-const RESERVED: [&str; 51] = [
+const RESERVED: &[&str] = &[
     "as",
     "async",
     "await",
@@ -59,6 +59,8 @@ const RESERVED: [&str; 51] = [
     "read_byte",
     "skip_space",
     "scan_int",
+    "until_nul",
+    "text_of",
 ];
 
 pub struct Names {

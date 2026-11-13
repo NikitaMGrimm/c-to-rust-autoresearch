@@ -230,3 +230,19 @@ Entry format, newest last:
 - Motivation: `g2_009_stack_buffer_overflow` was refused for
   `int buffer[10] = { 0 }`, an array whose initialiser leaves much of it out
 - Changes: extends R6, which wrote out up to eight missing elements
+
+## R15: text in bytes
+
+- C: text in a `char` array or behind a pointer to one, read by `printf`'s
+  `%s`, `puts`, `strlen`, `atoi`, `atol` or `atoll`; a string literal for a
+  pointer that the program also reads byte by byte or that meets an array
+- Rust: the array stays `[u8; N]` and the pointer `&[u8]`; `text_of(&word)`
+  to print or parse it and `until_nul(&word).len()` for its length, two
+  helpers that read up to the first NUL and stop the program where there is
+  none, since C would read on beyond the array; `b"literal\0"` for the
+  literal
+- Needs: `Facts::pointer` (`bytes`), which tells this text from R13's
+- Motivation: `g2_009_stack_buffer_overflow`, `g2_016_divide_by_zero_float`
+  and `g2_017_signed_length_confusion` parse a line that they read into a
+  `char` array
+- Changes: extends R4 and R13; a literal for a pointer to bytes was refused

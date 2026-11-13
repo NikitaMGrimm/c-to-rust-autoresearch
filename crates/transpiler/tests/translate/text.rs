@@ -57,20 +57,67 @@ int main(int argc, char *argv[]) {
 }
 
 #[test]
-fn text_that_is_read_byte_by_byte_is_refused() {
+fn text_with_no_rule_is_refused() {
     let refused = |name, c| translate(name, c).unwrap_err();
-    assert_eq!(
-        refused(
-            "text-bytes",
-            "int main(void) {\n    const char *text = \"abc\";\n    return text[1];\n}\n"
-        ),
-        "unsupported: a string literal as a pointer to bytes: no rule yet, at line 2"
-    );
     assert_eq!(
         refused(
             "text-width",
             "#include <stdio.h>\nint main(void) {\n    const char *text = \"abc\";\n    printf(\"%5s\", text);\n    return 0;\n}\n"
         ),
         "unsupported: a `printf` width for text in a variable, at line 4"
+    );
+}
+
+#[test]
+fn text_in_bytes_ends_at_its_nul() {
+    let rust = check(
+        "bytes",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+void show(const char *line) {
+    if (line != NULL) {
+        printf("[%s] %lu\n", line, strlen(line));
+    }
+}
+int count(const char *text, char wanted) {
+    int found = 0;
+    for (int i = 0; text[i] != '\0'; i++) {
+        if (text[i] == wanted) found++;
+    }
+    return found;
+}
+int main(int argc, char *argv[]) {
+    char word[8] = "ab";
+    char empty[4] = "";
+    word[2] = 'c';
+    word[3] = (char)('a' + argc);
+    show(word);
+    show("a literal");
+    show(empty);
+    show(&word[1]);
+    show(NULL);
+    puts(word);
+    printf("%d %d %d\n", atoi(argv[1]), count("banana", 'a'), count(word, 'b'));
+    return (int)strlen(word);
+}
+"#,
+        &[&["7"], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn show(line: Option<&[u8]>) {",
+            "println!(\"[{}] {}\", text_of(line), until_nul(line).len() as u64);",
+            "fn count(text: &[u8], wanted: u8) -> i32 {",
+            "show(Some(&word[..]));",
+            "show(Some(&b\"a literal\\0\"[..]));",
+            "show(Some(&word[1..]));",
+            "println!(\"{}\", text_of(&word));",
+            "count(b\"banana\\0\", b'a'),",
+            "fn until_nul(bytes: &[u8]) -> &[u8] {",
+        ],
     );
 }

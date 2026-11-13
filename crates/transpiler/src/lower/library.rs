@@ -36,8 +36,11 @@ impl Lower<'_> {
                 }
             },
             ("strlen", [text]) => {
-                let length = rust::method(self.text(text, false)?, "len", []);
-                Ok(rust::cast(length, parse_quote!(u64)))
+                let text = match self.reads_bytes(text) {
+                    true => self.until_nul(text)?,
+                    false => self.text(text, false)?,
+                };
+                Ok(rust::cast(rust::method(text, "len", []), parse_quote!(u64)))
             }
             ("putchar", [value]) => {
                 let value = self.character(value)?;
@@ -84,10 +87,7 @@ impl Lower<'_> {
     /// literal, a pointer that only holds text, or `argv[i]` as `args[i]`.
     /// `borrowed` asks for a `&str`, where `args[i]` is a `String`.
     fn text(&mut self, text: &Expr, borrowed: bool) -> R<syn::Expr> {
-        if let ExprKind::Index(base, index) = &text.uncast().kind
-            && let ExprKind::Var(var) = base.kind
-            && Some(var) == self.argv
-        {
+        if let Some(index) = self.argument(text) {
             let index = self.index_value(index)?;
             let argument = rust::index(rust::name("args"), index);
             return Ok(match borrowed {
@@ -95,10 +95,40 @@ impl Lower<'_> {
                 false => argument,
             });
         }
-        if literal_text(text).is_some() || self.is_text(text) {
+        if !self.reads_bytes(text) {
             return self.pointer(text, Repr::TEXT);
         }
-        unsupported("text in an array of bytes: no rule yet", text.at)
+        let bytes = self.pointer(text, Repr::BYTES)?;
+        self.helper(Helper::TextOf);
+        let text = rust::call("text_of", [bytes]);
+        Ok(match borrowed {
+            true => rust::borrow(false, text),
+            false => text,
+        })
+    }
+
+    /// The index of `argv[index]`, if the expression is one of `main`'s
+    /// arguments.
+    fn argument<'e>(&self, text: &'e Expr) -> Option<&'e Expr> {
+        match &text.uncast().kind {
+            ExprKind::Index(base, index) if matches!(base.kind, ExprKind::Var(var) if Some(var) == self.argv) => {
+                Some(index)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the text is in bytes that end with a NUL, rather than in a
+    /// `&str`.
+    fn reads_bytes(&self, text: &Expr) -> bool {
+        literal_text(text).is_none() && self.argument(text).is_none() && !self.is_text(text)
+    }
+
+    /// R14: the bytes of the text that a pointer to bytes points to.
+    fn until_nul(&mut self, text: &Expr) -> R<syn::Expr> {
+        let bytes = self.pointer(text, Repr::BYTES)?;
+        self.helper(Helper::UntilNul);
+        Ok(rust::call("until_nul", [bytes]))
     }
 
     /// A value that C prints with `%c`, as a `char`.
@@ -239,7 +269,7 @@ impl Lower<'_> {
                     }
                     Some(text) => rust::string(text),
                     // What the pointer holds may not be ASCII either.
-                    None if width.is_some() && self.is_text(value) => {
+                    None if width.is_some() && self.argument(value).is_none() => {
                         return unsupported("a `printf` width for text in a variable", at);
                     }
                     None => self.text(value, false)?,

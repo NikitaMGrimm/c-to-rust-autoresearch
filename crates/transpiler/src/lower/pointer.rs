@@ -31,6 +31,15 @@ impl Repr {
         nullable: false,
         text: true,
     };
+
+    /// Bytes that are there, for a use that reads them.
+    pub(super) const BYTES: Repr = Repr {
+        owned: false,
+        many: true,
+        mutable: false,
+        nullable: false,
+        text: false,
+    };
 }
 
 impl Lower<'_> {
@@ -210,10 +219,17 @@ impl Lower<'_> {
                 }
                 if let ExprKind::Str(bytes) = &array.kind {
                     if !to.text {
-                        return unsupported(
-                            "a string literal as a pointer to bytes: no rule yet",
-                            at,
-                        );
+                        // The program reads the bytes one by one, up to
+                        // the NUL that C puts after them.
+                        let mut bytes = bytes.clone();
+                        bytes.push(0);
+                        let literal = syn::LitByteStr::new(&bytes, proc_macro2::Span::call_site());
+                        return Ok(match to.nullable {
+                            // An array becomes a slice by itself only
+                            // outside `Some`.
+                            true => parse_quote!(Some(&#literal[..])),
+                            false => parse_quote!(#literal),
+                        });
                     }
                     // Text ends at its first NUL, as every reader of it
                     // in C finds.

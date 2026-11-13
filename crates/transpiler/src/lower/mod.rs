@@ -33,15 +33,18 @@ enum Helper {
     ReadByte,
     SkipSpace,
     ScanInt,
+    UntilNul,
+    TextOf,
 }
 
 impl Helper {
     /// The helpers that this one calls.
     fn needs(self) -> &'static [Helper] {
         match self {
-            Helper::ParseInt | Helper::PeekByte => &[],
+            Helper::ParseInt | Helper::PeekByte | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
+            Helper::TextOf => &[Helper::UntilNul],
         }
     }
 
@@ -126,6 +129,23 @@ impl Helper {
                         });
                     }
                     value
+                }
+            },
+            Helper::UntilNul => parse_quote! {
+                /// The text that C reads in `bytes`: the bytes before the first
+                /// NUL, which must be there.
+                fn until_nul(bytes: &[u8]) -> &[u8] {
+                    let end = bytes
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .expect("text ends with a NUL");
+                    &bytes[..end]
+                }
+            },
+            Helper::TextOf => parse_quote! {
+                /// The text that C reads in `bytes`, to print or to parse.
+                fn text_of(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+                    String::from_utf8_lossy(until_nul(bytes))
                 }
             },
         }
