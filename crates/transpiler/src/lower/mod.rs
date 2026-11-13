@@ -33,6 +33,7 @@ enum Helper {
     ReadByte,
     SkipSpace,
     ScanInt,
+    ReadLine,
     UntilNul,
     TextOf,
 }
@@ -44,6 +45,7 @@ impl Helper {
             Helper::ParseInt | Helper::PeekByte | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
+            Helper::ReadLine => &[Helper::ReadByte],
             Helper::TextOf => &[Helper::UntilNul],
         }
     }
@@ -129,6 +131,30 @@ impl Helper {
                         });
                     }
                     value
+                }
+            },
+            Helper::ReadLine => parse_quote! {
+                /// Reads a line from standard input into `buffer` as C's `fgets`
+                /// does: up to the end of the line, which it keeps, or until
+                /// `buffer` has room for one more byte, and a NUL after it.
+                /// Returns whether there was anything to read.
+                fn read_line(buffer: &mut [u8]) -> bool {
+                    let mut length = 0;
+                    while length + 1 < buffer.len() {
+                        let Some(byte) = read_byte() else {
+                            break;
+                        };
+                        buffer[length] = byte;
+                        length += 1;
+                        if byte == b'\n' {
+                            break;
+                        }
+                    }
+                    if length == 0 && buffer.len() != 1 {
+                        return false;
+                    }
+                    buffer[length] = 0;
+                    true
                 }
             },
             Helper::UntilNul => parse_quote! {

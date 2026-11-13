@@ -99,6 +99,8 @@ Keep to these:
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
 | `malloc`, `calloc`, `free` | `Box::new`, `vec![zero; n]`, `drop` |
 | `scanf("%d", &x)` | `if let Some(scanned) = scan_int() { x = scanned as i32; }` |
+| `fgets(line, sizeof line, stdin)` | `read_line(&mut line)` |
+| `%s` of a `char` array | `text_of(&line)` |
 
 ### Pointers
 
@@ -138,19 +140,21 @@ The direction for each, so that the first rule for it starts in the right
 place:
 
 - **Text.** A `char *` that only holds string literals and is read as a
-  whole is `&str` (R13). Still to build: text that a record or a global
-  holds (`&'static str` when only literals reach it, `String` when the
-  program builds it), `argv[i]` handed to a function, `strcmp` and the other
-  readers, and a width in `%s`. A `char` array stays bytes, as does every
-  pointer into one; `%s`, `fgets`, `strcpy` and the rest need rules for
-  text in bytes that ends at a NUL, and a string literal that such a
-  pointer meets is then `b"…\0"`.
-- **Input.** `scanf` reads numbers and characters through helpers over
+  whole is `&str` (R13). A `char` array stays bytes, as does every pointer
+  into one; the library reads its text up to the NUL through `text_of` and
+  `until_nul` (R15), and a string literal that such a pointer meets is
+  `b"…\0"`. Still to build: text that a record or a global holds
+  (`&'static str` when only literals reach it), `argv[i]` handed to a
+  function, `strcmp`, `strcpy` and the other functions of `string.h`, a
+  width in `%s`, and above all a `String` for a buffer that the program
+  only fills and reads as a whole, which needs a fact that says so.
+- **Input.** `scanf` and `fgets` read through helpers over
   `std::io::stdin().lock()` that take a byte at a time, so that every way
-  of reading shares what is left, as in C (`lower/input.rs`). `fgets`,
-  `getchar`, `%s` and `%f` belong there too. The result of `scanf` has a
-  rule only where it is compared with the number of conversions: it is also
-  -1 at the end of the input. `fprintf(stderr, …)` is `eprint!`.
+  of reading shares what is left, as in C (`lower/input.rs`, and
+  `read_line` in `library.rs`). `getchar`, `fread`, `%s` and `%f` belong
+  there too. The result of `scanf` has a rule only where it is compared
+  with the number of conversions: it is also -1 at the end of the input.
+  `fprintf(stderr, …)` is `eprint!`.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result.
 - **Cursors.** A pointer that walks an array (`p++`, `*p`) is an index beside
@@ -179,7 +183,7 @@ become a fact and a refusal:
   there (`&a[1..]`), so an index or a step back before it (`p[-1]`) stops
   the program where C reads the element.
 - `%c`, `%s` of a program argument and `argv` assume ASCII; C passes any
-  bytes through.
+  bytes through. `text_of` prints bytes that are not UTF-8 as U+FFFD.
 - A conversion from a floating-point number to an integer saturates in Rust
   where C's behaviour is undefined, and a NaN prints differently.
 

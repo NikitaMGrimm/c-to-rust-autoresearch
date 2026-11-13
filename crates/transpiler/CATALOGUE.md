@@ -246,3 +246,17 @@ Entry format, newest last:
   and `g2_017_signed_length_confusion` parse a line that they read into a
   `char` array
 - Changes: extends R4 and R13; a literal for a pointer to bytes was refused
+
+## R16: `fgets`
+
+- C: `fgets(buffer, size, stdin)` as a statement or tested against NULL
+- Rust: `read_line(&mut buffer)`, or `read_line(&mut buffer[..size])` when
+  the size is not the array's length: a helper that reads up to the end of
+  the line or until one byte is left, stores a NUL after it and returns
+  whether there was anything to read, which is the test against NULL
+- Needs: the helper `read_byte` of R11, so that `scanf` and `fgets` share
+  what is left of the input
+- Motivation: `g2_009_stack_buffer_overflow`, `g2_016_divide_by_zero_float`,
+  `g2_017_signed_length_confusion` and `g3_023_struct_and_errno` read their
+  input with it
+- Changes: none

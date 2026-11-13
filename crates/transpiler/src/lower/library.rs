@@ -42,6 +42,7 @@ impl Lower<'_> {
                 };
                 Ok(rust::cast(rust::method(text, "len", []), parse_quote!(u64)))
             }
+            ("fgets", [buffer, size, stream]) => self.read_line(buffer, size, stream, at),
             ("putchar", [value]) => {
                 let value = self.character(value)?;
                 Ok(parse_quote!(print!("{}", #value)))
@@ -129,6 +130,45 @@ impl Lower<'_> {
         let bytes = self.pointer(text, Repr::BYTES)?;
         self.helper(Helper::UntilNul);
         Ok(rust::call("until_nul", [bytes]))
+    }
+
+    /// R15: `fgets` on `stdin` as `read_line`, which is true where `fgets`
+    /// returns the buffer and false where it returns NULL.
+    pub(super) fn read_line(
+        &mut self,
+        buffer: &Expr,
+        size: &Expr,
+        stream: &Expr,
+        at: u32,
+    ) -> R<syn::Expr> {
+        if !matches!(&stream.uncast().kind, ExprKind::Extern(name) if name == "stdin") {
+            return unsupported("`fgets` on a file other than `stdin`: no rule yet", at);
+        }
+        // The whole array, when that is what the size says.
+        let whole = match &buffer.uncast().kind {
+            ExprKind::Decay(array) => match &array.ty {
+                Type::Array(_, Some(length)) => {
+                    size.constant(self.program) == Some(i128::from(*length))
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        let target = match whole {
+            true => self.pointer(
+                buffer,
+                Repr {
+                    mutable: true,
+                    ..Repr::BYTES
+                },
+            )?,
+            false => {
+                let size = rust::until(self.index_value(size)?);
+                rust::borrow(true, rust::index(self.slice(buffer, true)?, size))
+            }
+        };
+        self.helper(Helper::ReadLine);
+        Ok(rust::call("read_line", [target]))
     }
 
     /// A value that C prints with `%c`, as a `char`.

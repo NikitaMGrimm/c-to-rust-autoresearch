@@ -129,6 +129,16 @@ pub fn from(start: Expr) -> Expr {
     })
 }
 
+/// `..end`, to take the start of a slice.
+pub fn until(end: Expr) -> Expr {
+    Expr::Range(syn::ExprRange {
+        attrs: Vec::new(),
+        start: None,
+        limits: syn::RangeLimits::HalfOpen(Default::default()),
+        end: Some(Box::new(end)),
+    })
+}
+
 pub fn method(receiver: Expr, method: &str, args: impl IntoIterator<Item = Expr>) -> Expr {
     Expr::MethodCall(syn::ExprMethodCall {
         attrs: Vec::new(),

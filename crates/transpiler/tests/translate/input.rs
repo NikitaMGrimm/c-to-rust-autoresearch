@@ -89,3 +89,48 @@ fn scanf_with_no_rule_is_refused() {
         "unsupported: text in a `scanf` format: no rule yet, at line 4"
     );
 }
+
+#[test]
+fn fgets_reads_a_line_into_bytes() {
+    let c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(void) {
+    char line[8] = "";
+    char rest[32];
+    int lines = 0;
+    while (fgets(line, 8, stdin) != NULL) {
+        lines++;
+        printf("%d: %lu <%s>\n", atoi(line), strlen(line), line);
+        if (lines == 3) break;
+    }
+    if (!fgets(rest, 4, stdin)) {
+        puts("nothing left");
+        return lines;
+    }
+    fgets(rest + 3, sizeof(rest) - 3, stdin);
+    printf("rest <%s>\n", rest);
+    return lines;
+}
+"#;
+    let mut rust = String::new();
+    for stdin in [
+        "",
+        "12\n",
+        "12",
+        "1234567890 and more\n-5\n\nlast line\nunread",
+        "\n\n\nabc",
+        "1\n2\n3\nabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
+    ] {
+        rust = check("fgets", c, &[&[]], stdin);
+    }
+    assert_lines(
+        &rust,
+        &[
+            "while read_line(&mut line) {",
+            "if !read_line(&mut rest[..4]) {",
+            "read_line(&mut rest[3..][..29]);",
+        ],
+    );
+}

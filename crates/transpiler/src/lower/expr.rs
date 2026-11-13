@@ -281,9 +281,7 @@ impl Lower<'_> {
             return self.scan_cond(&reads, found);
         }
         match &cond.kind {
-            ExprKind::Unary(UnOp::Not, inner) if inner.ty.is_pointer() => {
-                Ok(rust::method(self.optional(inner)?, "is_none", []))
-            }
+            ExprKind::Unary(UnOp::Not, inner) if inner.ty.is_pointer() => self.is_set(inner, false),
             ExprKind::Unary(UnOp::Not, inner) => Ok(rust::unary("!", self.cond(inner)?)),
             ExprKind::Binary(op, left, right) if op.is_logical() => {
                 // A side that the facts decide and that does not decide the
@@ -303,7 +301,7 @@ impl Lower<'_> {
             ExprKind::Cast(inner) if cond.ty == Type::Bool || inner.ty.is_pointer() => {
                 self.cond(inner)
             }
-            _ if cond.ty.is_pointer() => Ok(rust::method(self.optional(cond)?, "is_some", [])),
+            _ if cond.ty.is_pointer() => self.is_set(cond, true),
             _ if cond.ty == Type::Bool => self.expr(cond),
             _ => {
                 let zero = match cond.ty {
@@ -313,6 +311,22 @@ impl Lower<'_> {
                 Ok(rust::binary(self.expr(cond)?, "!=", zero))
             }
         }
+    }
+
+    /// Whether a pointer is not NULL, or whether it is.
+    fn is_set(&mut self, pointer: &Expr, set: bool) -> R<syn::Expr> {
+        // `fgets` returns its buffer, or NULL where it read nothing.
+        if let ExprKind::Call(callee, args) = &pointer.uncast().kind
+            && let (Some("fgets"), [buffer, size, stream]) = (callee.function(), args.as_slice())
+        {
+            let read = self.read_line(buffer, size, stream, pointer.at)?;
+            return Ok(match set {
+                true => read,
+                false => rust::unary("!", read),
+            });
+        }
+        let test = if set { "is_some" } else { "is_none" };
+        Ok(rust::method(self.optional(pointer)?, test, []))
     }
 
     /// The `Option` that holds a pointer which may be NULL.
@@ -332,12 +346,11 @@ impl Lower<'_> {
                 (false, true) => left,
                 _ => return unsupported("a comparison of two addresses", at),
             };
-            let test = match op {
-                BinOp::Eq => "is_none",
-                BinOp::Ne => "is_some",
-                _ => return unsupported("an ordering of a pointer and NULL", at),
+            return match op {
+                BinOp::Eq => self.is_set(pointer, false),
+                BinOp::Ne => self.is_set(pointer, true),
+                _ => unsupported("an ordering of a pointer and NULL", at),
             };
-            return Ok(rust::method(self.optional(pointer)?, test, []));
         }
         // `c == 'a'` compares bytes: equality does not depend on the sign
         // that C's conversion to `int` gives a `char`.
