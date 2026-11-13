@@ -215,3 +215,54 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn strtod_reads_what_c_reads() {
+    let rust = check(
+        "strtod",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    double wide = strtod(argv[1], NULL);
+    float narrow = strtof(argv[1], NULL);
+    double plain = atof(argv[1]);
+    printf("%.17f %.12f %.3f %d\n", wide, narrow, plain, wide > 1.0);
+    return 0;
+}
+"#,
+        &[
+            &["0"],
+            &["1.5"],
+            &["  -2.25e2xyz"],
+            &["+.5"],
+            &["5."],
+            &["."],
+            &["-"],
+            &["1e"],
+            &["1e+"],
+            &["1e-3"],
+            &["0.1"],
+            &["16777217"],
+            &["1.00000017881393432617187499"],
+            &["3.4028236e38"],
+            &["1e400"],
+            &["-1e-400"],
+            &["inf"],
+            &["-INFINITY and more"],
+            &["infinit"],
+            &["abc"],
+            &[""],
+            &["12abc"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let wide: f64 = parse_float::<f64>(&args[1]);",
+            "let narrow: f32 = parse_float::<f32>(&args[1]);",
+            "fn parse_float<T: std::str::FromStr + Default>(text: &str) -> T {",
+        ],
+    );
+}

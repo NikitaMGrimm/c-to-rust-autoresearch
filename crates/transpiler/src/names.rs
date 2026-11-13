@@ -61,6 +61,7 @@ const RESERVED: &[&str] = &[
     "scan_int",
     "read_line",
     "parse_uint",
+    "parse_float",
     "until_nul",
     "text_of",
 ];

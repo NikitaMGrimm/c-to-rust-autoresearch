@@ -76,6 +76,10 @@ impl Lower<'_> {
                 self.helper(Helper::ParseUint);
                 Ok(rust::call("parse_uint", [text]))
             }
+            ("strtod" | "strtof", [text, end]) if matches!(end.uncast().kind, ExprKind::Null) => {
+                self.parse_float(text, &call.ty, at)
+            }
+            ("atof", [text]) => self.parse_float(text, &call.ty, at),
             ("atoi", [text]) => Ok(rust::cast(self.parse_int(text)?, parse_quote!(i32))),
             ("atol" | "atoll", [text]) => self.parse_int(text),
             _ => unsupported(
@@ -92,7 +96,15 @@ impl Lower<'_> {
         Ok(rust::call("parse_int", [text]))
     }
 
-    /// R12: text that a library function reads as a whole: a string
+    /// R18: `parse_float` of text, as an `f32` or an `f64`.
+    fn parse_float(&mut self, text: &Expr, ty: &Type, at: u32) -> R<syn::Expr> {
+        let text = self.text(text, true)?;
+        let ty = self.ty(ty, at)?;
+        self.helper(Helper::ParseFloat);
+        Ok(parse_quote!(parse_float::<#ty>(#text)))
+    }
+
+    /// R13: text that a library function reads as a whole: a string
     /// literal, a pointer that only holds text, or `argv[i]` as `args[i]`.
     /// `borrowed` asks for a `&str`, where `args[i]` is a `String`.
     fn text(&mut self, text: &Expr, borrowed: bool) -> R<syn::Expr> {

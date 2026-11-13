@@ -186,6 +186,8 @@ become a fact and a refusal:
   bytes through. `text_of` prints bytes that are not UTF-8 as U+FFFD.
 - A conversion from a floating-point number to an integer saturates in Rust
   where C's behaviour is undefined, and a NaN prints differently.
+- `parse_float` reads decimal numbers only: `strtod` also reads
+  hexadecimal ones (`0x1p3`), of which this reads the `0`.
 
 ## Tests
 

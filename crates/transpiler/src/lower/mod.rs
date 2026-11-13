@@ -30,6 +30,7 @@ fn unsupported<T>(what: impl Into<String>, at: u32) -> R<T> {
 enum Helper {
     ParseInt,
     ParseUint,
+    ParseFloat,
     PeekByte,
     ReadByte,
     SkipSpace,
@@ -43,7 +44,11 @@ impl Helper {
     /// The helpers that this one calls.
     fn needs(self) -> &'static [Helper] {
         match self {
-            Helper::ParseInt | Helper::ParseUint | Helper::PeekByte | Helper::UntilNul => &[],
+            Helper::ParseInt
+            | Helper::ParseUint
+            | Helper::ParseFloat
+            | Helper::PeekByte
+            | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
             Helper::ReadLine => &[Helper::ReadByte],
@@ -103,6 +108,54 @@ impl Helper {
                         Some(value) => value,
                         None => u64::MAX,
                     }
+                }
+            },
+            Helper::ParseFloat => parse_quote! {
+                /// The number at the start of `text` as C's `strtod` reads a
+                /// decimal number: white space, a sign, then digits with a
+                /// point and an exponent, or `inf` or `nan`. It is 0 without a
+                /// number.
+                fn parse_float<T: std::str::FromStr + Default>(text: &str) -> T {
+                    let text = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
+                    let bytes = text.as_bytes();
+                    let digits = |from: usize| {
+                        bytes[from..]
+                            .iter()
+                            .take_while(|byte| byte.is_ascii_digit())
+                            .count()
+                    };
+                    let starts = |from: usize, word: &str| {
+                        bytes[from..]
+                            .get(..word.len())
+                            .is_some_and(|start| start.eq_ignore_ascii_case(word.as_bytes()))
+                    };
+                    let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+                    if let Some(word) = ["infinity", "inf", "nan"]
+                        .into_iter()
+                        .find(|word| starts(end, word))
+                    {
+                        return text[..end + word.len()].parse().unwrap_or_default();
+                    }
+                    let whole = digits(end);
+                    end += whole;
+                    let fraction = match bytes.get(end) {
+                        Some(b'.') => digits(end + 1),
+                        _ => 0,
+                    };
+                    if whole + fraction == 0 {
+                        return T::default();
+                    }
+                    if bytes.get(end) == Some(&b'.') {
+                        end += 1 + fraction;
+                    }
+                    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+                        let sign = usize::from(matches!(bytes.get(end + 1), Some(b'+' | b'-')));
+                        let exponent = digits(end + 1 + sign);
+                        if exponent > 0 {
+                            end += 1 + sign + exponent;
+                        }
+                    }
+                    text[..end].parse().unwrap_or_default()
                 }
             },
             Helper::PeekByte => parse_quote! {

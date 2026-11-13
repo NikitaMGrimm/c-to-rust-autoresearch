@@ -272,3 +272,16 @@ Entry format, newest last:
   own `main` reads each unsigned argument with
 - Changes: extends R4; R13's analysis counts the `strtol` family among the
   functions that read text as a whole
+
+## R18: `strtod`, `strtof` and `atof`
+
+- C: `strtod` and `strtof` with a NULL end pointer, and `atof`, of text
+- Rust: `parse_float::<f64>(&args[1])` or `::<f32>`, a helper that finds
+  what `strtod` reads as a decimal number (white space, a sign, digits with
+  a point and an exponent, `inf`, `nan`) and parses it with the standard
+  library, which rounds as C does; 0 without a number
+- Needs: nothing
+- Motivation: `g2_016_divide_by_zero_float` was refused for `atof`, and
+  `g2_ldexp_q2` and `g2_pow43` for `strtof`, which the benchmark's own
+  `main` reads each `float` argument with
+- Changes: extends R4
