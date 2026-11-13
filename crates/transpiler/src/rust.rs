@@ -45,13 +45,69 @@ pub fn float(value: f64, suffix: &str) -> Expr {
         };
     }
     // `{:?}` prints the shortest text that reads back as the same number.
-    let literal = syn::LitFloat::new(&format!("{:?}{suffix}", value.abs()), Span::call_site());
-    let literal: Expr = parse_quote!(#literal);
-    if value.is_sign_negative() {
-        unary("-", literal)
-    } else {
-        literal
+    let text = format!("{:?}", value.abs());
+    let negative: Option<syn::Token![-]> = value.is_sign_negative().then(Default::default);
+    // Clippy refuses a literal that it takes for one of the constants of
+    // `std::f64::consts` written out, in whatever notation. The C program
+    // means the number it wrote, which is a whole number divided by a
+    // power of ten: both are exact, so their quotient is the same `f64`
+    // as the literal.
+    if suffix != "f32"
+        && near_constant(&text)
+        && let Some((whole, fraction)) = text.split_once('.')
+        && let Ok(digits @ ..EXACT) = format!("{whole}{fraction}").parse::<u64>()
+        && fraction.len() <= 22
+    {
+        let digits = syn::LitFloat::new(&format!("{digits}.0{suffix}"), Span::call_site());
+        let power = syn::LitFloat::new(&format!("1e{}", fraction.len()), Span::call_site());
+        return parse_quote!(#negative #digits / #power);
     }
+    let literal = syn::LitFloat::new(&format!("{text}{suffix}"), Span::call_site());
+    parse_quote!(#negative #literal)
+}
+
+/// The whole numbers below this are `f64` values.
+const EXACT: u64 = 1 << 53;
+
+/// Whether Clippy's `approx_constant` may take the number for a constant
+/// written out: its text is how a constant starts, or the constant rounded
+/// to as many digits. Clippy asks for more digits for some constants and
+/// knows more of them in some versions, and a number that it would have
+/// let pass is as right as a quotient.
+fn near_constant(text: &str) -> bool {
+    use std::f64::consts::*;
+    const KNOWN: [f64; 19] = [
+        E,
+        FRAC_1_PI,
+        FRAC_1_SQRT_2,
+        FRAC_2_PI,
+        FRAC_2_SQRT_PI,
+        FRAC_PI_2,
+        FRAC_PI_3,
+        FRAC_PI_4,
+        FRAC_PI_6,
+        FRAC_PI_8,
+        LN_2,
+        LN_10,
+        LOG10_2,
+        LOG10_E,
+        LOG2_10,
+        LOG2_E,
+        PI,
+        SQRT_2,
+        TAU,
+    ];
+    // The golden ratio and Euler's constant, which `std` names only in
+    // newer versions: as quotients, since Clippy refuses them here too.
+    let later = [
+        1_618_033_988_749_895.0 / 1e15,
+        5_772_156_649_015_329.0 / 1e16,
+    ];
+    KNOWN.iter().chain(&later).any(|constant| {
+        text.len() > 3
+            && (constant.to_string().starts_with(text)
+                || format!("{constant:.*}", text.len() - 2) == text)
+    })
 }
 
 pub fn string(text: &str) -> Expr {

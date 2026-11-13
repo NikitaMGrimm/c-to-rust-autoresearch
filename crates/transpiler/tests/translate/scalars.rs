@@ -445,3 +445,37 @@ int main(int argc, char *argv[]) {
         &["i32::from(d.is_nan()),", "i32::from(!f.is_nan()),"],
     );
 }
+
+#[test]
+fn a_literal_near_a_named_constant_keeps_its_value() {
+    // Clippy takes `2.718281828` for `std::f64::consts::E` written out and
+    // refuses it; the program means the number it wrote.
+    let rust = check(
+        "near-constant",
+        r#"
+#include <stdio.h>
+int main(void) {
+    double e = 2.718281828, pi = 3.14, root = 1.41421, half = 0.5, tau = -6.2832;
+    double exact = 3.141592653589793, golden = 1.6180339, product = 2.0 * 0.6931;
+    float small = 0.3183f;
+    printf("%.17g %.17g %.17g %.17g %.17g\n", e, pi, root, half, tau);
+    printf("%.17g %.17g %.17g %.9g\n", exact, golden, product, small);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let e: f64 = 2718281828.0 / 1e9;",
+            "let pi: f64 = 314.0 / 1e2;",
+            "let root: f64 = 141421.0 / 1e5;",
+            "let half: f64 = 0.5;",
+            "let tau: f64 = -(62832.0 / 1e4);",
+            "let exact: f64 = 3141592653589793.0 / 1e15;",
+            "let product: f64 = 2.0 * (6931.0 / 1e4);",
+        ],
+    );
+}

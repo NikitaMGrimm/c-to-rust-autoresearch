@@ -46,7 +46,11 @@ Entry format, newest last:
   upper case for each enumerator used, with a `_` where two enumerators of
   different functions share a name; Rust's operators for signed arithmetic, so that an
   overflow stops the program, and `wrapping_add`, `wrapping_sub` and
-  `wrapping_mul` for unsigned; `as` for conversions, through `i8` when a
+  `wrapping_mul` for unsigned; a floating-point literal as the shortest
+  text that reads back as the same number, and as a quotient that is the
+  same number, `314.0 / 1e2`, where the lints would take it for a constant
+  such as `PI` written out;
+  `as` for conversions, through `i8` when a
   `char` widens; a comparison as a value is `i32::from(…)`, a number as a
   test is `!= 0`; a compound assignment on a type narrower than `int` is
   computed as C does, in the wider type; an assignment, `++` or `--` used
