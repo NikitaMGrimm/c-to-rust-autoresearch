@@ -317,3 +317,48 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn names_follow_rust_conventions() {
+    let rust = check(
+        "snake",
+        r#"
+#include <stdio.h>
+struct lineInfo { int lineCount; int MaxWidth; };
+static int totalLines = 0;
+static const int maxLines = 3;
+int countLine(struct lineInfo *lineInfo, int lineWidth) {
+    int X = lineWidth, x = 1, line_width = 2, _unused_Value = 3;
+    lineInfo->lineCount += x;
+    if (X > lineInfo->MaxWidth) lineInfo->MaxWidth = X;
+    totalLines++;
+    return line_width + _unused_Value + (totalLines > maxLines);
+}
+int HTTPStatus(int goodG2B) { return goodG2B + 200; }
+int main(void) {
+    struct lineInfo info = {0, 0};
+    int count_line = countLine(&info, 7) + countLine(&info, 9);
+    printf("%d %d %d %d %d\n", info.lineCount, info.MaxWidth, totalLines, count_line, HTTPStatus(4));
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "const MAX_LINES: i32 = 3;",
+            "struct LineInfo {",
+            "line_count: i32,",
+            "max_width: i32,",
+            "total_lines: i32,",
+            "fn count_line(globals: &mut Globals, line_info: &mut LineInfo, line_width_: i32) -> i32 {",
+            "let x_: i32 = line_width_;",
+            "let line_width: i32 = 2;",
+            "let _unused_value: i32 = 3;",
+            "fn httpstatus(good_g2_b: i32) -> i32 {",
+            "let count_line_: i32 = count_line(globals, &mut info, 7)",
+        ],
+    );
+}

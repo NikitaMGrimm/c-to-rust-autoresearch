@@ -102,27 +102,30 @@ impl Names {
                 _ => plain(&var.name),
             };
             let fallback = match var.kind {
-                VarKind::Static(function) => {
-                    format!("{}_{}", program.functions[function].name, var.name)
-                }
-                _ => format!("{}_", var.name),
+                VarKind::Static(function) => snake(&format!(
+                    "{}_{}",
+                    program.functions[function].name, var.name
+                )),
+                _ => format!("{}_", snake(&var.name)),
             };
             vars[global] = unique(name, &fallback, &mut taken);
         }
         // A local may hide another local of the same C name, as in C, but
         // not a function or a constant that its scope uses, and two C names
-        // never share a Rust name: a name that must change gets underscores
-        // until no local has it.
+        // never share a Rust name: a name that must change, for Rust's
+        // snake case or because it is taken, gets underscores until no
+        // local has it.
         let locals = || program.vars.iter().filter(|var| !var.kind.is_global());
         let free = |name: &str| !RESERVED.contains(&name) && !taken.contains(name);
+        let keeps = |name: &str| free(name) && snake(name) == name;
         let mut given: HashSet<String> = locals()
-            .filter(|var| free(&var.name))
+            .filter(|var| keeps(&var.name))
             .map(|var| var.name.clone())
             .collect();
         let mut changed: HashMap<&str, String> = HashMap::new();
-        for var in locals().filter(|var| !free(&var.name)) {
+        for var in locals().filter(|var| !keeps(&var.name)) {
             changed.entry(&var.name).or_insert_with(|| {
-                let mut name = format!("{}_", var.name);
+                let mut name = snake(&var.name);
                 while !free(&name) || given.contains(&name) {
                     name.push('_');
                 }
@@ -171,13 +174,36 @@ fn unique(name: String, fallback: &str, taken: &mut HashSet<String>) -> String {
     name
 }
 
-/// A C name as a Rust name for a value or a field.
+/// A C name as a Rust name for a value, a function or a field: in snake
+/// case, and not a name that Rust or the translation reserves.
 pub fn plain(name: &str) -> String {
-    if RESERVED.contains(&name) {
+    let name = snake(name);
+    if RESERVED.contains(&name.as_str()) {
         format!("{name}_")
     } else {
-        name.to_owned()
+        name
     }
+}
+
+/// `printHexLine` as `print_hex_line`: the name as the compiler's lint for
+/// snake case writes it, with the underscores it starts and ends with.
+fn snake(name: &str) -> String {
+    let inner = name.trim_matches('_');
+    let (before, after) = name.split_once(inner).unwrap_or((name, ""));
+    let mut words = Vec::new();
+    for part in inner.split('_').filter(|part| !part.is_empty()) {
+        let mut word = String::new();
+        let mut last_upper = false;
+        for c in part.chars() {
+            if !word.is_empty() && c.is_uppercase() && !last_upper {
+                words.push(std::mem::take(&mut word));
+            }
+            last_upper = c.is_uppercase();
+            word.extend(c.to_lowercase());
+        }
+        words.push(word);
+    }
+    format!("{before}{}{after}", words.join("_"))
 }
 
 /// `house_t` as `HouseT`: the name of a type.

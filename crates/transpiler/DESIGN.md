@@ -38,7 +38,7 @@ Clang's JSON -> clang -> c::Program -> join -> facts -> narrow -> facts -> lower
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
 | Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `join` declares a local where it gets its first value, `narrow` names a pointer that a test found not to be NULL | The facts, for `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
-| Names | `src/names.rs` | The Rust name of each C name | Rust's naming and keywords |
+| Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
 
 The rules are split by subject: `lower/mod.rs` (the program, records, globals,
