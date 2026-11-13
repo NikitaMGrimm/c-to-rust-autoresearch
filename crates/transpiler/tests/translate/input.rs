@@ -134,3 +134,68 @@ int main(void) {
         ],
     );
 }
+
+#[test]
+fn scanf_with_a_pointer_it_may_change_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    // C finds every pointer before it reads anything.
+    assert_eq!(
+        refused(
+            "scanf-effect",
+            "#include <stdio.h>\nint main(void) {\n    int a[1], i = 0;\n    scanf(\"%d\", &a[i++]);\n    printf(\"%d\\n\", i);\n    return 0;\n}\n"
+        ),
+        "unsupported: a `scanf` pointer that the call itself may change: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "scanf-order",
+            "#include <stdio.h>\nint main(void) {\n    int a[4] = {0}, i = 0;\n    scanf(\"%d %d\", &i, &a[i]);\n    printf(\"%d %d\\n\", i, a[0]);\n    return 0;\n}\n"
+        ),
+        "unsupported: a `scanf` pointer that the call itself may change: no rule yet, at line 4"
+    );
+    // The first pointer is found before any store in the translation too.
+    let rust = check(
+        "scanf-first",
+        "#include <stdio.h>\nint main(void) {\n    int a[4] = {0}, i = 1, j = 0;\n    scanf(\"%d %d\", &a[i], &j);\n    printf(\"%d %d\\n\", a[1], j);\n    return 0;\n}\n",
+        &[&[]],
+        "5 6",
+    );
+    assert_lines(&rust, &["a[i as usize] = scanned as i32;"]);
+}
+
+#[test]
+fn fgets_with_a_size_beyond_its_buffer_reads_what_fits() {
+    // C is right as long as the line is short, where a slice of the size
+    // would stop the program at once.
+    let c = r#"
+#include <stdio.h>
+void read(char *line, int size) {
+    if (fgets(line, size, stdin) == NULL) {
+        puts("nothing");
+        return;
+    }
+    printf("<%s>\n", line);
+}
+int main(int argc, char **argv) {
+    char a[2];
+    char b[8];
+    read(b, 8);
+    read(b, 100);
+    if (fgets(a, argc + 2, stdin)) printf("<%s>\n", a);
+    if (fgets(b, 9, stdin)) printf("<%s>\n", b);
+    return 0;
+}
+"#;
+    let mut rust = String::new();
+    for stdin in ["abc\nde\nx", "abc\n", "", "\n\n", "abc\nde\n"] {
+        rust = check("fgets-size", c, &[&[]], stdin);
+    }
+    assert_lines(
+        &rust,
+        &[
+            "if !read_line_within(&mut *line, size) {",
+            "if read_line_within(&mut a, args.len() as i32 + 2) {",
+            "if read_line_within(&mut b, 9) {",
+        ],
+    );
+}

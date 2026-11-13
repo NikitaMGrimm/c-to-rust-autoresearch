@@ -334,7 +334,19 @@ impl Lower<'_> {
     fn optional(&mut self, pointer: &Expr) -> R<syn::Expr> {
         match &pointer.kind {
             ExprKind::Cast(inner) if inner.ty.is_pointer() => self.optional(inner),
-            ExprKind::Var(_) | ExprKind::Member { .. } => self.place(pointer, false),
+            ExprKind::Var(_) | ExprKind::Member { .. } => {
+                // The analysis leaves the test only of a pointer that may
+                // be NULL, and of one that may be `argv[argc]`.
+                if let Some(slot) = place_slot(pointer)
+                    && !self.repr(slot, pointer.at)?.nullable
+                {
+                    return unsupported(
+                        "a test for NULL of a pointer to a program argument: no rule yet",
+                        pointer.at,
+                    );
+                }
+                self.place(pointer, false)
+            }
             _ => unsupported("a test of a pointer expression with no rule", pointer.at),
         }
     }
@@ -401,6 +413,26 @@ impl Lower<'_> {
         let is_text = |lower: &Self, side: &Expr| lower.is_text(side) || lower.is_argument(side);
         if !matches!(op, BinOp::Eq | BinOp::Ne) || !is_text(self, left) || !is_text(self, right) {
             return unsupported("a comparison of two addresses", at);
+        }
+        // Two arguments that are empty are two places in C and one in
+        // Rust, where an empty `String` has no memory of its own.
+        let holds_argument = |side: &Expr| {
+            self.is_argument(side)
+                || place_slot(side.uncast()).is_some_and(|slot| self.facts.pointer(slot).argument)
+        };
+        if holds_argument(left) && holds_argument(right) {
+            return unsupported("a comparison of the addresses of two program arguments", at);
+        }
+        // NULL has no address to compare in Rust.
+        for side in [left, right] {
+            if let Some(slot) = place_slot(side.uncast())
+                && self.repr(slot, at)?.nullable
+            {
+                return unsupported(
+                    "a comparison of two addresses of which one may be NULL: no rule yet",
+                    at,
+                );
+            }
         }
         let start = |lower: &mut Self, side: &Expr| {
             let text = match lower.is_argument(side) {

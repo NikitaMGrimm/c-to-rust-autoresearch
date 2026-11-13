@@ -16,6 +16,18 @@ pub(super) enum Read<'e> {
     Value { helper: Helper, target: &'e Expr },
 }
 
+/// Whether the pointer is to the same place whatever the program stores:
+/// a variable or one of its parts, with no index that is computed.
+fn is_fixed(pointer: &Expr) -> bool {
+    match &pointer.kind {
+        ExprKind::Var(_) => true,
+        ExprKind::Cast(inner) | ExprKind::AddrOf(inner) | ExprKind::Decay(inner) => is_fixed(inner),
+        ExprKind::Member { base, .. } => is_fixed(base),
+        ExprKind::Index(base, index) => is_fixed(base) && matches!(index.kind, ExprKind::Int(_)),
+        _ => false,
+    }
+}
+
 /// The name of what a conversion read, in the translation.
 const SCANNED: &str = "scanned";
 
@@ -96,6 +108,16 @@ impl<'e> Lower<'_> {
                 != Some(bits)
             {
                 return unsupported("a `scanf` conversion for a variable of another size", at);
+            }
+            // C has every pointer before it reads, and the translation
+            // only when it stores: the same where finding the pointer
+            // changes nothing and no earlier store moves it.
+            let later = reads.iter().any(|read| matches!(read, Read::Value { .. }));
+            if !target.is_pure() || later && !is_fixed(target) {
+                return unsupported(
+                    "a `scanf` pointer that the call itself may change: no rule yet",
+                    at,
+                );
             }
             // Numbers skip white space themselves.
             if helper == Helper::ScanInt && matches!(reads.last(), Some(Read::Space)) {

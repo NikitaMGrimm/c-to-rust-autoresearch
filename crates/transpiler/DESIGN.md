@@ -102,12 +102,13 @@ Keep to these:
 | `malloc`, `calloc`, `free` | `Box::new`, `vec![zero; n]`, `drop` |
 | `scanf("%d", &x)` | `if let Some(scanned) = scan_int() { x = scanned as i32; }` |
 | `fgets(line, sizeof line, stdin)` | `read_line(&mut line)` |
+| `fgets(line, size, stdin)` for a `char *line` | `read_line_within(line, size)` |
 | `%s` of a `char` array | `text_of(&line)` |
 
 ### Pointers
 
 A *slot* is a place that holds a pointer: a variable, a field or a function's
-result. The analysis gives each slot six facts, and they decide its type:
+result. The analysis gives each slot seven facts, and they decide its type:
 
 | Fact | Set when | Effect |
 | --- | --- | --- |
@@ -116,12 +117,13 @@ result. The analysis gives each slot six facts, and they decide its type:
 | `written` | Something is stored through it, here or wherever it is handed on | `&mut` rather than `&` |
 | `nullable` | NULL may reach it | Wrapped in `Option` |
 | `bytes` | It points to `char` that is read or written one by one, or to another type | A `char` pointer without it is `&str` |
+| `argument` | `argv[i]` may reach it as the program found it, which is NULL at `argv[argc]` | A test of it for NULL is not decided; it is refused unless the slot is `nullable` |
 | `conflict` | No single type fits, with the reason | The program is refused |
 
 Every assignment, argument and `return` is a flow from a source into a slot,
 and the facts spread along the flows until they stop changing: `written` and
 `owned` go back to where the pointer came from, `many` and `bytes` go both
-ways, and `nullable` goes forward unless a test has ruled NULL out. A use of a pointer
+ways, and `nullable` and `argument` go forward unless a test has ruled NULL out. A use of a pointer
 converts between the types of two slots (`lower/pointer.rs`, `adapt`): a move
 between owners, `&mut *b` or `as_deref_mut()` from an owner to a borrow, and
 so on. What the borrow checker then rejects is refused by `rustc`, which is
@@ -245,6 +247,27 @@ become a fact and a refusal:
   hexadecimal ones (`0x1p3`), of which this reads the `0`.
 - `read_line` takes an error of the read for the end of the input: after
   some bytes it returns them, where `fgets` returns NULL.
+- `&args[i]` stops the program where `i` is `argc`, and C reads NULL
+  there: a program that only stores `argv[argc]` runs on in C.
+- An empty argument has no memory of its own in Rust, so two pointers into
+  two different empty arguments are equal there and not in C. A comparison
+  of two arguments is refused; one of an end pointer with an argument
+  (R21) is not, and is wrong when the end pointer is of another argument
+  and both are empty.
+- `%08.2f` of an infinity is padded with zeros in Rust and with spaces in
+  C.
+
+Translations that `rustc` refuses, found by review, where a refusal with a
+reason would be better:
+
+- Two fields of a record whose names differ only in case and underscores
+  (`fooBar`, `foo_bar`) get one Rust name.
+- Enumerators declared inside two functions with one name become two
+  constants of that name, and a local whose name becomes an enumerator's
+  is read as a pattern.
+- The length of an array of a computed length is looked up by name alone
+  (`clang.rs`, `length`), and finds a local of a block that has ended
+  before a global of the same name.
 
 ## Tests
 

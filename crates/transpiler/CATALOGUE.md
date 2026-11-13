@@ -75,7 +75,8 @@ Entry format, newest last:
 ## R4: `printf` and numbers from the arguments
 
 - C: `printf` with a literal format of text, `%%`, `%d %i %u %x %X %o` with
-  `hh h l ll z`, `%f` with a precision, `%c`, and `%s` of a literal or of
+  `hh h l ll z`, `%f` with a precision (not `%F`, which prints an infinity
+  in capitals), `%c`, and `%s` of a literal or of
   `argv[i]`, with the flags `-`, `0`, `+` and a width; `puts` of a literal;
   `putchar`; `atoi`, `atol`, `atoll`, and `strtol` or `strtoll` in base 10
   with a NULL end pointer, of `argv[i]`; `abs`, `sqrt`, `fabs`, `floor`,
@@ -177,7 +178,10 @@ Entry format, newest last:
 - C: `scanf`, and `fscanf` on `stdin`, with a literal format of white space
   and `%d`, `%u` with `hh` or `h`, `%ld`, `%lld` and `%c`, each into a
   variable of the conversion's size; the call as a statement, or its result
-  compared with its number of conversions
+  compared with its number of conversions. A pointer whose expression
+  assigns or calls is refused, and so is a pointer after the first with an
+  index that is computed: C finds every pointer before it reads, and the
+  translation each one when it stores
 - Rust: `if let Some(scanned) = scan_int() { x = scanned as i32; }`, one
   inside the other for several conversions, since `scanf` stops at the first
   that finds nothing; `let Some(scanned) = scan_int() else { … };` for
@@ -253,7 +257,11 @@ Entry format, newest last:
 - Rust: `read_line(&mut buffer)`, or `read_line(&mut buffer[..size])` when
   the size is not the array's length: a helper that reads up to the end of
   the line or until one byte is left, stores a NUL after it and returns
-  whether there was anything to read, which is the test against NULL
+  whether there was anything to read, which is the test against NULL.
+  `read_line_within(&mut buffer, size)` where the size is not a constant
+  that the array is known to hold: `fgets` is right with a size beyond its
+  buffer as long as the line fits, so that helper reads into as much of the
+  buffer as there is
 - Needs: the helper `read_byte` of R11, so that `scanf` and `fgets` share
   what is left of the input
 - Motivation: `g2_009_stack_buffer_overflow`, `g2_016_divide_by_zero_float`,
@@ -320,10 +328,16 @@ Entry format, newest last:
   text when it starts with none; `end.as_ptr() == args[1].as_ptr()`, which
   is C's comparison of the two addresses; `end.is_empty()`, and
   `end.bytes().next().unwrap_or(0)` for the byte at `*end`; `&args[i]` for
-  `argv[i]`
+  `argv[i]`, and `args.get(i).map(String::as_str)` for a pointer that may
+  be NULL, which `argv[argc]` is. Refused: a test for NULL of `argv[i]` or
+  of a pointer that holds it and nothing that is NULL; a comparison of two
+  addresses of which one may be NULL, or which may both be arguments (two
+  empty arguments are two places in C and one in Rust); an `end` that also
+  holds NULL
 - Needs: the analysis lets the text flow into `end`, counts `argv[i]` as a
   source of text (`Source::Argument`) and no longer counts `*p` as reading
-  bytes; `Facts::addressed`, for the first value of `end`
+  bytes; the fact `argument` for a slot that `argv[i]` reaches;
+  `Facts::addressed`, for the first value of `end`
 - Motivation: `g1_005_static_loop` and `g1_011_static_dag` were refused for
   `strtol` with an end pointer, which they compare with the argument to see
   whether it held a number

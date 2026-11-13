@@ -4,7 +4,8 @@
 
 use super::pointer::Repr;
 use super::{Helper, Lower, R, unsupported};
-use crate::c::{Expr, ExprKind, Type};
+use crate::c::{BinOp, Expr, ExprKind, Type};
+use crate::facts::place_slot;
 use crate::rust;
 use syn::parse_quote;
 
@@ -80,6 +81,12 @@ impl Lower<'_> {
                 };
                 if self.reads_bytes(text) || !self.is_text(rest) {
                     return unsupported("an end pointer into bytes: no rule yet", at);
+                }
+                // The helper stores a `&str`, and NULL makes it an `Option`.
+                if let Some(slot) = place_slot(rest)
+                    && self.repr(slot, at)?.nullable
+                {
+                    return unsupported("an end pointer that may be NULL: no rule yet", at);
                 }
                 let (text, rest) = (self.text(text, true)?, self.place(rest, true)?);
                 self.helper(Helper::ParseIntRest);
@@ -179,9 +186,47 @@ impl Lower<'_> {
         if !matches!(&stream.uncast().kind, ExprKind::Extern(name) if name == "stdin") {
             return unsupported("`fgets` on a file other than `stdin`: no rule yet", at);
         }
-        let target = rust::borrow(true, self.first(buffer, Err(size))?);
-        self.helper(Helper::ReadLine);
-        Ok(rust::call("read_line", [target]))
+        if let (Some(size), Some(room)) = (size.constant(self.program), self.room(buffer))
+            && size <= room
+        {
+            let target = rust::borrow(true, self.first(buffer, Ok(size))?);
+            self.helper(Helper::ReadLine);
+            return Ok(rust::call("read_line", [target]));
+        }
+        // `fgets` stores no further than its text reaches, so a size
+        // beyond the buffer is no error in C until the text is as long,
+        // and a slice of that size is one at once.
+        let bytes = Repr {
+            mutable: true,
+            ..Repr::BYTES
+        };
+        let target = self.pointer(buffer.uncast(), bytes)?;
+        let size = self.expr(size)?;
+        self.helper(Helper::ReadLineWithin);
+        Ok(rust::call("read_line_within", [target, size]))
+    }
+
+    /// How many elements the pointer is known to have room for: those of
+    /// an array, less a constant offset into it.
+    fn room(&self, pointer: &Expr) -> Option<i128> {
+        match &pointer.kind {
+            ExprKind::Cast(inner) => self.room(inner),
+            ExprKind::Decay(array) => match &array.ty {
+                Type::Array(_, Some(length)) => Some(i128::from(*length)),
+                _ => None,
+            },
+            ExprKind::Binary(BinOp::Add, left, right) => {
+                let (base, offset) = match left.ty.is_pointer() {
+                    true => (left, right),
+                    false => (right, left),
+                };
+                let offset = offset
+                    .constant(self.program)
+                    .filter(|offset| *offset >= 0)?;
+                Some(self.room(base)? - offset)
+            }
+            _ => None,
+        }
     }
 
     /// The first `count` elements that a pointer points to, as a place to
@@ -376,7 +421,8 @@ impl Lower<'_> {
                     false => rust::cast(self.expr(value)?, self.ty(&read, at)?),
                 }
             }
-            b'f' | b'F' => {
+            // `%F` prints an infinity in capitals, which Rust does not.
+            b'f' => {
                 spec.push_str(&format!(".{}", precision.unwrap_or(6)));
                 self.expr(value)?
             }

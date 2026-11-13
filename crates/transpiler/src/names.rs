@@ -60,6 +60,7 @@ const RESERVED: &[&str] = &[
     "skip_space",
     "scan_int",
     "read_line",
+    "read_line_within",
     "parse_uint",
     "copy_text",
     "parse_int_rest",

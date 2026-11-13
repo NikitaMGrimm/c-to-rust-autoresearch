@@ -66,6 +66,13 @@ fn text_with_no_rule_is_refused() {
         ),
         "unsupported: a `printf` width for text in a variable, at line 4"
     );
+    assert_eq!(
+        refused(
+            "end-null",
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    char *end = 0;\n    long n = strtol(argv[1], &end, 10);\n    printf(\"%ld %d\\n\", n, *end);\n    return 0;\n}\n"
+        ),
+        "unsupported: an end pointer that may be NULL: no rule yet, at line 5"
+    );
 }
 
 #[test]
@@ -230,5 +237,67 @@ int main(int argc, char *argv[]) {
             "point = Point::default();",
             "numbers.fill(0);",
         ],
+    );
+}
+
+#[test]
+fn the_argument_after_the_last_is_null() {
+    // `argv[argc]` is NULL.
+    let rust = check(
+        "argv-null",
+        r#"
+#include <stdio.h>
+int main(int argc, char **argv) {
+    const char *name = NULL;
+    if (argc < 4) name = argv[argc == 3 ? 1 : argc];
+    if (name == NULL) puts("none"); else puts(name);
+    return 0;
+}
+"#,
+        &[&[], &["one"], &["one", "two"], &["one", "two", "three"]],
+        "",
+    );
+    assert_lines(&rust, &["name = args", ".map(String::as_str);"]);
+    let refused = |name, c| translate(name, c).unwrap_err();
+    assert_eq!(
+        refused(
+            "argv-null-test",
+            "#include <stdio.h>\nint main(int argc, char **argv) {\n    printf(\"%d\\n\", argv[argc] == 0);\n    return 0;\n}\n"
+        ),
+        "unsupported: a test of a pointer expression with no rule, at line 3"
+    );
+    assert_eq!(
+        refused(
+            "argv-null-local",
+            "#include <stdio.h>\nint main(int argc, char **argv) {\n    char *p = argv[argc];\n    puts(p == 0 ? \"null\" : \"non-null\");\n    return 0;\n}\n"
+        ),
+        "unsupported: a test for NULL of a pointer to a program argument: no rule yet, at line 4"
+    );
+}
+
+#[test]
+fn addresses_that_rust_does_not_tell_apart_are_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    assert_eq!(
+        refused(
+            "address-null",
+            "#include <stdio.h>\nint main(void) {\n    char *a = 0, *b = 0;\n    printf(\"%d\\n\", a == b);\n    return 0;\n}\n"
+        ),
+        "unsupported: a comparison of two addresses of which one may be NULL: no rule yet, at line 4"
+    );
+    // Two empty arguments are two places in C.
+    assert_eq!(
+        refused(
+            "address-arguments",
+            "#include <stdio.h>\nint main(int argc, char **argv) {\n    printf(\"%d\\n\", argv[1] == argv[2]);\n    return 0;\n}\n"
+        ),
+        "unsupported: a comparison of the addresses of two program arguments, at line 3"
+    );
+    assert_eq!(
+        refused(
+            "address-argument-variables",
+            "#include <stdio.h>\nint main(int argc, char **argv) {\n    char *a = argv[1], *b = argv[2];\n    printf(\"%d\\n\", a == b);\n    return 0;\n}\n"
+        ),
+        "unsupported: a comparison of the addresses of two program arguments, at line 4"
     );
 }

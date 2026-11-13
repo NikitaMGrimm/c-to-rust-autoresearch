@@ -28,6 +28,9 @@ pub struct Pointer {
     pub owned: bool,
     /// It may be NULL.
     pub nullable: bool,
+    /// It may hold `argv[i]` as the program found it, which is NULL where
+    /// `i` is `argc`.
+    pub argument: bool,
     /// It points to bytes that the program reads or writes one by one, or
     /// to something other than `char`. A pointer to `char` without this
     /// fact only ever holds text that is passed on whole.
@@ -213,11 +216,13 @@ impl Facts {
             return Some(true);
         }
         let never = sources.iter().all(|source| match source {
-            Source::Slot(slot) => !self.pointer(*slot).nullable,
-            Source::Fresh { .. } | Source::Place { .. } | Source::Literal | Source::Argument => {
-                true
+            Source::Slot(slot) => {
+                let pointer = self.pointer(*slot);
+                !pointer.nullable && !pointer.argument
             }
-            Source::Null | Source::Unknown(_) => false,
+            Source::Fresh { .. } | Source::Place { .. } | Source::Literal => true,
+            // `argv[argc]` is NULL, and the analysis does not know `argc`.
+            Source::Null | Source::Argument | Source::Unknown(_) => false,
         });
         never.then_some(false)
     }
@@ -725,12 +730,13 @@ impl<'a> Walk<'a> {
                 self.write(freed.uncast());
             }
         }
-        // The end pointer points into the text that was read.
+        // The end pointer points into the text that was read, which was
+        // therefore not NULL.
         if let (true, [text, end, ..]) = (PARSERS.contains(&name), args)
             && let ExprKind::AddrOf(place) = &end.uncast().kind
             && let Some(slot) = place_slot(place)
         {
-            self.flow(text, slot);
+            self.flow_of(text, slot, true);
         }
         if !TEXT_READERS.contains(&name) {
             for arg in args {
@@ -964,6 +970,7 @@ impl<'a> Walk<'a> {
                         to.owned |= from.owned
                             && (matches!(slot, Slot::Return(_)) || self.outlives_locals(flow.to));
                         to.nullable |= from.nullable && !flow.set;
+                        to.argument |= from.argument && !flow.set;
                         *self.seed(*slot) = from;
                     }
                     Source::Null => to.nullable |= !flow.set,
@@ -990,6 +997,7 @@ impl<'a> Walk<'a> {
                         }
                     }
                     Source::Argument => {
+                        to.argument |= !flow.set;
                         if to.written || to.owned {
                             to.conflict =
                                 Some("it points to a program argument that is written or freed");

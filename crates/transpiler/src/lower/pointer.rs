@@ -211,11 +211,13 @@ impl Lower<'_> {
                     return unsupported("a program argument read byte by byte: no rule yet", at);
                 }
                 let argument = self.argument(pointer)?;
-                Ok(match to.nullable {
-                    // A `String` becomes a `&str` by itself only outside
-                    // `Some`.
-                    true => rust::call("Some", [rust::method(argument, "as_str", [])]),
-                    false => rust::borrow(false, argument),
+                Ok(match (to.nullable, argument) {
+                    // `argv[argc]` is NULL, and there `get` finds nothing.
+                    (true, syn::Expr::Index(syn::ExprIndex { expr, index, .. })) => {
+                        parse_quote!(#expr.get(#index).map(String::as_str))
+                    }
+                    (true, _) => return unsupported("a program argument with no rule", at),
+                    (false, argument) => rust::borrow(false, argument),
                 })
             }
             ExprKind::AddrOf(place) => {

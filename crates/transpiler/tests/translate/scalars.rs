@@ -1,4 +1,4 @@
-use crate::common::{assert_lines, check};
+use crate::common::{assert_lines, check, translate};
 
 #[test]
 fn arithmetic_follows_c_types() {
@@ -360,5 +360,18 @@ int main(void) {
             "fn httpstatus(good_g2_b: i32) -> i32 {",
             "let count_line_: i32 = count_line(globals, &mut info, 7)",
         ],
+    );
+}
+
+#[test]
+fn printf_f_in_capitals_is_refused() {
+    // `%F` prints an infinity as `INF`.
+    assert_eq!(
+        translate(
+            "printf-capital-f",
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(void) {\n    printf(\"%F\\n\", strtod(\"inf\", 0));\n    return 0;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: the `printf` conversion `%F`: no rule yet, at line 4"
     );
 }

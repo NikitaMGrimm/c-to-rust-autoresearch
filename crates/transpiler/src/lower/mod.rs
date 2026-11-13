@@ -39,6 +39,7 @@ enum Helper {
     SkipSpace,
     ScanInt,
     ReadLine,
+    ReadLineWithin,
     UntilNul,
     TextOf,
     CopyText,
@@ -58,6 +59,7 @@ impl Helper {
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
             Helper::ReadLine => &[Helper::ReadByte],
+            Helper::ReadLineWithin => &[Helper::ReadLine, Helper::PeekByte],
             Helper::TextOf => &[Helper::UntilNul],
             Helper::ParseIntRest => &[Helper::ParseInt],
             Helper::FormatG => &[Helper::FormatE],
@@ -292,6 +294,21 @@ impl Helper {
                     }
                     buffer[length] = 0;
                     true
+                }
+            },
+            Helper::ReadLineWithin => parse_quote! {
+                /// `read_line` into the first `size` bytes of `buffer`, or into
+                /// all of it where it has fewer: C's `fgets` is right with a
+                /// size beyond its buffer as long as the line fits.
+                fn read_line_within(buffer: &mut [u8], size: i32) -> bool {
+                    let size = usize::try_from(size).unwrap_or(0);
+                    let room = size.min(buffer.len());
+                    // One byte holds only the NUL, which `fgets` stores at
+                    // the end of the input for no size but one.
+                    if room == 1 && size > 1 && peek_byte().is_none() {
+                        return false;
+                    }
+                    read_line(&mut buffer[..room])
                 }
             },
             Helper::UntilNul => parse_quote! {
