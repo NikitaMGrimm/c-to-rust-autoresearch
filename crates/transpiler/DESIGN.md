@@ -126,6 +126,10 @@ A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
 without it.
 
+A local pointer that is declared without a value and never assigned counts
+as NULL: reading it is undefined in C, and `None` is a value that Rust can
+write for it.
+
 ## Not yet built
 
 The direction for each, so that the first rule for it starts in the right

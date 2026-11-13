@@ -190,3 +190,16 @@ Entry format, newest last:
   `g3_024_struct_and_static` were refused for `scanf` or `fscanf`; seven more
   development programs read their input this way
 - Changes: none
+
+## R12: a pointer that is never assigned
+
+- C: a local pointer declared without a value that no statement assigns
+- Rust: `None`, as for a pointer that holds NULL: reading it is undefined
+  in C, so any value is right, and this is the one Rust can write. What the
+  pointer is handed to is an `Option` too, and stops the program where C
+  would read through it
+- Needs: `Facts::mutated`; the analysis gives such a variable a flow from
+  NULL
+- Motivation: `g3_012_uninit_int_ptr` did not compile: `let data: &i32;`
+  was read without a value. `g2_011_uninit_char_ptr` has the same shape
+- Changes: extends R10

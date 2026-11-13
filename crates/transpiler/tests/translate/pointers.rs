@@ -100,3 +100,44 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+/// Reading a pointer that was never assigned is undefined in C; the
+/// translation must still compile, and stops where C would read through it.
+#[test]
+fn a_pointer_that_is_never_assigned_is_none() {
+    let rust = check(
+        "unset",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+void show(const int *number) { printf("%d\n", *number); }
+void unset(void) {
+    int *number;
+    show(number);
+}
+void set(void) {
+    int value = 5;
+    int *number = &value;
+    show(number);
+}
+int main(int argc, char *argv[]) {
+    if (atoi(argv[1])) {
+        set();
+    } else {
+        unset();
+    }
+    return 0;
+}
+"#,
+        &[&["1"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn show(number: Option<&i32>) {",
+            "let number: Option<&i32> = None;",
+            "show(Some(number));",
+        ],
+    );
+}

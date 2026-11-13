@@ -360,6 +360,8 @@ struct Walk<'a> {
     known: &'a Facts,
     function: Option<FuncId>,
     flows: Vec<Flow>,
+    /// The local pointers declared without a value.
+    unset: Vec<(VarId, Option<FuncId>)>,
     pointers: HashMap<Slot, Pointer>,
     mutated: HashSet<VarId>,
     through: HashSet<VarId>,
@@ -377,6 +379,7 @@ impl<'a> Walk<'a> {
             known,
             function: None,
             flows: Vec::new(),
+            unset: Vec::new(),
             pointers: HashMap::new(),
             mutated: HashSet::new(),
             through: HashSet::new(),
@@ -418,6 +421,20 @@ impl<'a> Walk<'a> {
             self.stmts(&function.body);
         }
         self.function = None;
+        // Reading a local pointer that the program never assigns is
+        // undefined, so any value is right for it, and NULL is the one
+        // that Rust can write.
+        for (var, function) in std::mem::take(&mut self.unset) {
+            if !self.mutated.contains(&var) {
+                self.flows.push(Flow {
+                    from: Source::Null,
+                    to: Slot::Var(var),
+                    function,
+                    holder: None,
+                    set: false,
+                });
+            }
+        }
         self.solve();
         let state: HashSet<VarId> = program
             .globals
@@ -477,7 +494,11 @@ impl<'a> Walk<'a> {
                         self.expr(init);
                     }
                     None if var.kind.is_global() => self.zero(&var.ty, slot),
-                    None => {}
+                    None => {
+                        if var.ty.is_pointer() {
+                            self.unset.push((*id, self.function));
+                        }
+                    }
                 }
             }
             Stmt::Block(body) => self.stmts(body),
