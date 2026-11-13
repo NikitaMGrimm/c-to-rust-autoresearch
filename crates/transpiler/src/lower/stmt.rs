@@ -237,6 +237,10 @@ impl Lower<'_> {
                     parse_quote!(let #mutability #name: #ty = #value;)
                 }
                 None if repr.nullable => parse_quote!(let #mutability #name: #ty = None;),
+                // A function that is handed `&mut end` needs a value there.
+                None if repr.text && self.facts.addressed(id) => {
+                    parse_quote!(let #mutability #name: #ty = "";)
+                }
                 None => parse_quote!(let #mutability #name: #ty;),
             }]);
         }

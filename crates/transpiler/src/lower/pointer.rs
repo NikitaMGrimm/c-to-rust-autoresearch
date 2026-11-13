@@ -3,7 +3,7 @@
 
 use super::{Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type};
-use crate::facts::{ALLOCATORS, Slot, place_slot};
+use crate::facts::{ALLOCATORS, Slot, is_argv, place_slot};
 use crate::rust;
 use syn::parse_quote;
 
@@ -125,6 +125,21 @@ impl Lower<'_> {
         })
     }
 
+    /// Whether the expression is `argv[i]`, one of `main`'s arguments.
+    pub(super) fn is_argument(&self, text: &Expr) -> bool {
+        matches!(&text.uncast().kind, ExprKind::Index(base, _) if is_argv(self.program, base))
+    }
+
+    /// `argv[i]` as `args[i]`, a `String`.
+    pub(super) fn argument(&mut self, text: &Expr) -> R<syn::Expr> {
+        match &text.uncast().kind {
+            ExprKind::Index(_, index) => {
+                Ok(rust::index(rust::name("args"), self.index_value(index)?))
+            }
+            _ => unsupported("a program argument with no rule", text.at),
+        }
+    }
+
     /// The slot whose pointer the expression reads.
     fn slot_of(&self, pointer: &Expr) -> R<Slot> {
         if let ExprKind::Call(callee, _) = &pointer.kind {
@@ -190,6 +205,18 @@ impl Lower<'_> {
                     false => value,
                 };
                 self.adapt(value, from, to, result, at)
+            }
+            ExprKind::Index(..) if self.is_argument(pointer) => {
+                if !to.text {
+                    return unsupported("a program argument read byte by byte: no rule yet", at);
+                }
+                let argument = self.argument(pointer)?;
+                Ok(match to.nullable {
+                    // A `String` becomes a `&str` by itself only outside
+                    // `Some`.
+                    true => rust::call("Some", [rust::method(argument, "as_str", [])]),
+                    false => rust::borrow(false, argument),
+                })
             }
             ExprKind::AddrOf(place) => {
                 if to.owned {
@@ -386,6 +413,13 @@ impl Lower<'_> {
                 let repr = self.repr(self.slot_of(pointer)?, pointer.at)?;
                 if repr.many {
                     return Ok(rust::index(self.slice(pointer, write)?, rust::int(0, "")));
+                }
+                if repr.text {
+                    // The first byte of the text, or the NUL that ends it
+                    // in C.
+                    let text = self.pointer(pointer, Repr::TEXT)?;
+                    let first = rust::method(rust::method(text, "bytes", []), "next", []);
+                    return Ok(rust::method(first, "unwrap_or", [rust::int(0, "")]));
                 }
                 let value = self.slot_value(pointer, write)?;
                 let value = self.unwrapped(value, repr, write);

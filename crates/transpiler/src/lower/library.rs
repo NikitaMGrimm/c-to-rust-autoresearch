@@ -61,6 +61,24 @@ impl Lower<'_> {
                 let (base, exponent) = (self.expr(base)?, self.typed(exponent)?);
                 Ok(rust::method(base, "powf", [exponent]))
             }
+            // R21: a number, and where it ends in the text.
+            ("strtol" | "strtoll", [text, end, base])
+                if !matches!(end.uncast().kind, ExprKind::Null)
+                    && base.constant(self.program) == Some(10) =>
+            {
+                let ExprKind::AddrOf(rest) = &end.uncast().kind else {
+                    return unsupported("an end pointer that is not `&end`: no rule yet", at);
+                };
+                if self.reads_bytes(text) || !self.is_text(rest) {
+                    return unsupported("an end pointer into bytes: no rule yet", at);
+                }
+                let (text, rest) = (self.text(text, true)?, self.place(rest, true)?);
+                self.helper(Helper::ParseIntRest);
+                Ok(rust::call(
+                    "parse_int_rest",
+                    [text, rust::borrow(true, rest)],
+                ))
+            }
             // R4: a number from a program argument.
             ("strtol" | "strtoll", [text, end, base])
                 if matches!(end.uncast().kind, ExprKind::Null)
@@ -108,9 +126,8 @@ impl Lower<'_> {
     /// literal, a pointer that only holds text, or `argv[i]` as `args[i]`.
     /// `borrowed` asks for a `&str`, where `args[i]` is a `String`.
     fn text(&mut self, text: &Expr, borrowed: bool) -> R<syn::Expr> {
-        if let Some(index) = self.argument(text) {
-            let index = self.index_value(index)?;
-            let argument = rust::index(rust::name("args"), index);
+        if self.is_argument(text) {
+            let argument = self.argument(text)?;
             return Ok(match borrowed {
                 true => rust::borrow(false, argument),
                 false => argument,
@@ -128,21 +145,10 @@ impl Lower<'_> {
         })
     }
 
-    /// The index of `argv[index]`, if the expression is one of `main`'s
-    /// arguments.
-    fn argument<'e>(&self, text: &'e Expr) -> Option<&'e Expr> {
-        match &text.uncast().kind {
-            ExprKind::Index(base, index) if matches!(base.kind, ExprKind::Var(var) if Some(var) == self.argv) => {
-                Some(index)
-            }
-            _ => None,
-        }
-    }
-
     /// Whether the text is in bytes that end with a NUL, rather than in a
     /// `&str`.
     fn reads_bytes(&self, text: &Expr) -> bool {
-        literal_text(text).is_none() && self.argument(text).is_none() && !self.is_text(text)
+        literal_text(text).is_none() && !self.is_argument(text) && !self.is_text(text)
     }
 
     /// R14: the bytes of the text that a pointer to bytes points to.
@@ -349,7 +355,7 @@ impl Lower<'_> {
                     }
                     Some(text) => rust::string(text),
                     // What the pointer holds may not be ASCII either.
-                    None if width.is_some() && self.argument(value).is_none() => {
+                    None if width.is_some() && !self.is_argument(value) => {
                         return unsupported("a `printf` width for text in a variable", at);
                     }
                     None => self.text(value, false)?,

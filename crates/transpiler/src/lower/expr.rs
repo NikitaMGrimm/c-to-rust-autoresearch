@@ -2,6 +2,7 @@
 //! Rust type of its C type; `cond` gives it as a `bool`; `place` gives what
 //! it names, to read or to store to.
 
+use super::pointer::Repr;
 use super::{Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type, UnOp, VarId};
 use crate::facts::{Access, Slot, place_slot};
@@ -344,13 +345,29 @@ impl Lower<'_> {
             let pointer = match (null(left), null(right)) {
                 (true, false) => right,
                 (false, true) => left,
-                _ => return unsupported("a comparison of two addresses", at),
+                _ => return self.same_address(op, left, right, at),
             };
             return match op {
                 BinOp::Eq => self.is_set(pointer, false),
                 BinOp::Ne => self.is_set(pointer, true),
                 _ => unsupported("an ordering of a pointer and NULL", at),
             };
+        }
+        // `*text == '\0'`: the text is empty.
+        if matches!(op, BinOp::Eq | BinOp::Ne) {
+            for (text, other) in [(left, right), (right, left)] {
+                if let ExprKind::Cast(inner) = &text.kind
+                    && let ExprKind::Deref(pointer) = &inner.kind
+                    && self.is_text(pointer)
+                    && other.constant(self.program) == Some(0)
+                {
+                    let empty = rust::method(self.pointer(pointer, Repr::TEXT)?, "is_empty", []);
+                    return Ok(match op {
+                        BinOp::Eq => empty,
+                        _ => rust::unary("!", empty),
+                    });
+                }
+            }
         }
         // `c == 'a'` compares bytes: equality does not depend on the sign
         // that C's conversion to `int` gives a `char`.
@@ -374,6 +391,25 @@ impl Lower<'_> {
             }
         }
         let (left, right) = self.operands(left, right)?;
+        Ok(rust::binary(left, symbol(op), right))
+    }
+
+    /// R21: whether two pointers into text point to the same place, as
+    /// `end == text` asks after `strtol`: Rust compares where the two
+    /// `&str` start.
+    fn same_address(&mut self, op: BinOp, left: &Expr, right: &Expr, at: u32) -> R<syn::Expr> {
+        let is_text = |lower: &Self, side: &Expr| lower.is_text(side) || lower.is_argument(side);
+        if !matches!(op, BinOp::Eq | BinOp::Ne) || !is_text(self, left) || !is_text(self, right) {
+            return unsupported("a comparison of two addresses", at);
+        }
+        let start = |lower: &mut Self, side: &Expr| {
+            let text = match lower.is_argument(side) {
+                true => lower.argument(side)?,
+                false => lower.pointer(side, Repr::TEXT)?,
+            };
+            Ok(rust::method(text, "as_ptr", []))
+        };
+        let (left, right) = (start(self, left)?, start(self, right)?);
         Ok(rust::binary(left, symbol(op), right))
     }
 

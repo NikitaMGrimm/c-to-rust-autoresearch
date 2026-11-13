@@ -121,3 +121,62 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn strtol_says_where_the_number_ends() {
+    let rust = check(
+        "strtol-end",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+void show(const char *label, const char *text) {
+    printf("%s=%s (%lu)\n", label, text, strlen(text));
+}
+int main(int argc, char **argv) {
+    if (argc != 3) return 2;
+    char *end;
+    long first = strtol(argv[1], &end, 10);
+    if (end == argv[1]) {
+        printf("no number\n");
+        return 1;
+    }
+    if (*end != '\0') {
+        printf("then %c\n", *end);
+    }
+    show("rest", end);
+    int second = (int)strtoll(argv[2], &end, 10);
+    if (end != argv[2] && *end == '\0') {
+        printf("all of it\n");
+    }
+    show("second", argv[2]);
+    printf("%ld %d\n", first, second);
+    return 0;
+}
+"#,
+        &[
+            &["12", "34"],
+            &["  -7xyz", "x"],
+            &["abc", "1"],
+            &["", "1"],
+            &["-", "1"],
+            &["+5 ", " 99999999999999999999"],
+            &["0x10", "-0"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn show(label: &str, text: &str) {",
+            "let mut end: &str = \"\";",
+            "let first: i64 = parse_int_rest(&args[1], &mut end);",
+            "if end.as_ptr() == args[1].as_ptr() {",
+            "if !end.is_empty() {",
+            "println!(\"then {}\", end.bytes().next().unwrap_or(0) as char);",
+            "show(\"rest\", end);",
+            "if end.as_ptr() != args[2].as_ptr() && end.is_empty() {",
+            "show(\"second\", &args[2]);",
+        ],
+    );
+}

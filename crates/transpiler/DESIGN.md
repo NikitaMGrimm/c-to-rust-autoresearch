@@ -144,11 +144,12 @@ place:
   whole is `&str` (R13). A `char` array stays bytes, as does every pointer
   into one; the library reads its text up to the NUL through `text_of` and
   `until_nul` (R15), and a string literal that such a pointer meets is
-  `b"…\0"`. Still to build: text that a record or a global holds
-  (`&'static str` when only literals reach it), `argv[i]` handed to a
-  function, `strcmp`, `strcpy` and the other functions of `string.h`, a
-  width in `%s`, and above all a `String` for a buffer that the program
-  only fills and reads as a whole, which needs a fact that says so.
+  `b"…\0"`. `argv[i]` is text too, `&args[i]`, and has no rule yet where
+  it meets bytes. Still to build: text that a record or a global holds
+  (`&'static str` when only literals reach it), `strcmp`, `strcpy` and the
+  other functions of `string.h`, a width in `%s`, and above all a `String`
+  for a buffer that the program only fills and reads as a whole, which
+  needs a fact that says so.
 - **Input.** `scanf` and `fgets` read through helpers over
   `std::io::stdin().lock()` that take a byte at a time, so that every way
   of reading shares what is left, as in C (`lower/input.rs`, and
@@ -157,7 +158,11 @@ place:
   with the number of conversions: it is also -1 at the end of the input.
   `fprintf(stderr, …)` is `eprint!`.
 - **Pointers to pointers and output parameters.** `T **out` that is only
-  stored through is `&mut Option<Box<T>>` or a second result.
+  stored through is `&mut Option<Box<T>>` or a second result. The end
+  pointer of `strtol` is the one case built (R21): `&mut end` for a `&str`
+  that the helper sets to the rest of the text. `strtoul`, `strtod` and an
+  end pointer into bytes wait for it, as does `errno`, which should become
+  a result of the helper rather than a global.
 - **Cursors.** A pointer that walks an array (`p++`, `*p`) is an index beside
   the slice, by a rewrite.
 - **Walking a list.** `while (p) { …; p = p->next; }` needs a narrowing for

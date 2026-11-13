@@ -62,6 +62,9 @@ pub enum Source {
     },
     /// A string literal.
     Literal,
+    /// One of `main`'s arguments, `argv[i]`: text that the program may
+    /// read and not change.
+    Argument,
     /// Anything the analysis has no model for, and what it is.
     Unknown(&'static str),
 }
@@ -80,6 +83,7 @@ pub struct Facts {
     pointers: HashMap<Slot, Pointer>,
     mutated: HashSet<VarId>,
     through: HashSet<VarId>,
+    addressed: HashSet<VarId>,
     access: Vec<Access>,
     /// False for the facts before the first round, which know nothing.
     settled: bool,
@@ -152,6 +156,12 @@ impl Facts {
         self.through.contains(&var)
     }
 
+    /// Whether the program takes the address of the variable or of a part
+    /// of it, so that it may change where no assignment names it.
+    pub fn addressed(&self, var: VarId) -> bool {
+        self.addressed.contains(&var)
+    }
+
     /// How the function, with everything it calls, uses the globals that
     /// the program changes.
     pub fn access(&self, function: FuncId) -> Access {
@@ -204,7 +214,9 @@ impl Facts {
         }
         let never = sources.iter().all(|source| match source {
             Source::Slot(slot) => !self.pointer(*slot).nullable,
-            Source::Fresh { .. } | Source::Place { .. } | Source::Literal => true,
+            Source::Fresh { .. } | Source::Place { .. } | Source::Literal | Source::Argument => {
+                true
+            }
             Source::Null | Source::Unknown(_) => false,
         });
         never.then_some(false)
@@ -274,6 +286,7 @@ impl Facts {
                     )],
                 }
             }
+            ExprKind::Index(base, _) if is_argv(program, base) => vec![Source::Argument],
             ExprKind::Index(..) | ExprKind::Deref(_) => {
                 vec![Source::Unknown(
                     "a pointer stored in an array or behind a pointer",
@@ -303,6 +316,20 @@ impl Facts {
         }
     }
 }
+
+/// Whether the expression is `argv`, the second parameter of `main`.
+pub fn is_argv(program: &Program, expr: &Expr) -> bool {
+    let argv = program
+        .function("main")
+        .and_then(|main| program.functions[main].params.get(1));
+    matches!(expr.kind, ExprKind::Var(var) if Some(&var) == argv)
+}
+
+/// The library functions that read a number from the text of their first
+/// argument and store where it ends through their second.
+pub const PARSERS: [&str; 6] = [
+    "strtol", "strtoll", "strtoul", "strtoull", "strtod", "strtof",
+];
 
 /// The slot of a place that holds a pointer, if the analysis follows it.
 pub fn place_slot(place: &Expr) -> Option<Slot> {
@@ -376,6 +403,7 @@ struct Walk<'a> {
     pointers: HashMap<Slot, Pointer>,
     mutated: HashSet<VarId>,
     through: HashSet<VarId>,
+    addressed: HashSet<VarId>,
     /// The functions that change a global themselves.
     writers: HashSet<FuncId>,
     /// The globals each function names.
@@ -394,6 +422,7 @@ impl<'a> Walk<'a> {
             pointers: HashMap::new(),
             mutated: HashSet::new(),
             through: HashSet::new(),
+            addressed: HashSet::new(),
             writers: HashSet::new(),
             named: vec![HashSet::new(); program.functions.len()],
             calls: Vec::new(),
@@ -481,6 +510,7 @@ impl<'a> Walk<'a> {
             pointers: self.pointers,
             mutated: self.mutated,
             through: self.through,
+            addressed: self.addressed,
             access,
             settled: true,
         }
@@ -626,7 +656,11 @@ impl<'a> Walk<'a> {
                 }
                 self.bytes(base);
             }
-            ExprKind::Deref(pointer) => self.bytes(pointer),
+            ExprKind::AddrOf(place) => {
+                if let Some(var) = place.root_var() {
+                    self.addressed.insert(var);
+                }
+            }
             ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right) => {
                 for side in [left, right] {
                     if side.ty.is_pointer() {
@@ -690,6 +724,13 @@ impl<'a> Walk<'a> {
             if matches!(freed.uncast().kind, ExprKind::Member { .. }) {
                 self.write(freed.uncast());
             }
+        }
+        // The end pointer points into the text that was read.
+        if let (true, [text, end, ..]) = (PARSERS.contains(&name), args)
+            && let ExprKind::AddrOf(place) = &end.uncast().kind
+            && let Some(slot) = place_slot(place)
+        {
+            self.flow(text, slot);
         }
         if !TEXT_READERS.contains(&name) {
             for arg in args {
@@ -946,6 +987,12 @@ impl<'a> Walk<'a> {
                         if to.written || to.owned {
                             to.conflict =
                                 Some("it points to a string literal that is written or freed");
+                        }
+                    }
+                    Source::Argument => {
+                        if to.written || to.owned {
+                            to.conflict =
+                                Some("it points to a program argument that is written or freed");
                         }
                     }
                     Source::Unknown(what) => to.conflict = Some(what),

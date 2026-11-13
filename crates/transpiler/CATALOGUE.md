@@ -309,3 +309,22 @@ Entry format, newest last:
 - Motivation: `g3_031_disjoint_arrays` and `g3_048_mutable_buffer_overlap2`
   were refused for an array whose length is not a constant
 - Changes: extends R6
+
+## R21: where a number ends
+
+- C: `strtol` and `strtoll` in base 10 of text, with `&end` for a local
+  `char *end`; `end == text` and `end != text`; `*end`, and `*end == '\0'`;
+  `argv[i]` handed to a pointer that holds text
+- Rust: `let mut end: &str = "";` and `parse_int_rest(&args[1], &mut end)`,
+  a helper that sets `end` to the text after the number, or to all of the
+  text when it starts with none; `end.as_ptr() == args[1].as_ptr()`, which
+  is C's comparison of the two addresses; `end.is_empty()`, and
+  `end.bytes().next().unwrap_or(0)` for the byte at `*end`; `&args[i]` for
+  `argv[i]`
+- Needs: the analysis lets the text flow into `end`, counts `argv[i]` as a
+  source of text (`Source::Argument`) and no longer counts `*p` as reading
+  bytes; `Facts::addressed`, for the first value of `end`
+- Motivation: `g1_005_static_loop` and `g1_011_static_dag` were refused for
+  `strtol` with an end pointer, which they compare with the argument to see
+  whether it held a number
+- Changes: extends R4 and R13
