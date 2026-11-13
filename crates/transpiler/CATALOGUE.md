@@ -260,3 +260,15 @@ Entry format, newest last:
   `g2_017_signed_length_confusion` and `g3_023_struct_and_errno` read their
   input with it
 - Changes: none
+
+## R17: `strtoul` and `strtoull`
+
+- C: `strtoul` and `strtoull` in base 10 with a NULL end pointer, of text
+- Rust: `parse_uint(&args[1])`, a helper that reads as `strtoull` does:
+  white space, a sign, digits, 0 without digits, the greatest value when
+  out of range, and counted down from zero after a `-`
+- Needs: nothing
+- Motivation: `g1_rev16` was refused for `strtoull`, which the benchmark's
+  own `main` reads each unsigned argument with
+- Changes: extends R4; R13's analysis counts the `strtol` family among the
+  functions that read text as a whole

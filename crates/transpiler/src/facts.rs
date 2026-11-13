@@ -111,7 +111,9 @@ pub const ALLOCATORS: [&str; 2] = ["malloc", "calloc"];
 
 /// The library functions that read the text their `char` pointers point to
 /// as a whole and keep none of them, so that the text can be a `&str`.
-const TEXT_READERS: [&str; 6] = ["printf", "puts", "strlen", "atoi", "atol", "atoll"];
+const TEXT_READERS: [&str; 10] = [
+    "printf", "puts", "strlen", "atoi", "atol", "atoll", "strtol", "strtoll", "strtoul", "strtoull",
+];
 
 impl Facts {
     /// Analyses the program. A test that the facts decide, such as `!p` for

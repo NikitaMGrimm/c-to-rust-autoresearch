@@ -29,6 +29,7 @@ fn unsupported<T>(what: impl Into<String>, at: u32) -> R<T> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Helper {
     ParseInt,
+    ParseUint,
     PeekByte,
     ReadByte,
     SkipSpace,
@@ -42,7 +43,7 @@ impl Helper {
     /// The helpers that this one calls.
     fn needs(self) -> &'static [Helper] {
         match self {
-            Helper::ParseInt | Helper::PeekByte | Helper::UntilNul => &[],
+            Helper::ParseInt | Helper::ParseUint | Helper::PeekByte | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
             Helper::ReadLine => &[Helper::ReadByte],
@@ -78,6 +79,30 @@ impl Helper {
                         };
                     }
                     value
+                }
+            },
+            Helper::ParseUint => parse_quote! {
+                /// The number at the start of `text` as C's `strtoull` reads it
+                /// in base 10: white space, a sign, then digits. It is 0 without
+                /// digits, the greatest value when out of range, and counted
+                /// down from zero after a `-`.
+                fn parse_uint(text: &str) -> u64 {
+                    let text = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
+                    let (negative, digits) = match text.strip_prefix('-') {
+                        Some(digits) => (true, digits),
+                        None => (false, text.strip_prefix('+').unwrap_or(text)),
+                    };
+                    let mut value = Some(0u64);
+                    for digit in digits.bytes().take_while(u8::is_ascii_digit) {
+                        value = value
+                            .and_then(|value| value.checked_mul(10))
+                            .and_then(|value| value.checked_add(u64::from(digit - b'0')));
+                    }
+                    match value {
+                        Some(value) if negative => value.wrapping_neg(),
+                        Some(value) => value,
+                        None => u64::MAX,
+                    }
                 }
             },
             Helper::PeekByte => parse_quote! {

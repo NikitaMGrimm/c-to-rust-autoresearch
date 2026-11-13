@@ -176,3 +176,42 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn strtoull_reads_what_c_reads() {
+    let rust = check(
+        "strtoull",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    unsigned long long wide = strtoull(argv[1], NULL, 10);
+    unsigned int narrow = (unsigned int)strtoul(argv[1], NULL, 10);
+    printf("%llu %u\n", wide, narrow);
+    return 0;
+}
+"#,
+        &[
+            &["0"],
+            &["4000000000"],
+            &["  +18446744073709551615"],
+            &["18446744073709551616"],
+            &["99999999999999999999999"],
+            &["-1"],
+            &["-18446744073709551615"],
+            &["-99999999999999999999999"],
+            &["12abc"],
+            &["abc"],
+            &[""],
+            &["- 5"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let wide: u64 = parse_uint(&args[1]);",
+            "let narrow: u32 = parse_uint(&args[1]) as u32;",
+        ],
+    );
+}

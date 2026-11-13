@@ -68,6 +68,14 @@ impl Lower<'_> {
             {
                 self.parse_int(text)
             }
+            ("strtoul" | "strtoull", [text, end, base])
+                if matches!(end.uncast().kind, ExprKind::Null)
+                    && base.constant(self.program) == Some(10) =>
+            {
+                let text = self.text(text, true)?;
+                self.helper(Helper::ParseUint);
+                Ok(rust::call("parse_uint", [text]))
+            }
             ("atoi", [text]) => Ok(rust::cast(self.parse_int(text)?, parse_quote!(i32))),
             ("atol" | "atoll", [text]) => self.parse_int(text),
             _ => unsupported(
