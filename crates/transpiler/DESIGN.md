@@ -38,7 +38,7 @@ Clang's JSON -> clang -> c::Program -> join -> facts -> narrow -> facts -> lower
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
 | Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `join` declares a local where it gets its first value, `narrow` names a pointer that a test found not to be NULL | The facts, for `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
-| Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants | Rust's naming and keywords |
+| Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
 
 The rules are split by subject: `lower/mod.rs` (the program, records, globals,
@@ -256,18 +256,6 @@ become a fact and a refusal:
   and both are empty.
 - `%08.2f` of an infinity is padded with zeros in Rust and with spaces in
   C.
-
-Translations that `rustc` refuses, found by review, where a refusal with a
-reason would be better:
-
-- Two fields of a record whose names differ only in case and underscores
-  (`fooBar`, `foo_bar`) get one Rust name.
-- Enumerators declared inside two functions with one name become two
-  constants of that name, and a local whose name becomes an enumerator's
-  is read as a pattern.
-- The length of an array of a computed length is looked up by name alone
-  (`clang.rs`, `length`), and finds a local of a block that has ended
-  before a global of the same name.
 
 ## Tests
 

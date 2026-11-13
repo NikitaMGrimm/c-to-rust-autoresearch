@@ -75,7 +75,10 @@ const RESERVED: &[&str] = &[
 pub struct Names {
     vars: Vec<String>,
     records: Vec<String>,
+    /// The names of each record's fields.
+    fields: Vec<Vec<String>>,
     functions: Vec<String>,
+    enumerators: Vec<String>,
 }
 
 impl Names {
@@ -112,6 +115,46 @@ impl Names {
             };
             vars[global] = unique(name, &fallback, &mut taken);
         }
+        // An enumerator is a constant beside the globals, wherever C
+        // declares it: two functions may each have one of the same name.
+        let enumerators = program
+            .enumerators
+            .iter()
+            .map(|enumerator| {
+                let name = plain(&enumerator.name).to_uppercase();
+                unique(name.clone(), &name, &mut taken)
+            })
+            .collect();
+        // A field keeps its name unless Rust's snake case changes it, and
+        // then it gets underscores until no field of its record has it.
+        let fields = program
+            .records
+            .iter()
+            .map(|record| {
+                let keeps = |name: &str| !RESERVED.contains(&name) && snake(name) == name;
+                let mut given: HashSet<&str> = HashSet::new();
+                given.extend(record.fields.iter().map(|field| field.name.as_str()));
+                let mut changed: HashSet<String> = HashSet::new();
+                let mut names = Vec::new();
+                for field in &record.fields {
+                    if !field.name.is_empty() && keeps(&field.name) {
+                        names.push(field.name.clone());
+                        continue;
+                    }
+                    let mut name = plain(&field.name);
+                    while name.is_empty()
+                        || RESERVED.contains(&name.as_str())
+                        || given.contains(name.as_str())
+                        || changed.contains(&name)
+                    {
+                        name.push('_');
+                    }
+                    changed.insert(name.clone());
+                    names.push(name);
+                }
+                names
+            })
+            .collect();
         // A local may hide another local of the same C name, as in C, but
         // not a function or a constant that its scope uses, and two C names
         // never share a Rust name: a name that must change, for Rust's
@@ -146,7 +189,9 @@ impl Names {
         Names {
             vars,
             records,
+            fields,
             functions,
+            enumerators,
         }
     }
 
@@ -158,8 +203,16 @@ impl Names {
         &self.records[record]
     }
 
+    pub fn field(&self, record: RecordId, field: usize) -> &str {
+        &self.fields[record][field]
+    }
+
     pub fn function(&self, function: FuncId) -> &str {
         &self.functions[function]
+    }
+
+    pub fn enumerator(&self, enumerator: usize) -> &str {
+        &self.enumerators[enumerator]
     }
 }
 
@@ -178,7 +231,7 @@ fn unique(name: String, fallback: &str, taken: &mut HashSet<String>) -> String {
 
 /// A C name as a Rust name for a value, a function or a field: in snake
 /// case, and not a name that Rust or the translation reserves.
-pub fn plain(name: &str) -> String {
+fn plain(name: &str) -> String {
     let name = snake(name);
     if RESERVED.contains(&name.as_str()) {
         format!("{name}_")

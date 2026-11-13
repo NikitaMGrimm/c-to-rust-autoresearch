@@ -42,8 +42,9 @@ Entry format, newest last:
   literals and `sizeof`; `+ - * / % << >> & | ^ ~ !`, comparisons, `&&`,
   `||`, `?:`, the comma operator; conversions between numbers; `=`, the
   compound assignments, `++` and `--`; locals with and without an initialiser
-- Rust: `u8` for `char`, `i8` to `u64`, `bool`, `f32`, `f64`, a `const` for
-  each enumerator used; Rust's operators for signed arithmetic, so that an
+- Rust: `u8` for `char`, `i8` to `u64`, `bool`, `f32`, `f64`, a `const` in
+  upper case for each enumerator used, with a `_` where two enumerators of
+  different functions share a name; Rust's operators for signed arithmetic, so that an
   overflow stops the program, and `wrapping_add`, `wrapping_sub` and
   `wrapping_mul` for unsigned; `as` for conversions, through `i8` when a
   `char` widens; a comparison as a value is `i32::from(…)`, a number as a
@@ -95,7 +96,8 @@ Entry format, newest last:
 
 - C: `struct` definitions, values of them, member access with `.` and `->`,
   initialiser lists, assignment of a whole record
-- Rust: `struct` in CamelCase with `#[derive(Clone)]`, plus `Copy` when no
+- Rust: `struct` in CamelCase with `#[derive(Clone)]`, its fields in snake
+  case, with a `_` where two fields would share a name, plus `Copy` when no
   field owns memory and `Default` when the standard library derives it, else
   a written `impl Default`; `Name { field: value, … }` with zeros for members
   the list leaves out; `Name::default()` for a record without an initialiser
@@ -310,9 +312,9 @@ Entry format, newest last:
 
 - C: a local array whose length is one variable, `int out[len]`
 - Rust: `let mut out: Vec<i32> = vec![0; len as usize];`, which is indexed
-  and borrowed as an array is. A length that is an expression, or a name
-  that two variables of the function share, is refused: Clang prints the
-  length only as text in the type
+  and borrowed as an array is. Clang prints the length only as text in the
+  type, so it is the variable of that name in scope where the array is
+  declared; a length that is an expression is refused
 - Needs: the front end reads the length into `Var::len`
 - Motivation: `g3_031_disjoint_arrays` and `g3_048_mutable_buffer_overlap2`
   were refused for an array whose length is not a constant

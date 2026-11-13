@@ -3,7 +3,6 @@
 use super::{Lower, R, unsupported};
 use crate::c::{Expr, ExprKind, Type};
 use crate::facts::Slot;
-use crate::names::plain;
 use crate::rust;
 use syn::parse_quote;
 
@@ -209,7 +208,7 @@ impl Lower<'_> {
                         }
                         None => self.zero_of(&field.ty, slot, init.at)?,
                     };
-                    let field = rust::ident(&plain(&field.name));
+                    let field = rust::ident(self.names.field(*id, index));
                     values.push(parse_quote!(#field: #value));
                 }
                 Ok(parse_quote!(#name { #(#values),* }))

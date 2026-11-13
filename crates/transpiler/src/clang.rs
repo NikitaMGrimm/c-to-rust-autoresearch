@@ -42,8 +42,11 @@ struct Reader {
     globals: HashMap<String, VarId>,
     /// The labels of the function being read, by Clang's id.
     labels: HashMap<String, String>,
-    /// The parameters and locals of the function being read, by name.
+    /// The parameters and locals of the function being read that are in
+    /// scope, by name, the innermost last.
     locals: HashMap<String, Vec<VarId>>,
+    /// The names declared in each block that is open.
+    scopes: Vec<Vec<String>>,
 }
 
 /// Whether an attribute of this kind changes where a record's members lie.
@@ -297,6 +300,9 @@ impl Reader {
                 let id = self.program.vars.len() - 1;
                 if !storage.is_global() {
                     self.locals.entry(name.to_owned()).or_default().push(id);
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.push(name.to_owned());
+                    }
                 }
                 if storage.is_global() {
                     self.program.globals.push(id);
@@ -317,9 +323,18 @@ impl Reader {
         Ok(id)
     }
 
+    /// Ends a block: its names no longer mean its variables.
+    fn close_scope(&mut self) {
+        for name in self.scopes.pop().unwrap_or_default() {
+            if let Some(vars) = self.locals.get_mut(&name) {
+                vars.pop();
+            }
+        }
+    }
+
     /// The length of a variable-length array. Clang prints it only in the
     /// type, as in `int[n]`, so it is read from there when it is one
-    /// variable that the name can only mean.
+    /// variable: the innermost one of that name in scope.
     fn length(&mut self, decl: &Value) -> R<Expr> {
         let spelled = text(&decl["type"], "qualType");
         let name = spelled
@@ -329,10 +344,9 @@ impl Reader {
         let is_name = !name.is_empty()
             && !name.starts_with(|c: char| c.is_ascii_digit())
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        let var = match self.locals.get(name).map(Vec::as_slice) {
+        let var = match self.locals.get(name).and_then(|vars| vars.last()) {
             _ if !is_name => None,
-            Some([var]) => Some(*var),
-            Some(_) => None,
+            Some(var) => Some(*var),
             None => self.globals.get(name).copied(),
         };
         match var {
@@ -360,6 +374,7 @@ impl Reader {
             _ => return unsupported("a function without a function type", decl),
         };
         self.locals.clear();
+        self.scopes.clear();
         let mut params = Vec::new();
         for param in children(decl) {
             if kind(param) == "ParmVarDecl" {
@@ -383,9 +398,12 @@ impl Reader {
     fn block(&mut self, node: &Value) -> R<Vec<Stmt>> {
         let mut out = Vec::new();
         if kind(node) == "CompoundStmt" {
-            for child in children(node) {
-                self.stmt(child, &mut out)?;
-            }
+            self.scopes.push(Vec::new());
+            let read = children(node)
+                .iter()
+                .try_for_each(|child| self.stmt(child, &mut out));
+            self.close_scope();
+            read?;
         } else {
             self.stmt(node, &mut out)?;
         }
@@ -439,15 +457,22 @@ impl Reader {
                 let Some(body) = part(4) else {
                     return unsupported("a `for` without a body", node);
                 };
-                out.push(Stmt::For {
-                    init: part(0)
-                        .map(|init| self.block(init))
-                        .transpose()?
-                        .unwrap_or_default(),
-                    cond: part(2).map(|cond| self.expr(cond)).transpose()?,
-                    step: part(3).map(|step| self.expr(step)).transpose()?,
-                    body: self.block(body)?,
-                });
+                // What the loop declares ends with it.
+                self.scopes.push(Vec::new());
+                let mut read = || {
+                    Ok(Stmt::For {
+                        init: part(0)
+                            .map(|init| self.block(init))
+                            .transpose()?
+                            .unwrap_or_default(),
+                        cond: part(2).map(|cond| self.expr(cond)).transpose()?,
+                        step: part(3).map(|step| self.expr(step)).transpose()?,
+                        body: self.block(body)?,
+                    })
+                };
+                let read: R<Stmt> = read();
+                self.close_scope();
+                out.push(read?);
             }
             "SwitchStmt" => {
                 let (Some(value), Some(body)) = (part(0), part(1)) else {

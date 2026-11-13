@@ -123,14 +123,6 @@ int main(int argc, char *argv[]) {
         .unwrap_err(),
         "unsupported: the type `int[argc + 1]`, at line 2"
     );
-    assert_eq!(
-        translate(
-            "vla-shadow",
-            "int main(int argc, char *argv[]) {\n    int n = 2;\n    { int n = 3; argc += n; }\n    int values[n];\n    values[0] = 0;\n    return values[0];\n}\n"
-        )
-        .unwrap_err(),
-        "unsupported: an array whose length is not a constant or one variable, at line 4"
-    );
 }
 
 #[test]
@@ -229,6 +221,43 @@ int main(void) {
             "flags.level = -1;",
             "flags.on = 0;",
             "flags.level = -4;",
+        ],
+    );
+}
+
+/// The length of an array names the variable that is in scope where the
+/// array is declared.
+#[test]
+fn a_computed_length_is_the_variable_in_scope() {
+    let rust = check(
+        "length-scope",
+        r#"
+#include <stdio.h>
+int n = 3;
+int main(void) {
+    { int n = 2; printf("%d\n", n); }
+    int a[n];
+    a[2] = 7;
+    for (int n = 5; n < 6; n++) {
+        int b[n];
+        b[4] = a[2] + n;
+        printf("%d\n", b[4]);
+    }
+    int c[n];
+    c[2] = 1;
+    printf("%d %d\n", a[2], c[2]);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut a: Vec<i32> = vec![0; N as usize];",
+            "let mut b: Vec<i32> = vec![0; n as usize];",
+            "let mut c: Vec<i32> = vec![0; N as usize];",
         ],
     );
 }

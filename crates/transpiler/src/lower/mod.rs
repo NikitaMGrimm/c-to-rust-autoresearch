@@ -12,7 +12,7 @@ mod types;
 use crate::Unsupported;
 use crate::c::{Expr, ExprKind, FuncId, Program, Stmt, Type, VarId, any_expr};
 use crate::facts::{Access, Facts, Slot};
-use crate::names::{Names, plain};
+use crate::names::Names;
 use crate::rust;
 use std::collections::BTreeSet;
 use syn::parse_quote;
@@ -424,7 +424,7 @@ pub fn program(program: &Program, facts: &Facts) -> R<syn::File> {
     for &index in &lower.enumerators {
         let enumerator = &program.enumerators[index];
         let (name, value) = (
-            rust::ident(&enumerator.name),
+            rust::ident(lower.names.enumerator(index)),
             rust::int(enumerator.value, ""),
         );
         items.push(parse_quote!(const #name: i32 = #value;));
@@ -464,7 +464,7 @@ impl Lower<'_> {
             let slot = Slot::Field(id, index);
             let ty = self.field_type(slot, &field.ty)?;
             let zero = self.zero_of(&field.ty, Some(slot), 0)?;
-            let field = rust::ident(&plain(&field.name));
+            let field = rust::ident(self.names.field(id, index));
             fields.push(
                 syn::parse::Parser::parse2(syn::Field::parse_named, quote::quote!(#field: #ty))
                     .expect("a field"),

@@ -6,7 +6,6 @@ use super::pointer::Repr;
 use super::{Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type, UnOp, VarId};
 use crate::facts::{Access, Slot, place_slot};
-use crate::names::plain;
 use crate::rust;
 use syn::parse_quote;
 
@@ -56,7 +55,6 @@ impl Lower<'_> {
     }
 
     fn value(&mut self, expr: &Expr, typed: bool) -> R<syn::Expr> {
-        let program = self.program;
         let at = expr.at;
         if let Some(literal) = self.literal(expr, typed) {
             return Ok(literal);
@@ -68,7 +66,7 @@ impl Lower<'_> {
             ExprKind::Float(value) => Ok(rust::float(*value, float_suffix(&expr.ty, typed))),
             ExprKind::Enumerator(index) => {
                 self.enumerators.insert(*index);
-                Ok(rust::name(&program.enumerators[*index].name))
+                Ok(rust::name(self.names.enumerator(*index)))
             }
             ExprKind::Zero => self.zero(&expr.ty, at),
             ExprKind::Var(_)
@@ -479,8 +477,7 @@ impl Lower<'_> {
                     true => self.pointee(base, write, true)?,
                     false => self.place(base, write)?,
                 };
-                let field = &program.records[*record].fields[*field];
-                Ok(rust::field(base, &plain(&field.name)))
+                Ok(rust::field(base, self.names.field(*record, *field)))
             }
             ExprKind::Index(base, index) => {
                 if index.constant(program) == Some(0) && self.points_to_one(base) {

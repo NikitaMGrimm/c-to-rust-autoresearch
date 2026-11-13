@@ -386,3 +386,38 @@ fn a_local_named_underscore_gets_a_name() {
     );
     assert_lines(&rust, &["let __: i32 = 3;"]);
 }
+
+/// Two C names that Rust's conventions would give one Rust name stay two.
+#[test]
+fn names_that_rust_would_merge_stay_apart() {
+    let rust = check(
+        "merged",
+        r#"
+#include <stdio.h>
+struct s { int fooBar; int foo_bar; int FooBar; };
+enum { foo_baz = 1 };
+int f(void) { enum { X = 1 }; return X; }
+int g(void) { enum { X = 2 }; return X; }
+int main(void) {
+    struct s s = {1, 2, 3};
+    int fooBaz = 4;
+    printf("%d %d %d %d %d %d %d\n", s.fooBar, s.foo_bar, s.FooBar, fooBaz, foo_baz, f(), g());
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "const FOO_BAZ: i32 = 1;",
+            "const X: i32 = 1;",
+            "const X_: i32 = 2;",
+            "foo_bar_: i32,",
+            "foo_bar: i32,",
+            "foo_bar__: i32,",
+            "let foo_baz: i32 = 4;",
+        ],
+    );
+}
