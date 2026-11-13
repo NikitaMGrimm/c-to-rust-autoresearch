@@ -125,9 +125,14 @@ Entry format, newest last:
   pointer or through any slot it is handed to; `&x`, `&mut a[i..]`,
   `std::slice::from_ref`; a `&mut` variable is reborrowed where it is handed
   on. A function that returns a borrow and takes several gives all of them
-  the lifetime `'a`
-- Needs: `Facts::pointer` for each slot; `Facts::stored_through` for `mut` on
-  the binding of an owner or an `Option`
+  the lifetime `'a`. Refused: a result that may point to a local or a
+  parameter of its function, which ends where the function returns; and a
+  call with two arguments that point into the same memory, such as
+  `f(a, a + 1)`, when the function stores through one of them, since Rust
+  lends memory once to whoever stores there
+- Needs: `Facts::pointer` for each slot, with `local` for a pointer into a
+  variable of its function; `Facts::stored_through` for `mut` on the
+  binding of an owner or an `Option`
 - Motivation: skeleton
 - Changes: none
 

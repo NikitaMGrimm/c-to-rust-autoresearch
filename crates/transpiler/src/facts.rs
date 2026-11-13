@@ -7,7 +7,9 @@
 //! from a pointer's source into a slot, and the facts spread along the flows
 //! until nothing changes.
 
-use crate::c::{BinOp, Expr, ExprKind, FuncId, Program, RecordId, Stmt, Type, UnOp, VarId};
+use crate::c::{
+    BinOp, Expr, ExprKind, FuncId, Program, RecordId, Stmt, Type, UnOp, VarId, VarKind,
+};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,6 +37,9 @@ pub struct Pointer {
     /// to something other than `char`. A pointer to `char` without this
     /// fact only ever holds text that is passed on whole.
     pub bytes: bool,
+    /// It may point into a variable of the function that holds it, which
+    /// ends when the function returns.
+    pub local: bool,
     /// Why no rule can give it one Rust type, if so.
     pub conflict: Option<&'static str>,
 }
@@ -971,6 +976,9 @@ impl<'a> Walk<'a> {
                             && (matches!(slot, Slot::Return(_)) || self.outlives_locals(flow.to));
                         to.nullable |= from.nullable && !flow.set;
                         to.argument |= from.argument && !flow.set;
+                        if from.local {
+                            self.reaches_local(flow.to, &mut to);
+                        }
                         *self.seed(*slot) = from;
                     }
                     Source::Null => to.nullable |= !flow.set,
@@ -982,6 +990,10 @@ impl<'a> Walk<'a> {
                     Source::Place { root, array } => {
                         to.many |= array;
                         to.bytes = true;
+                        if matches!(root, Root::Var(var) if !self.program.vars[*var].kind.is_global())
+                        {
+                            self.reaches_local(flow.to, &mut to);
+                        }
                         if to.written {
                             self.write_root(root, flow.function);
                         }
@@ -1017,6 +1029,19 @@ impl<'a> Walk<'a> {
             {
                 break;
             }
+        }
+    }
+
+    /// Records that a pointer into a variable of the function reaches the
+    /// slot: another local may hold it, and the result may not, since the
+    /// variable ends where the function returns.
+    fn reaches_local(&self, slot: Slot, pointer: &mut Pointer) {
+        match slot {
+            Slot::Var(var) => pointer.local |= self.program.vars[var].kind == VarKind::Local,
+            Slot::Return(_) => {
+                pointer.conflict = Some("it points to a variable that ends with the function")
+            }
+            Slot::Field(..) => {}
         }
     }
 

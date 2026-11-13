@@ -75,4 +75,21 @@ fn a_program_that_a_rule_would_get_wrong_is_refused() {
         ),
         "unsupported: a `printf` width for text that is not ASCII, at line 3"
     );
+    // The array ends where the function returns, and Rust lends nothing
+    // that has ended.
+    assert_eq!(
+        refused(
+            "returned",
+            "#include <stdio.h>\nchar *name(void) {\n    char text[] = \"name\";\n    char *start = text;\n    return start;\n}\nint main(void) {\n    puts(name());\n    return 0;\n}\n"
+        ),
+        "unsupported: the result of `name`: it points to a variable that ends with the function"
+    );
+    // Rust lends memory once to a function that stores through it.
+    assert_eq!(
+        refused(
+            "lent-twice",
+            "void add(int *out, const int *in, int n) {\n    for (int i = 0; i < n; i++) out[i] += in[i];\n}\nint main(void) {\n    int a[4] = {1, 2, 3, 4};\n    add(a, a + 1, 3);\n    return a[0];\n}\n"
+        ),
+        "unsupported: two arguments that point into the same memory, one of them to store through, at line 6"
+    );
 }

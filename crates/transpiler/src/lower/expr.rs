@@ -504,6 +504,33 @@ impl Lower<'_> {
         if name == "main" || function.params.len() != args.len() {
             return unsupported(format!("this call of `{name}`"), call.at);
         }
+        // Rust lends memory to a function once if it may store there, and
+        // gives it away once.
+        let mut lent: Vec<(Vec<Part>, bool)> = Vec::new();
+        for (&param, arg) in function.params.iter().zip(args) {
+            if !program.vars[param].ty.is_pointer() {
+                continue;
+            }
+            let Some(memory) = pointed(arg) else {
+                continue;
+            };
+            let repr = self.repr(Slot::Var(param), arg.at)?;
+            let stores = repr.mutable || repr.owned;
+            let shared = |other: &[Part]| {
+                let common = other.len().min(memory.len());
+                other[..common] == memory[..common]
+            };
+            if lent
+                .iter()
+                .any(|(other, other_stores)| (stores || *other_stores) && shared(other))
+            {
+                return unsupported(
+                    "two arguments that point into the same memory, one of them to store through",
+                    arg.at,
+                );
+            }
+            lent.push((memory, stores));
+        }
         let mut values = Vec::new();
         if self.facts.access(id) != Access::None {
             values.push(rust::name("globals"));
@@ -652,6 +679,54 @@ impl Lower<'_> {
             _ if expr.is_pure() => Vec::new(),
             _ => statement(self.expr(expr)?),
         })
+    }
+}
+
+/// A step on the way from a variable to the memory a pointer points to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Var(VarId),
+    Field(usize),
+    /// What the pointer held there points to.
+    Target,
+}
+
+/// The memory a pointer expression points into, as far as the expression
+/// names it: `a` for `a + 1` and `&a[i]`, `s.x` for `&s.x`, what `p` points
+/// to for `p`. Two of them overlap when one starts with the other.
+fn pointed(pointer: &Expr) -> Option<Vec<Part>> {
+    match &pointer.kind {
+        ExprKind::Cast(inner) if inner.ty.is_pointer() => pointed(inner),
+        ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right) => {
+            pointed(if left.ty.is_pointer() { left } else { right })
+        }
+        ExprKind::Decay(place) | ExprKind::AddrOf(place) => place_parts(place),
+        ExprKind::Var(_) | ExprKind::Member { .. } => {
+            let mut parts = place_parts(pointer)?;
+            parts.push(Part::Target);
+            Some(parts)
+        }
+        _ => None,
+    }
+}
+
+fn place_parts(place: &Expr) -> Option<Vec<Part>> {
+    match &place.kind {
+        ExprKind::Var(var) => Some(vec![Part::Var(*var)]),
+        ExprKind::Member {
+            base, field, arrow, ..
+        } => {
+            let mut parts = match arrow {
+                true => pointed(base)?,
+                false => place_parts(base)?,
+            };
+            parts.push(Part::Field(*field));
+            Some(parts)
+        }
+        // Any element stands for the array.
+        ExprKind::Index(base, _) => pointed(base),
+        ExprKind::Deref(pointer) => pointed(pointer),
+        _ => None,
     }
 }
 

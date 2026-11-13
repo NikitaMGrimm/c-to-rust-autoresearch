@@ -108,7 +108,7 @@ Keep to these:
 ### Pointers
 
 A *slot* is a place that holds a pointer: a variable, a field or a function's
-result. The analysis gives each slot seven facts, and they decide its type:
+result. The analysis gives each slot eight facts, and they decide its type:
 
 | Fact | Set when | Effect |
 | --- | --- | --- |
@@ -118,6 +118,7 @@ result. The analysis gives each slot seven facts, and they decide its type:
 | `nullable` | NULL may reach it | Wrapped in `Option` |
 | `bytes` | It points to `char` that is read or written one by one, or to another type | A `char` pointer without it is `&str` |
 | `argument` | `argv[i]` may reach it as the program found it, which is NULL at `argv[argc]` | A test of it for NULL is not decided; it is refused unless the slot is `nullable` |
+| `local` | It may point into a local or a parameter of the function that holds it | A result that it reaches is refused: the variable ends where the function returns |
 | `conflict` | No single type fits, with the reason | The program is refused |
 
 Every assignment, argument and `return` is a flow from a source into a slot,
@@ -128,7 +129,10 @@ converts between the types of two slots (`lower/pointer.rs`, `adapt`): a move
 between owners, `&mut *b` or `as_deref_mut()` from an owner to a borrow, and
 so on. What the borrow checker then rejects is refused by `rustc`, which is
 the intended division of work: the analysis picks types, the compiler proves
-them.
+them. Where a rule can see that the compiler will reject its translation, it
+refuses with the reason instead: a result that points to a local, and two
+arguments of one call that point into the same memory when the function
+stores through one of them.
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
