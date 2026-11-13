@@ -564,3 +564,17 @@ Entry format, newest last:
 - Motivation: `g5_hm_geti`, `g5_intput`, `g5_sh_puts` and `g5_str_put`
   call `memcmp` and are refused first for other constructs
 - Changes: extends R30
+
+## R32: a `break` in the middle of a case
+
+- C: `break` inside an `if` or a block of a `case`, which leaves the
+  `switch` from there
+- Rust: a block with a label around the `match`, `'switch: { match … }`,
+  and `break 'switch;`; `'switch_2` for a `switch` inside a case of
+  another. A `switch` without such a `break` stays a bare `match`. Refused:
+  a `continue` in such a `switch`, which Rust wants to name its loop, and
+  loops have no labels
+- Needs: nothing
+- Motivation: `g4_dataentry` was refused for a `break` that leaves a case
+  early when an allocation failed
+- Changes: extends R3

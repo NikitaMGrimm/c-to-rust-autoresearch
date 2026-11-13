@@ -460,7 +460,11 @@ impl Helper {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nest {
     Loop,
-    Switch,
+    /// One case of a `switch`, and whether a `break` in the middle of it
+    /// leaves the `switch`.
+    Switch {
+        left: bool,
+    },
 }
 
 /// The item `struct Globals`, and the value `main` starts it with.

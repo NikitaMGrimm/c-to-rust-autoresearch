@@ -68,10 +68,20 @@ impl Lower<'_> {
                 body,
             } => self.for_loop(init, cond.as_ref(), step.as_ref(), body, out)?,
             Stmt::Switch(value, body) => out.push(self.switch(value, body)?),
-            Stmt::Break => match self.nesting.last() {
-                Some(Nest::Loop) => out.push(parse_quote!(break;)),
-                _ => return unsupported("`break` in the middle of a `case`: no rule yet", 0),
-            },
+            Stmt::Break => {
+                let depth = self.switches();
+                match self.nesting.last_mut() {
+                    Some(Nest::Loop) => out.push(parse_quote!(break;)),
+                    // R32: a `break` that is not the end of its case
+                    // leaves the block around the `match`.
+                    Some(Nest::Switch { left }) => {
+                        *left = true;
+                        let label = switch_label(depth);
+                        out.push(parse_quote!(break #label;));
+                    }
+                    None => return unsupported("`break` outside a loop and a `switch`", 0),
+                }
+            }
             Stmt::Continue => out.push(parse_quote!(continue;)),
             Stmt::Return(value) => out.push(match value {
                 Some(value) if self.in_main() => match self.exits {
@@ -500,6 +510,8 @@ impl Lower<'_> {
         let mut cases: Vec<syn::Arm> = Vec::new();
         let mut otherwise: syn::Arm = parse_quote!(_ => {});
         let last = arms.len().saturating_sub(1);
+        // Whether a `break` in the middle of a case leaves the `switch`.
+        let mut left = false;
         for (index, (values, default, stmts)) in arms.into_iter().enumerate() {
             // `case 1: { ...; break; }` is a case like any other.
             let stmts = match stmts {
@@ -512,9 +524,11 @@ impl Lower<'_> {
                 _ if index == last => stmts,
                 _ => return unsupported("a `case` that falls through: no rule yet", at),
             };
-            self.nesting.push(Nest::Switch);
+            self.nesting.push(Nest::Switch { left: false });
             let body = self.block(stmts);
-            self.nesting.pop();
+            if let Some(Nest::Switch { left: true }) = self.nesting.pop() {
+                left = true;
+            }
             let body = body?;
             if default {
                 otherwise = parse_quote!(_ => #body);
@@ -523,11 +537,43 @@ impl Lower<'_> {
                 cases.push(parse_quote!(#(#values)|* => #body));
             }
         }
+        // Rust wants a label on a `continue` that leaves a block with a
+        // label, and loops have none.
+        if left && continues(body) {
+            return unsupported(
+                "`continue` in a `switch` with a `break` in the middle of a `case`: no rule yet",
+                at,
+            );
+        }
+        let matched: syn::Expr = parse_quote!(match #value { #(#cases)* #otherwise });
         Ok(syn::Stmt::Expr(
-            parse_quote!(match #value { #(#cases)* #otherwise }),
+            match left {
+                true => {
+                    let label = switch_label(self.switches() + 1);
+                    parse_quote!(#label: { #matched })
+                }
+                false => matched,
+            },
             None,
         ))
     }
+
+    /// The number of `switch` statements around the statement being
+    /// translated, in its function.
+    fn switches(&self) -> usize {
+        let switch = |nest: &&Nest| matches!(nest, Nest::Switch { .. });
+        self.nesting.iter().filter(switch).count()
+    }
+}
+
+/// The label of the block around a `match`, for a `switch` at this depth:
+/// one inside another needs a label of its own.
+fn switch_label(depth: usize) -> syn::Lifetime {
+    let name = match depth {
+        0 | 1 => "'switch".to_owned(),
+        depth => format!("'switch_{depth}"),
+    };
+    syn::Lifetime::new(&name, proc_macro2::Span::call_site())
 }
 
 /// Whether the loop body has a `continue` for this loop.

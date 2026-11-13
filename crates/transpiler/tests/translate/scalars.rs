@@ -479,3 +479,71 @@ int main(void) {
         ],
     );
 }
+
+#[test]
+fn a_break_in_the_middle_of_a_case_leaves_the_match() {
+    let rust = check(
+        "case-break",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+static int pick(int mode, int x) {
+    int r = x;
+    switch (mode) {
+    case 1:
+        if (x > 0) break;
+        return -1;
+    case 2:
+        r = x * 2;
+        switch (x) {
+        case 1:
+            if (mode == 2) break;
+            r = 50;
+            break;
+        default:
+            r += 1;
+        }
+        if (r > 3) break;
+        r = 0;
+        break;
+    case 3:
+        for (int i = 0; i < 5; i++) {
+            if (i == x) break;
+            r += i;
+        }
+        break;
+    default:
+        return 7;
+    }
+    return r + 1;
+}
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    int mode = atoi(argv[1]);
+    printf("%d %d %d %d\n", pick(mode, 1), pick(mode, 2), pick(mode, -3), pick(mode, 9));
+    return 0;
+}
+"#,
+        &[&["1"], &["2"], &["3"], &["4"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "'switch: {",
+            "break 'switch;",
+            "'switch_2: {",
+            "break 'switch_2;",
+            "break;",
+        ],
+    );
+    // A `continue` would have to name its loop to leave the block.
+    assert_eq!(
+        translate(
+            "case-break-continue",
+            "int main(int argc, char **argv) {\n    int n = 0;\n    while (n < 5) {\n        n++;\n        switch (n) {\n        case 1:\n            if (argc) break;\n            n++;\n            break;\n        case 2:\n            continue;\n        }\n    }\n    return n;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: `continue` in a `switch` with a `break` in the middle of a `case`: no rule yet, at line 5"
+    );
+}
