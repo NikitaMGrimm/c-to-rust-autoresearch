@@ -294,6 +294,20 @@ impl Lower<'_> {
         if expr.ty == Type::Index {
             return self.index_arithmetic(op, left, right);
         }
+        // The compiler's lints refuse these, such as `x - x`.
+        if matches!(
+            op,
+            BinOp::Sub | BinOp::Div | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+        ) && same_value(left, right)
+        {
+            return unsupported(
+                format!(
+                    "the same value on both sides of `{}`: no rule yet",
+                    symbol(op)
+                ),
+                expr.at,
+            );
+        }
         let unsigned = matches!(expr.ty.int(), Some((_, false)));
         match wrapping(op) {
             Some(method) if unsigned => {
@@ -458,16 +472,18 @@ impl Lower<'_> {
                 _ => unsupported("an ordering of a pointer and NULL", at),
             };
         }
-        // `x != x` holds only for a NaN, and Rust has a name for the test.
-        if let (BinOp::Eq | BinOp::Ne, Type::Float { .. }, ExprKind::Var(one), ExprKind::Var(other)) =
-            (op, &left.ty, &left.kind, &right.kind)
-            && one == other
-        {
-            let nan = rust::method(self.expr(left)?, "is_nan", []);
-            return Ok(match op {
-                BinOp::Ne => nan,
-                _ => rust::unary("!", nan),
-            });
+        if same_value(left, right) {
+            // `x != x` holds only for a NaN, and Rust has a name for the
+            // test.
+            if let (BinOp::Eq | BinOp::Ne, Type::Float { .. }) = (op, &left.ty) {
+                let nan = rust::method(self.expr(left)?, "is_nan", []);
+                return Ok(match op {
+                    BinOp::Ne => nan,
+                    _ => rust::unary("!", nan),
+                });
+            }
+            // The compiler's lints refuse such a comparison.
+            return unsupported("a comparison of a value with itself: no rule yet", at);
         }
         // R30: a comparing function of `string.h` against 0, whose sign is
         // all that C fixes.
@@ -881,6 +897,46 @@ fn signed_offset(index: &Expr) -> Option<&Expr> {
         }
         _ => None,
     }
+}
+
+/// Whether the two expressions read the same places and constants in the
+/// same way, so that they have one value. Neither has an effect.
+fn same_value(left: &Expr, right: &Expr) -> bool {
+    left.ty == right.ty
+        && match (&left.kind, &right.kind) {
+            (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
+            (ExprKind::Int(one), ExprKind::Int(other)) => one == other,
+            (ExprKind::Char(one), ExprKind::Char(other)) => one == other,
+            (ExprKind::Enumerator(one), ExprKind::Enumerator(other)) => one == other,
+            (
+                ExprKind::Member {
+                    base: one,
+                    record,
+                    field,
+                    ..
+                },
+                ExprKind::Member {
+                    base: other,
+                    record: other_record,
+                    field: other_field,
+                    ..
+                },
+            ) => record == other_record && field == other_field && same_value(one, other),
+            (ExprKind::Deref(one), ExprKind::Deref(other))
+            | (ExprKind::Decay(one), ExprKind::Decay(other))
+            | (ExprKind::Cast(one), ExprKind::Cast(other))
+            | (ExprKind::Bits(one), ExprKind::Bits(other)) => same_value(one, other),
+            (ExprKind::Unary(op, one), ExprKind::Unary(other_op, other)) => {
+                op == other_op && same_value(one, other)
+            }
+            (ExprKind::Index(one, at), ExprKind::Index(other, other_at)) => {
+                same_value(one, other) && same_value(at, other_at)
+            }
+            (ExprKind::Binary(op, one, two), ExprKind::Binary(other_op, other, other_two)) => {
+                op == other_op && same_value(one, other) && same_value(two, other_two)
+            }
+            _ => false,
+        }
 }
 
 fn float_suffix(ty: &Type, typed: bool) -> &'static str {

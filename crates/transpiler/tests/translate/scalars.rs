@@ -433,7 +433,10 @@ int main(int argc, char *argv[]) {
     if (argc != 2) return 2;
     double d = strtod(argv[1], NULL);
     float f = (float)d;
+    struct pair { double a; double b; } p = {d, 1.0};
+    double xs[2] = {0.5, d};
     printf("%d %d %d\n", d != d, f == f, d == d ? 1 : 0);
+    printf("%d %d %d\n", p.a != p.a, xs[argc - 1] == xs[argc - 1], p.a != p.b);
     return 0;
 }
 "#,
@@ -442,7 +445,33 @@ int main(int argc, char *argv[]) {
     );
     assert_lines(
         &rust,
-        &["i32::from(d.is_nan()),", "i32::from(!f.is_nan()),"],
+        &[
+            "i32::from(d.is_nan()),",
+            "i32::from(!f.is_nan()),",
+            "i32::from(p.a.is_nan()),",
+            "i32::from(!xs[(args.len() as i32 - 1) as usize].is_nan()),",
+            "i32::from(p.a != p.b),",
+        ],
+    );
+}
+
+#[test]
+fn the_same_value_on_both_sides_is_refused_where_the_lints_refuse_it() {
+    // Clippy's `eq_op` is an error, so these would not compile.
+    let refused = |name, value: &str| {
+        translate(
+            name,
+            &format!("int main(int argc, char **argv) {{\n    return {value};\n}}\n"),
+        )
+        .unwrap_err()
+    };
+    assert_eq!(
+        refused("self-equal", "argc == argc"),
+        "unsupported: a comparison of a value with itself: no rule yet, at line 2"
+    );
+    assert_eq!(
+        refused("self-minus", "(argc + 1) - (argc + 1)"),
+        "unsupported: the same value on both sides of `-`: no rule yet, at line 2"
     );
 }
 

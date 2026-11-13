@@ -421,9 +421,12 @@ Entry format, newest last:
 
 ## R25: a number compared with itself
 
-- C: `x != x` and `x == x` for a `float` or `double` variable
+- C: `x != x` and `x == x` for a `float` or `double` that is read twice
+  in the same way without an effect: a variable, a field, an element
 - Rust: `x.is_nan()` and `!x.is_nan()`, which is what the comparison
-  asks; the compiler's lints refuse `x != x`
+  asks; the compiler's lints refuse `x != x`. Refused, since the same
+  lints refuse them: any other comparison of a value with itself, and the
+  same value on both sides of `-`, `/`, `&`, `|` or `^`
 - Needs: nothing
 - Motivation: `g3_maxnmin` tests `d != d` before it converts `d` to `int`,
   and did not compile
