@@ -40,6 +40,12 @@ impl Repr {
         nullable: false,
         text: false,
     };
+
+    /// Bytes that are there, for a use that stores to them.
+    pub(super) const BYTES_WRITTEN: Repr = Repr {
+        mutable: true,
+        ..Repr::BYTES
+    };
 }
 
 impl Lower<'_> {

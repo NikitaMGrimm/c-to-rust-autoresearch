@@ -46,6 +46,9 @@ enum Helper {
     StoreText,
     StoreTextCut,
     StoreTextWithin,
+    CopyString,
+    AppendString,
+    AppendAtMost,
 }
 
 impl Helper {
@@ -65,7 +68,8 @@ impl Helper {
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
             Helper::ReadLine => &[Helper::ReadByte],
             Helper::ReadLineWithin => &[Helper::ReadLine, Helper::PeekByte],
-            Helper::TextOf => &[Helper::UntilNul],
+            Helper::TextOf | Helper::CopyString | Helper::AppendAtMost => &[Helper::UntilNul],
+            Helper::AppendString => &[Helper::UntilNul, Helper::CopyString],
             Helper::ParseIntPrefix => &[Helper::ParseInt],
             Helper::FormatG => &[Helper::FormatE],
             Helper::StoreTextWithin => &[Helper::StoreTextCut],
@@ -381,6 +385,39 @@ impl Helper {
                     let room = size.min(target.len());
                     assert!(room == size || text.len() < room, "text beyond its buffer");
                     store_text_cut(text, &mut target[..room])
+                }
+            },
+            Helper::CopyString => parse_quote! {
+                /// Copies the text in `source` and the NUL that ends it to the
+                /// start of `target`, as C's `strcpy` does.
+                fn copy_string(target: &mut [u8], source: &[u8]) {
+                    let text = until_nul(source);
+                    target[..text.len()].copy_from_slice(text);
+                    target[text.len()] = 0;
+                }
+            },
+            Helper::AppendString => parse_quote! {
+                /// Copies the text in `source` and the NUL that ends it to the
+                /// end of the text in `target`, as C's `strcat` does.
+                fn append_string(target: &mut [u8], source: &[u8]) {
+                    let end = until_nul(target).len();
+                    copy_string(&mut target[end..], source);
+                }
+            },
+            Helper::AppendAtMost => parse_quote! {
+                /// Copies at most `count` bytes of the text in `source` to the
+                /// end of the text in `target`, and a NUL after them, as C's
+                /// `strncat` does. The source needs no NUL within `count`
+                /// bytes.
+                fn append_at_most(target: &mut [u8], source: &[u8], count: usize) {
+                    let end = until_nul(target).len();
+                    let length = source
+                        .iter()
+                        .take(count)
+                        .position(|&byte| byte == 0)
+                        .unwrap_or(count);
+                    target[end..][..length].copy_from_slice(&source[..length]);
+                    target[end + length] = 0;
                 }
             },
             Helper::TextOf => parse_quote! {

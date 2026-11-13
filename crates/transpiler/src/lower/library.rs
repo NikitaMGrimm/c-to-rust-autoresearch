@@ -58,6 +58,25 @@ impl Lower<'_> {
                 self.helper(Helper::CopyText);
                 Ok(rust::call("copy_text", [target, source]))
             }
+            // R28: the text of `source` with its NUL, stored at the start
+            // or at the end of the text in `target`.
+            ("strcpy" | "strcat", [target, source]) => {
+                let target = self.pointer(target, Repr::BYTES_WRITTEN)?;
+                let source = self.pointer(source, Repr::BYTES)?;
+                let (helper, function) = match name {
+                    "strcpy" => (Helper::CopyString, "copy_string"),
+                    _ => (Helper::AppendString, "append_string"),
+                };
+                self.helper(helper);
+                Ok(rust::call(function, [target, source]))
+            }
+            ("strncat", [target, source, count]) => {
+                let target = self.pointer(target, Repr::BYTES_WRITTEN)?;
+                let source = self.pointer(source, Repr::BYTES)?;
+                let count = self.index_value(count)?;
+                self.helper(Helper::AppendAtMost);
+                Ok(rust::call("append_at_most", [target, source, count]))
+            }
             ("putchar", [value]) => {
                 let value = self.character(value)?;
                 Ok(parse_quote!(print!("{}", #value)))
@@ -190,11 +209,7 @@ impl Lower<'_> {
         // `fgets` stores no further than its text reaches, so a size
         // beyond the buffer is no error in C until the text is as long,
         // and a slice of that size is one at once.
-        let bytes = Repr {
-            mutable: true,
-            ..Repr::BYTES
-        };
-        let target = self.pointer(buffer.uncast(), bytes)?;
+        let target = self.pointer(buffer.uncast(), Repr::BYTES_WRITTEN)?;
         let size = self.expr(size)?;
         self.helper(Helper::ReadLineWithin);
         Ok(rust::call("read_line_within", [target, size]))

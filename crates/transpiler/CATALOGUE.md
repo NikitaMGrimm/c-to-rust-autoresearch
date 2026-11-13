@@ -466,3 +466,21 @@ Entry format, newest last:
   `g5_cleanup` and `g5_memchra2` call `snprintf`; each is refused earlier
   for another construct
 - Changes: extends R4
+
+## R28: `strcpy`, `strcat` and `strncat`
+
+- C: `strcpy`, `strcat` and `strncat` into bytes, as statements
+- Rust: `copy_string(&mut name, &source)`, a helper that copies the text
+  of `source` and its NUL to the start of the target;
+  `append_string(&mut line, b"text\0")`, which copies them to the NUL of
+  the text in the target; `append_at_most(&mut line, &word, n as usize)`,
+  which copies at most `n` bytes of the text and a NUL after them, and
+  needs no NUL in the source within them. The target is all the memory
+  the pointer reaches, `&mut line[3..]` for `line + 3`, so a target that
+  is too short, or text without a NUL, stops the program where C's
+  behaviour is undefined. The pointer they return is refused where it is
+  used
+- Needs: nothing
+- Motivation: `g4_betagamma` was refused for `strcpy`, which
+  `g3_strcmp`, `g4_dataentry`, `g5_charinbuf` and `g5_findrep` use too
+- Changes: none

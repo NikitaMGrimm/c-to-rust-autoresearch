@@ -229,8 +229,8 @@ place:
   `until_nul` (R15), and a string literal that such a pointer meets is
   `b"…\0"`. `argv[i]` is text too, `&args[i]`, and has no rule yet where
   it meets bytes. Still to build: text that a record or a global holds
-  (`&'static str` when only literals reach it), `strcmp`, `strcpy` and the
-  other functions of `string.h`, a width in `%s`, and above all a `String`
+  (`&'static str` when only literals reach it), `strcmp` and the other
+  functions of `string.h` that read text, a width in `%s`, and above all a `String`
   for a buffer that the program only fills and reads as a whole, which
   needs a fact that says so.
 - **Input.** `scanf` and `fgets` read through helpers over
