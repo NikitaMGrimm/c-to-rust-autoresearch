@@ -139,6 +139,16 @@ pub fn until(end: Expr) -> Expr {
     })
 }
 
+/// `start..end`.
+pub fn range(start: Expr, end: Expr) -> Expr {
+    Expr::Range(syn::ExprRange {
+        attrs: Vec::new(),
+        start: Some(Box::new(start)),
+        limits: syn::RangeLimits::HalfOpen(Default::default()),
+        end: Some(Box::new(end)),
+    })
+}
+
 pub fn method(receiver: Expr, method: &str, args: impl IntoIterator<Item = Expr>) -> Expr {
     Expr::MethodCall(syn::ExprMethodCall {
         attrs: Vec::new(),

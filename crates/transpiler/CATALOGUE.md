@@ -484,3 +484,28 @@ Entry format, newest last:
 - Motivation: `g4_betagamma` was refused for `strcpy`, which
   `g3_strcmp`, `g4_dataentry`, `g5_charinbuf` and `g5_findrep` use too
 - Changes: none
+
+## R29: `memcpy` and `memmove`
+
+- C: `memcpy` and `memmove` as statements, between pointers to one element
+  type that assignment copies, of a size that is any expression for
+  elements of one byte, and otherwise a constant that is a multiple of the
+  element's size or `count * sizeof(element)`
+- Rust: `b[1..][..2].copy_from_slice(&a[3..][..2])`, with the whole array
+  where the count is its length, `b.copy_from_slice(&a)`, and
+  `&b"text\0"[..3]` for a string literal; `backup = now` and
+  `c.data[i as usize] = s[0]` for one element where a side points to one;
+  `s.copy_within(3..3 + n as usize, 0)` where both sides are in the same
+  variable or field, which is right where they overlap, for `memcpy` as
+  for `memmove`. A count beyond either side stops the program where C's
+  behaviour is undefined. Refused: a copy between two types, which would
+  reinterpret memory, of a type with pointers, of part of an element, of a
+  size that is no count of elements or that calls or assigns, since it is
+  written for each side, and from an offset with effects in one array. Two pointers into one array that the rule cannot tell apart
+  are two borrows, which `rustc` refuses
+- Needs: nothing
+- Motivation: no development program was refused for them, but
+  `g3_envy` copies a record with `memcpy`, `g4_memcpy_fun_buffers` copies
+  bytes between and within buffers, and `g5_str_put`, `g5_intput`,
+  `g5_hm_geti` and `g5_sh_puts` move elements with `memmove`
+- Changes: none

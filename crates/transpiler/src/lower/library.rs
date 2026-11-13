@@ -50,6 +50,7 @@ impl Lower<'_> {
             }
             ("fgets", [buffer, size, stream]) => self.read_line(buffer, size, stream, at),
             ("memset", [target, value, size]) => self.memset(target, value, size, at),
+            ("memcpy" | "memmove", [target, source, size]) => self.memcpy(target, source, size, at),
             // R22: the text of `source`, cut short or filled up with NUL
             // bytes to the size.
             ("strncpy", [target, source, size]) => {
@@ -242,6 +243,16 @@ impl Lower<'_> {
     /// store to: the whole array when that is what the count says, and
     /// `array[..count]` otherwise. The count is a number or an expression.
     fn first(&mut self, pointer: &Expr, count: Result<i128, &Expr>) -> R<syn::Expr> {
+        self.first_of(pointer, count, true)
+    }
+
+    /// `first`, as a place to read when `write` is false.
+    fn first_of(
+        &mut self,
+        pointer: &Expr,
+        count: Result<i128, &Expr>,
+        write: bool,
+    ) -> R<syn::Expr> {
         let count = count.or_else(|count| count.constant(self.program).ok_or(count));
         let whole = match &pointer.uncast().kind {
             ExprKind::Decay(array) => match &array.ty {
@@ -250,12 +261,136 @@ impl Lower<'_> {
             },
             _ => false,
         };
-        let slice = self.slice(pointer.uncast(), true)?;
+        let slice = self.slice(pointer.uncast(), write)?;
         Ok(match (whole, count) {
             (true, _) => slice,
             (false, Ok(count @ 0..)) => rust::index(slice, rust::until(rust::int(count, ""))),
             (false, Ok(_)) => return unsupported("a negative size", pointer.at),
             (false, Err(count)) => rust::index(slice, rust::until(self.index_value(count)?)),
+        })
+    }
+
+    /// The first `count` elements that a pointer points to, as a place to
+    /// read or to store to; `first` for a pointer that may also be a
+    /// string literal.
+    fn prefix(&mut self, pointer: &Expr, count: Result<i128, &Expr>, write: bool) -> R<syn::Expr> {
+        if write {
+            return self.first(pointer, count);
+        }
+        let ExprKind::Decay(literal) = &pointer.uncast().kind else {
+            return self.first_of(pointer, count, false);
+        };
+        let ExprKind::Str(_) = literal.kind else {
+            return self.first_of(pointer, count, false);
+        };
+        let bytes = self.pointer(pointer, Repr::BYTES)?;
+        let count = match count.or_else(|count| count.constant(self.program).ok_or(count)) {
+            Ok(count @ 0..) => rust::int(count, ""),
+            Ok(_) => return unsupported("a negative size", pointer.at),
+            Err(count) => self.index_value(count)?,
+        };
+        Ok(rust::index(bytes, rust::until(count)))
+    }
+
+    /// R29: `memcpy` and `memmove` of elements that assignment copies, as
+    /// an assignment of one element, `copy_within` in one array, or
+    /// `copy_from_slice` between two.
+    fn memcpy(&mut self, target: &Expr, source: &Expr, size: &Expr, at: u32) -> R<syn::Expr> {
+        let program = self.program;
+        let (target, source) = (target.uncast(), source.uncast());
+        let (Some(element), Some(other)) = (target.ty.element(), source.ty.element()) else {
+            return unsupported("a copy of something that is no pointer", at);
+        };
+        // Copying between two types reinterprets memory, which safe Rust
+        // does not do.
+        if element != other || !self.is_copy(element) {
+            return unsupported(
+                "a copy between two types, or of a type that is not copied",
+                at,
+            );
+        }
+        let Some((each, _)) = element.layout(program) else {
+            return unsupported("a copy of a type without a size", at);
+        };
+        let each = i128::from(each);
+        let is_each = |bytes: &Expr| bytes.constant(program) == Some(each);
+        let count = match (size.constant(program), &size.uncast().kind) {
+            (Some(bytes), _) if bytes % each == 0 => Ok(bytes / each),
+            (Some(_), _) => return unsupported("a copy of part of an element", at),
+            (None, _) if each == 1 => Err(size),
+            (None, ExprKind::Binary(BinOp::Mul, count, bytes)) if is_each(bytes) => Err(&**count),
+            (None, ExprKind::Binary(BinOp::Mul, bytes, count)) if is_each(bytes) => Err(&**count),
+            _ => return unsupported("a copy whose size is no count of elements", at),
+        };
+        // The count is written once for each side.
+        if let Err(count) = count
+            && !self.repeatable(count)
+        {
+            return unsupported("a copy whose size calls or assigns: no rule yet", at);
+        }
+        if count.ok() == Some(1) && (self.points_to_one(target) || self.points_to_one(source)) {
+            let value = self.pointee(source, false, false)?;
+            return Ok(rust::assign(self.pointee(target, true, false)?, value));
+        }
+        // Rust borrows one array once, so a copy within it is one call,
+        // which is right where the two parts overlap.
+        if let (Some((array, to)), Some((other, from))) = (split(target), split(source))
+            && same_place(array, other)
+        {
+            let start = match from {
+                Some(from) if !from.is_pure() => {
+                    return unsupported("a copy from an offset with effects", at);
+                }
+                Some(from) => Some(from.constant(program).ok_or(from)),
+                None => None,
+            };
+            let length = match count {
+                Ok(count @ 0..) => Ok(count),
+                Ok(_) => return unsupported("a negative size", at),
+                Err(count) => Err(self.index_value(count)?),
+            };
+            let range = match (start, length) {
+                (None | Some(Ok(0)), Ok(length)) => rust::until(rust::int(length, "")),
+                (None | Some(Ok(0)), Err(length)) => rust::until(length),
+                (Some(Ok(start)), Ok(length)) => {
+                    rust::range(rust::int(start, ""), rust::int(start + length, ""))
+                }
+                (Some(start), length) => {
+                    let start = match start {
+                        Ok(start) => rust::int(start, ""),
+                        Err(start) => self.index_value(start)?,
+                    };
+                    let length = match length {
+                        Ok(length) => rust::int(length, ""),
+                        Err(length) => length,
+                    };
+                    rust::range(start.clone(), rust::binary(start, "+", length))
+                }
+            };
+            let to = match to {
+                Some(to) => self.index_value(to)?,
+                None => rust::int(0, ""),
+            };
+            let array = self.slice(array, true)?;
+            return Ok(rust::method(array, "copy_within", [range, to]));
+        }
+        let value = rust::borrow(false, self.prefix(source, count, false)?);
+        Ok(rust::method(
+            self.prefix(target, count, true)?,
+            "copy_from_slice",
+            [value],
+        ))
+    }
+
+    /// Whether an expression gives the same value and changes nothing
+    /// when it is evaluated twice: it assigns nothing and calls only the
+    /// library's `strlen`.
+    pub(super) fn repeatable(&self, expr: &Expr) -> bool {
+        let strlen = self.program.function("strlen").is_none();
+        !expr.any(&mut |part| match &part.kind {
+            ExprKind::Assign { .. } | ExprKind::IncDec { .. } => true,
+            ExprKind::Call(callee, _) => !strlen || callee.function() != Some("strlen"),
+            _ => false,
         })
     }
 
@@ -631,6 +766,62 @@ fn literal_text(text: &Expr) -> Option<&str> {
     };
     let text = std::str::from_utf8(bytes).ok()?;
     (!text.contains('\0')).then_some(text)
+}
+
+/// The pointer at the root of a pointer into an array, and the offset
+/// from it: `a` and `i` for `a + i` and `&a[i]`, `p` alone for `p`.
+fn split(pointer: &Expr) -> Option<(&Expr, Option<&Expr>)> {
+    let pointer = pointer.uncast();
+    let (base, offset) = match &pointer.kind {
+        ExprKind::Binary(BinOp::Add, left, right) => match left.ty.is_pointer() {
+            true => (left.uncast(), Some(&**right)),
+            false => (right.uncast(), Some(&**left)),
+        },
+        ExprKind::AddrOf(place) => match &place.kind {
+            ExprKind::Index(base, index) => (base.uncast(), Some(&**index)),
+            _ => return None,
+        },
+        _ => (pointer, None),
+    };
+    matches!(
+        base.kind,
+        ExprKind::Decay(_) | ExprKind::Var(_) | ExprKind::Member { .. }
+    )
+    .then_some((base, offset))
+}
+
+/// Whether two expressions name one place, wherever they are evaluated in
+/// one statement: the same variable, field or element by a constant or
+/// by the same variable.
+fn same_place(one: &Expr, other: &Expr) -> bool {
+    match (&one.uncast().kind, &other.uncast().kind) {
+        (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
+        (ExprKind::Decay(one), ExprKind::Decay(other))
+        | (ExprKind::Deref(one), ExprKind::Deref(other)) => same_place(one, other),
+        (
+            ExprKind::Member {
+                base: one,
+                field,
+                arrow,
+                ..
+            },
+            ExprKind::Member {
+                base: other,
+                field: other_field,
+                arrow: other_arrow,
+                ..
+            },
+        ) => field == other_field && arrow == other_arrow && same_place(one, other),
+        (ExprKind::Index(one, index), ExprKind::Index(other, other_index)) => {
+            let same_index = match (&index.uncast().kind, &other_index.uncast().kind) {
+                (ExprKind::Int(index), ExprKind::Int(other)) => index == other,
+                (ExprKind::Var(index), ExprKind::Var(other)) => index == other,
+                _ => false,
+            };
+            same_index && same_place(one, other)
+        }
+        _ => false,
+    }
 }
 
 /// Reads one conversion after its `%`, and returns it with what follows.
