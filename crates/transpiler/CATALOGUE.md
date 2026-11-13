@@ -488,7 +488,8 @@ Entry format, newest last:
   the pointer reaches, `&mut line[3..]` for `line + 3`, so a target that
   is too short, or text without a NUL, stops the program where C's
   behaviour is undefined. The pointer they return is refused where it is
-  used
+  used, and so is a copy from one part of an array to another, which
+  borrows the array twice
 - Needs: nothing
 - Motivation: `g4_betagamma` was refused for `strcpy`, which
   `g3_strcmp`, `g4_dataentry`, `g5_charinbuf` and `g5_findrep` use too

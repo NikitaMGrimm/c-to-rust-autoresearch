@@ -60,6 +60,20 @@ fn the_pointer_that_strcpy_returns_is_refused() {
 }
 
 #[test]
+fn a_text_copy_within_one_array_is_refused() {
+    // The two parts may not overlap in C, but Rust borrows the whole array
+    // for each argument.
+    assert_eq!(
+        translate(
+            "strcpy-within",
+            "#include <stdio.h>\n#include <string.h>\nint main(void) {\n    char b[8] = \"abc\";\n    strcpy(b + 4, b);\n    printf(\"%s\\n\", b + 4);\n    return 0;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: `strcpy` within one array: no rule yet, at line 5"
+    );
+}
+
+#[test]
 fn memcpy_and_memmove_copy_slices_and_within_one_array() {
     let rust = check(
         "memcpy",

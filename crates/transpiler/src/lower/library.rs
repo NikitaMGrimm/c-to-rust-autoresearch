@@ -63,6 +63,13 @@ impl Lower<'_> {
             }
             // R28: the text of `source` with its NUL, stored at the start
             // or at the end of the text in `target`.
+            ("strcpy" | "strcat" | "strncat", [target, source, ..])
+                if let (Some((array, _)), Some((other, _))) = (split(target), split(source))
+                    && same_place(array, other) =>
+            {
+                // Rust borrows the array once to store and once to read.
+                unsupported(format!("`{name}` within one array: no rule yet"), at)
+            }
             ("strcpy" | "strcat", [target, source]) => {
                 let target = self.pointer(target, Repr::BYTES_WRITTEN)?;
                 let source = self.pointer(source, Repr::BYTES)?;

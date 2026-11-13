@@ -403,6 +403,9 @@ become a fact and a refusal:
   A C program that reads the argument meanwhile, as
   `e = find(entries, …); printf("%d %d", entries[0].value, e->value);`
   does, is translated and does not compile.
+- A pointer that a function returns from its parameter is not known to
+  point to the caller's local: `int *p = identity(&x); return p;` is
+  translated and does not compile, where the result should be refused.
 - A local pointer to an array is a borrow of it, and the analysis does
   not know which array a local points into. A call that takes the pointer
   to store through and the array itself, as `char *p = s; memmove(p + 1,
