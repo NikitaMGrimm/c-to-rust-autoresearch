@@ -423,3 +423,21 @@ Entry format, newest last:
 - Motivation: `g3_maxnmin` tests `d != d` before it converts `d` to `int`,
   and did not compile
 - Changes: extends R2
+
+## R26: `fprintf`, `fputs` and `fputc` on `stdout` and `stderr`
+
+- C: `fprintf` with a literal format, `fputs`, `fputc` and `putc`, each on
+  `stdout` or `stderr`, as statements; another stream is refused
+- Rust: `print!` and `println!` on `stdout`, `eprint!` and `eprintln!` on
+  `stderr`, with the conversions of R4 and R19 for `fprintf`, the text as
+  `puts` writes it for `fputs` (`println!` for a literal that ends the
+  line), and the character as `putchar` writes it for `fputc`. Rust's
+  `stdout` is buffered by line where C's is buffered fully when it is no
+  terminal, so the two programs may interleave `stdout` and `stderr`
+  differently, which only the output on `stderr` shows
+- Needs: R13's analysis counts `fprintf` and `fputs` among the functions
+  that read text as a whole
+- Motivation: `g1_007_errno_pow`, `g1_016_switch_arith` and
+  `g4_memcpy_fun_buffers` were refused for `fprintf(stderr, …)`, which
+  `g3_envy` uses as well
+- Changes: extends R4

@@ -24,17 +24,17 @@ impl Lower<'_> {
     pub(super) fn library(&mut self, call: &Expr, name: &str, args: &[Expr]) -> R<syn::Expr> {
         let at = call.at;
         match (name, args) {
-            ("printf", [format, values @ ..]) => self.printf(format, values, at),
-            ("puts", [text]) => match literal_text(text) {
-                Some(text) => {
-                    let line = rust::string(&text.replace('{', "{{").replace('}', "}}"));
-                    Ok(parse_quote!(println!(#line)))
-                }
-                None => {
-                    let text = self.text(text, false)?;
-                    Ok(parse_quote!(println!("{}", #text)))
-                }
-            },
+            ("printf", [format, values @ ..]) => self.printf(format, values, Stream::Out, at),
+            // R26: the same on a stream that Rust has a macro for.
+            ("fprintf", [stream, format, values @ ..]) => {
+                let stream = Stream::of(stream, name, at)?;
+                self.printf(format, values, stream, at)
+            }
+            ("puts", [text]) => self.puts(text, Stream::Out, true),
+            ("fputs", [text, stream]) => {
+                let stream = Stream::of(stream, name, at)?;
+                self.puts(text, stream, false)
+            }
             ("strlen", [text]) => {
                 let text = match self.reads_bytes(text) {
                     true => self.until_nul(text)?,
@@ -55,6 +55,11 @@ impl Lower<'_> {
             ("putchar", [value]) => {
                 let value = self.character(value)?;
                 Ok(parse_quote!(print!("{}", #value)))
+            }
+            ("fputc" | "putc", [value, stream]) => {
+                let print = Stream::of(stream, name, at)?.print();
+                let value = self.character(value)?;
+                Ok(parse_quote!(#print!("{}", #value)))
             }
             ("free", [pointer]) => self.free(pointer),
             ("exit", [code]) => Ok(rust::call("std::process::exit", [self.typed(code)?])),
@@ -290,9 +295,49 @@ impl Lower<'_> {
         Ok(rust::cast(byte, parse_quote!(char)))
     }
 
-    /// R4: `printf` with a literal format as `print!` or `println!`, the
-    /// format converted here.
-    fn printf(&mut self, format: &Expr, values: &[Expr], at: u32) -> R<syn::Expr> {
+    /// R4: `puts` as `println!`, and R26: `fputs` as `print!` or `eprint!`.
+    fn puts(&mut self, text: &Expr, stream: Stream, line_end: bool) -> R<syn::Expr> {
+        let print = match line_end {
+            true => stream.println(),
+            false => stream.print(),
+        };
+        Ok(match literal_text(text) {
+            Some(text) => {
+                let text = text.replace('{', "{{").replace('}', "}}");
+                let (print, text) = match text.strip_suffix('\n') {
+                    Some(line) if !line_end => (stream.println(), line),
+                    _ => (print, text.as_str()),
+                };
+                let text = rust::string(text);
+                parse_quote!(#print!(#text))
+            }
+            None => {
+                let text = self.text(text, false)?;
+                parse_quote!(#print!("{}", #text))
+            }
+        })
+    }
+
+    /// R4: `printf` with a literal format as `print!` or `println!`, and
+    /// R26 as `eprint!` or `eprintln!` on `stderr`.
+    fn printf(&mut self, format: &Expr, values: &[Expr], stream: Stream, at: u32) -> R<syn::Expr> {
+        let (text, arguments) = self.format(format, values, at)?;
+        let (print, println) = (stream.print(), stream.println());
+        Ok(match text.strip_suffix('\n') {
+            Some(line) => {
+                let line = rust::string(line);
+                parse_quote!(#println!(#line #(, #arguments)*))
+            }
+            None => {
+                let text = rust::string(&text);
+                parse_quote!(#print!(#text #(, #arguments)*))
+            }
+        })
+    }
+
+    /// A literal `printf` format converted to Rust's, with the values it
+    /// prints.
+    fn format(&mut self, format: &Expr, values: &[Expr], at: u32) -> R<(String, Vec<syn::Expr>)> {
         let ExprKind::Decay(literal) = &format.uncast().kind else {
             return unsupported("`printf` with a format that is not a literal", at);
         };
@@ -331,16 +376,7 @@ impl Lower<'_> {
         if values.next().is_some() {
             return unsupported("a `printf` value without a conversion", at);
         }
-        Ok(match text.strip_suffix('\n') {
-            Some(line) => {
-                let line = rust::string(line);
-                parse_quote!(println!(#line #(, #arguments)*))
-            }
-            None => {
-                let text = rust::string(&text);
-                parse_quote!(print!(#text #(, #arguments)*))
-            }
-        })
+        Ok((text, arguments))
     }
 
     /// Rust's format for one conversion, and the value it prints.
@@ -462,6 +498,41 @@ impl Lower<'_> {
             },
             argument,
         ))
+    }
+}
+
+/// A stream that Rust prints to with a macro of its own.
+#[derive(Clone, Copy)]
+enum Stream {
+    Out,
+    Err,
+}
+
+impl Stream {
+    /// `stdout` or `stderr` as the stream argument of `name`.
+    fn of(stream: &Expr, name: &str, at: u32) -> R<Stream> {
+        match &stream.uncast().kind {
+            ExprKind::Extern(stream) if stream == "stdout" => Ok(Stream::Out),
+            ExprKind::Extern(stream) if stream == "stderr" => Ok(Stream::Err),
+            _ => unsupported(
+                format!("`{name}` on a file other than `stdout` or `stderr`: no rule yet"),
+                at,
+            ),
+        }
+    }
+
+    fn print(self) -> syn::Ident {
+        rust::ident(match self {
+            Stream::Out => "print",
+            Stream::Err => "eprint",
+        })
+    }
+
+    fn println(self) -> syn::Ident {
+        rust::ident(match self {
+            Stream::Out => "println",
+            Stream::Err => "eprintln",
+        })
     }
 }
 

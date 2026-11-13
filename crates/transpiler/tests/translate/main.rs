@@ -6,6 +6,7 @@ mod cursors;
 mod globals;
 mod heap;
 mod input;
+mod output;
 mod pointers;
 mod records;
 mod refusals;
