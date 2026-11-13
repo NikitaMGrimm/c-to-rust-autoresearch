@@ -392,6 +392,17 @@ impl Lower<'_> {
                 _ => unsupported("an ordering of a pointer and NULL", at),
             };
         }
+        // `x != x` holds only for a NaN, and Rust has a name for the test.
+        if let (BinOp::Eq | BinOp::Ne, Type::Float { .. }, ExprKind::Var(one), ExprKind::Var(other)) =
+            (op, &left.ty, &left.kind, &right.kind)
+            && one == other
+        {
+            let nan = rust::method(self.expr(left)?, "is_nan", []);
+            return Ok(match op {
+                BinOp::Ne => nan,
+                _ => rust::unary("!", nan),
+            });
+        }
         // `*text == '\0'`: the text is empty.
         if matches!(op, BinOp::Eq | BinOp::Ne) {
             for (text, other) in [(left, right), (right, left)] {

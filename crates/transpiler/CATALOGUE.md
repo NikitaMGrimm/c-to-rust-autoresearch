@@ -398,3 +398,13 @@ Entry format, newest last:
 - Motivation: `g3_maxnmin` was refused for `++` on a pointer, `g3_jumpnode`
   and `g4_dataentry` for a comparison of two addresses
 - Changes: extends R7; `p = p + 1` was the rest of the slice, `&p[1..]`
+
+## R25: a number compared with itself
+
+- C: `x != x` and `x == x` for a `float` or `double` variable
+- Rust: `x.is_nan()` and `!x.is_nan()`, which is what the comparison
+  asks; the compiler's lints refuse `x != x`
+- Needs: nothing
+- Motivation: `g3_maxnmin` tests `d != d` before it converts `d` to `int`,
+  and did not compile
+- Changes: extends R2

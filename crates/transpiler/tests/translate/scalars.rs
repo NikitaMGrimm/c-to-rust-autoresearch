@@ -421,3 +421,27 @@ int main(void) {
         ],
     );
 }
+
+#[test]
+fn a_number_compared_with_itself_is_tested_for_nan() {
+    let rust = check(
+        "nan",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    double d = strtod(argv[1], NULL);
+    float f = (float)d;
+    printf("%d %d %d\n", d != d, f == f, d == d ? 1 : 0);
+    return 0;
+}
+"#,
+        &[&["1.5"], &["nan"], &["inf"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["i32::from(d.is_nan()),", "i32::from(!f.is_nan()),"],
+    );
+}
