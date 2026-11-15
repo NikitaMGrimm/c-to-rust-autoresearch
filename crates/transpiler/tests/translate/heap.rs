@@ -157,3 +157,52 @@ int main(void) {
     );
     assert_lines(&rust, &["value: Option<Box<i32>>,"]);
 }
+
+/// An owner that gave its memory away is free again once something is
+/// stored to it, and a branch that did not move it may read it.
+#[test]
+fn an_owner_is_used_again_after_a_store_to_it() {
+    let rust = check(
+        "moved_then_stored",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct cell { int mark; struct cell *after; };
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct cell *list = NULL;
+    for (int i = 0; i < n; i++) {
+        struct cell *spare = malloc(sizeof *spare);
+        spare->mark = i;
+        spare->after = list;
+        list = spare;
+    }
+    struct cell *last = malloc(sizeof *last);
+    last->mark = 50;
+    last->after = NULL;
+    if (n > 2) {
+        last->after = list;
+        list = NULL;
+    } else {
+        printf("%d\n", last->mark);
+    }
+    while (list != NULL) {
+        struct cell *next = list->after;
+        printf("%d\n", list->mark);
+        free(list);
+        list = next;
+    }
+    while (last != NULL) {
+        struct cell *next = last->after;
+        printf("%d\n", last->mark);
+        free(last);
+        last = next;
+    }
+    return 0;
+}
+"#,
+        &[&["1"], &["4"]],
+        "",
+    );
+    assert_lines(&rust, &["list = Some(spare);", "list = None;"]);
+}

@@ -109,8 +109,9 @@ pub struct Facts {
     /// of their type needs them.
     idle: HashSet<FuncId>,
     /// Where each function first uses a local pointer to one of its
-    /// variables after the variable itself was used meanwhile.
-    in_use: HashMap<FuncId, u32>,
+    /// variables after the variable itself was used meanwhile, and first
+    /// reads a local owner after its memory went to another owner.
+    in_use: HashMap<FuncId, (Option<u32>, Option<u32>)>,
     /// False for the facts before the first round, which know nothing.
     settled: bool,
 }
@@ -217,7 +218,14 @@ impl Facts {
     /// its address, or read while the pointer is stored through: Rust
     /// rejects the borrow that the pointer is.
     pub fn in_use(&self, function: FuncId) -> Option<u32> {
-        self.in_use.get(&function).copied()
+        self.in_use.get(&function).and_then(|found| found.0)
+    }
+
+    /// Where the function first reads a local owner after it gave its
+    /// memory to another owner, a field, a global or a parameter, and
+    /// before anything stored to it: Rust moved the `Box` away.
+    pub fn moved(&self, function: FuncId) -> Option<u32> {
+        self.in_use.get(&function).and_then(|found| found.1)
     }
 
     /// The value of a condition that the facts decide: a constant, or a
@@ -634,14 +642,15 @@ impl<'a> Walk<'a> {
             .functions
             .iter()
             .enumerate()
-            .filter_map(|(id, function)| {
+            .map(|(id, function)| {
                 let mut walk = InUse {
                     pointers: &self.pointers,
                     program,
                     found: None,
+                    moved: None,
                 };
-                walk.stmts(&function.body, &mut Some(HashMap::new()));
-                walk.found.map(|at| (id, at))
+                walk.stmts(&function.body, &mut Some(Order::default()));
+                (id, (walk.found, walk.moved))
             })
             .collect();
         Facts {
@@ -1271,11 +1280,21 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// The local pointers that hold the address of a variable of the function,
-/// with those variables, and whether the variable was stored to, or read
-/// while the pointer is stored through, since the pointer got its address.
-/// `None` where no path reaches the statement.
-type Borrows = Option<HashMap<VarId, (HashSet<VarId>, bool)>>;
+/// What the statements before have done, or `None` where no path reaches
+/// the statement.
+type Borrows = Option<Order>;
+
+#[derive(Clone, Default)]
+struct Order {
+    /// The local pointers that hold the address of a variable of the
+    /// function, with those variables, and whether the variable was stored
+    /// to, or read while the pointer is stored through, since the pointer
+    /// got its address.
+    borrows: HashMap<VarId, (HashSet<VarId>, bool)>,
+    /// The local owners whose memory went to another owner, and that
+    /// nothing has stored to since.
+    moved: HashSet<VarId>,
+}
 
 /// A local pointer to a variable of the function is a borrow of it in
 /// Rust, which the variable itself cannot be stored to while the borrow is
@@ -1284,10 +1303,14 @@ type Borrows = Option<HashMap<VarId, (HashSet<VarId>, bool)>>;
 /// address. "After" is the order of the statements, the branches of an
 /// `if` each from the state before it, and a loop's condition, body and
 /// step twice, so that everything in a loop also follows itself.
+///
+/// In the same order it finds the first read of a local owner after its
+/// memory went to another owner: Rust moves the `Box` there.
 struct InUse<'a> {
     pointers: &'a HashMap<Slot, Pointer>,
     program: &'a Program,
     found: Option<u32>,
+    moved: Option<u32>,
 }
 
 impl InUse<'_> {
@@ -1303,6 +1326,7 @@ impl InUse<'_> {
             Stmt::Decl(var) => {
                 if let Some(init) = &self.program.vars[*var].init {
                     self.expr(init, state);
+                    self.move_into(init, Slot::Var(*var), state);
                     self.assigned(*var, init, state);
                 }
             }
@@ -1367,7 +1391,7 @@ impl InUse<'_> {
             // A jump may reach a label from anywhere: what it brings is
             // not followed.
             Stmt::Label(_) => {
-                state.get_or_insert_with(HashMap::new);
+                state.get_or_insert_with(Order::default);
             }
             Stmt::Case(_) | Stmt::Default | Stmt::Break | Stmt::Continue => {}
         }
@@ -1381,11 +1405,12 @@ impl InUse<'_> {
         self.stmts(other, &mut second);
         match (state.as_mut(), second) {
             (Some(first), Some(second)) => {
-                for (pointer, (targets, touched)) in second {
-                    let entry = first.entry(pointer).or_default();
+                for (pointer, (targets, touched)) in second.borrows {
+                    let entry = first.borrows.entry(pointer).or_default();
                     entry.0.extend(targets);
                     entry.1 |= touched;
                 }
+                first.moved.extend(second.moved);
             }
             (None, second) => *state = second,
             (Some(_), None) => {}
@@ -1396,6 +1421,11 @@ impl InUse<'_> {
         match &expr.kind {
             ExprKind::Assign { op, target, value } => {
                 self.expr(value, state);
+                if op.is_none()
+                    && let Some(slot) = place_slot(target)
+                {
+                    self.move_into(value, slot, state);
+                }
                 match &target.kind {
                     ExprKind::Var(var) if op.is_none() => self.assigned(*var, value, state),
                     _ => match target.root_var() {
@@ -1421,6 +1451,34 @@ impl InUse<'_> {
                 for child in expr.children() {
                     self.expr(child, state);
                 }
+                if let ExprKind::Call(callee, args) = &expr.kind
+                    && let Some(function) = callee
+                        .function()
+                        .and_then(|name| self.program.function(name))
+                {
+                    for (&param, arg) in self.program.functions[function].params.iter().zip(args) {
+                        self.move_into(arg, Slot::Var(param), state);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A local owner that is the whole value of a slot that owns gives its
+    /// memory away.
+    fn move_into(&mut self, value: &Expr, slot: Slot, state: &mut Borrows) {
+        let owns = |slot| {
+            self.pointers
+                .get(&slot)
+                .is_some_and(|pointer| pointer.owned)
+        };
+        if let (ExprKind::Var(var), Some(order)) = (&value.uncast().kind, state.as_mut()) {
+            let local = matches!(
+                self.program.vars[*var].kind,
+                VarKind::Local | VarKind::Param
+            );
+            if local && Slot::Var(*var) != slot && owns(Slot::Var(*var)) && owns(slot) {
+                order.moved.insert(*var);
             }
         }
     }
@@ -1440,7 +1498,11 @@ impl InUse<'_> {
     }
 
     fn read(&mut self, var: VarId, at: u32, state: &mut Borrows) {
-        let Some(borrows) = state else { return };
+        let Some(order) = state else { return };
+        if order.moved.contains(&var) {
+            self.moved.get_or_insert(at);
+        }
+        let borrows = &mut order.borrows;
         if let Some((_, true)) = borrows.get(&var) {
             self.found.get_or_insert(at);
         }
@@ -1457,8 +1519,8 @@ impl InUse<'_> {
     }
 
     fn stored(&mut self, var: VarId, state: &mut Borrows) {
-        let Some(borrows) = state else { return };
-        for (targets, touched) in borrows.values_mut() {
+        let Some(order) = state else { return };
+        for (targets, touched) in order.borrows.values_mut() {
             if targets.contains(&var) {
                 *touched = true;
             }
@@ -1474,7 +1536,9 @@ impl InUse<'_> {
             self.stored(var, state);
             return;
         }
-        let Some(borrows) = state else { return };
+        let Some(order) = state else { return };
+        order.moved.remove(&var);
+        let borrows = &mut order.borrows;
         let mut targets = HashSet::new();
         addresses(program, value, &mut targets);
         if targets.is_empty() {

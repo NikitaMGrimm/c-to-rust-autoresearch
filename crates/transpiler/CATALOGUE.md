@@ -166,8 +166,12 @@ Entry format, newest last:
   to a borrow; `drop(p)` for `free(p)`. A field or a global gives up what it
   owns with `take()` or `std::mem::take`, since its holder stays in use. The
   NULL test after an allocation is left out, since allocation in Rust does
-  not return NULL
-- Needs: `Facts::pointer` (`owned`, `many`); `Facts::truth`
+  not return NULL. Refused: a local owner that is read after it gave its
+  memory to another owner (a field, a global, another local or a
+  parameter) and before anything stored to it, since Rust moved it there
+- Needs: `Facts::pointer` (`owned`, `many`); `Facts::truth`;
+  `Facts::moved` for the first such read, in the order of the statements,
+  where a loop's body follows itself
 - Motivation: skeleton
 - Changes: none
 

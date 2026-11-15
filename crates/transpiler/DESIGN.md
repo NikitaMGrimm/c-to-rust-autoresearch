@@ -152,7 +152,10 @@ refuses with the reason instead:
   the order of the statements, with each branch of an `if` from the state
   before it and the body of a loop following itself; a pointer that gets
   the address from another pointer, or through a narrowing, is not
-  followed.
+  followed;
+- a local owner that is read after its memory went to another owner, a
+  field, a global, a local or a parameter, and before anything stored to
+  it (`Facts::moved`), in the same order. A `free` is not followed.
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
@@ -492,7 +495,8 @@ place:
 - **Walking a list.** `while (p) { …; p = p->next; }` needs a narrowing for
   loops like the one for `if`; today it uses `is_some()` and `unwrap()`.
 - **Shared memory.** Two slots that own the same memory do not compile: the
-  second use is a use after a move. `Rc` belongs only on a slot that a fact
+  second use is a use after a move, which is refused where the first slot
+  is a local. `Rc` belongs only on a slot that a fact
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
 - **Others.** `goto` into a loop or a block from outside it, to a label

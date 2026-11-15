@@ -180,3 +180,26 @@ fn a_pointer_to_a_global_handed_to_a_function_that_uses_the_globals_is_refused()
         "unsupported: two arguments that point into the same memory, one of them to store through, at line 5"
     );
 }
+
+/// A local owner that hands its memory to another owner is moved in Rust,
+/// so reading it again before a store to it is refused.
+#[test]
+fn an_owner_used_after_it_was_moved_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    let reason =
+        "unsupported: a pointer that is used after its memory went to another owner, at line 8";
+    assert_eq!(
+        refused(
+            "moved_into_field",
+            "#include <stdlib.h>\nstruct cell { int mark; struct cell *after; };\nint main(void) {\n    struct cell *front = malloc(sizeof *front);\n    struct cell *back = malloc(sizeof *back);\n    back->after = NULL;\n    front->after = back;\n    back->mark = 9;\n    front->mark = 1;\n    int got = front->after->mark + front->mark;\n    free(front->after);\n    free(front);\n    return got - 10;\n}\n"
+        ),
+        reason
+    );
+    assert_eq!(
+        refused(
+            "moved_in_loop",
+            "#include <stdlib.h>\nstruct cell { int mark; struct cell *after; };\nint main(void) {\n    struct cell *spare = malloc(sizeof *spare), *list = NULL;\n    spare->after = NULL;\n    for (int i = 0; i < 2; i++) {\n        list = spare;\n        spare->mark = i;\n    }\n    int got = list->mark;\n    free(list);\n    return got - 1;\n}\n"
+        ),
+        reason
+    );
+}

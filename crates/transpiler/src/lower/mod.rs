@@ -1403,6 +1403,12 @@ impl Lower<'_> {
                 at,
             ))?;
         }
+        if let Some(at) = self.function.and_then(|id| self.facts.moved(id)) {
+            self.listed(unsupported(
+                "a pointer that is used after its memory went to another owner",
+                at,
+            ))?;
+        }
         let mut body = self.seeded(rest)?;
         if let Some(value) = last {
             let value = match self.in_main() {
