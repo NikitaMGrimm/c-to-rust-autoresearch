@@ -85,7 +85,10 @@ own as tests.
    rule that passes no development program by itself is rejected, so commit
    the rules of a family one by one and judge them as one. Do not put two
    families into one judging, nor a fix that belongs to neither: the gate
-   then cannot tell which of them changed the score.
+   then cannot tell which of them changed the score. The one exception: when
+   the programs that a family unblocks also need a second family, so that
+   neither raises the score alone, build both and judge them as one, and say
+   so in the report.
 
 ## A construct family
 
