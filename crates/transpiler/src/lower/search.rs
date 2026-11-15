@@ -34,6 +34,19 @@ impl Lower<'_> {
                 if !self.reads_bytes(bytes.uncast()) {
                     return unsupported("`memchr` of text: no rule yet", at);
                 }
+                // C compares bytes, and Rust would compare elements.
+                if !matches!(
+                    bytes.uncast().ty.element(),
+                    Some(
+                        Type::Char
+                            | Type::Int {
+                                bits: 8,
+                                signed: false
+                            }
+                    )
+                ) {
+                    return unsupported("`memchr` of other than bytes: no rule yet", at);
+                }
                 // The byte is compared once for each byte that is read.
                 if !byte.is_pure() {
                     return unsupported("`memchr` of a byte with a side effect: no rule yet", at);

@@ -30,7 +30,14 @@ pub fn found(program: &mut Program) {
             }
             let check = Check { program, var };
             let init_ok = declared.init.as_ref().is_none_or(|init| check.value(init));
-            if init_ok && check.stmts(&body) {
+            // A pointer that only ever holds NULL is no search's.
+            let searched = declared.init.iter().any(|init| is_search(program, init))
+                || crate::c::any_expr(&body, &program.vars, &mut |expr| {
+                    matches!(&expr.kind, ExprKind::Assign { op: None, target, value }
+                        if matches!(target.kind, ExprKind::Var(named) if named == var)
+                            && is_search(program, value))
+                });
+            if init_ok && searched && check.stmts(&body) {
                 retype(&mut body, &mut program.vars, var);
             }
         }

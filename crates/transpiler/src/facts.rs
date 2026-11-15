@@ -1064,7 +1064,12 @@ impl<'a> Walk<'a> {
                         }
                     }
                     Source::Environment => {
-                        to.environment = true;
+                        // A parameter borrows the text, which lives to the
+                        // end of the call's statement.
+                        to.environment |= !matches!(
+                            flow.to,
+                            Slot::Var(var) if self.program.vars[var].kind == VarKind::Param
+                        );
                         to.nullable |= !flow.set;
                     }
                     Source::Unknown(what) => to.conflict = Some(what),

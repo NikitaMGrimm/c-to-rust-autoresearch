@@ -676,8 +676,9 @@ Entry format, newest last:
   `String::from("…")`, and a call that is only tested is
   `std::env::var(name).is_ok()` or `.is_err()`
 - Needs: `Source::Environment` and `Pointer::environment` in the analysis,
-  which a result takes on as it does `owned`; a borrow of a local's
-  `String` counts as a pointer into the local
+  which a result takes on as it does `owned` and a parameter does not, so
+  that `f(getenv(name))` lends `….ok().as_deref()` for the call; a borrow
+  of a local's `String` counts as a pointer into the local
 - Refused: a store through the text, a move of the pointer, `free` and a
   byte read at an index, `v[i]`, which make it bytes; the text kept in a
   field or a global; a borrow of it returned; a program argument stored in
@@ -706,8 +707,9 @@ Entry format, newest last:
   `Type::Found`; `strchr`, `strrchr`, `strstr` and `strpbrk` read their
   arguments as text, so a `&str` stays one
 - Refused: the result used as a pointer, by the analysis's refusal of a
-  pointer from a library function; `memchr` of text, and of a byte with a
-  side effect, which the closure would repeat
+  pointer from a library function; `memchr` of text, of an array of other
+  than `char` or `unsigned char`, and of a byte with a side effect, which
+  the closure would repeat
 - Motivation: `g3_envy` tests whether text from the environment holds a
   character
 - Changes: none

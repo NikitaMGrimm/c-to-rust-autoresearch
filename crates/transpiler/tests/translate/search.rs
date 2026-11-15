@@ -95,19 +95,26 @@ fn a_search_whose_place_is_used_is_refused() {
         translate(name, &c).unwrap_err()
     };
     assert_eq!(
-        refused("stored", "    *strchr(buf, ',') = ';';"),
+        refused("search_stored", "    *strchr(buf, ',') = ';';"),
         "unsupported: a pointer from the library's `strchr`, at line 5"
     );
     assert_eq!(
         refused(
-            "memchr_effect",
+            "search_effect",
             "    int k = 43;\n    printf(\"%d\\n\", memchr(buf, k++, 3) != NULL);"
         ),
         "unsupported: `memchr` of a byte with a side effect: no rule yet, at line 6"
     );
     assert_eq!(
         refused(
-            "memchr_text",
+            "search_ints",
+            "    int ints[2] = {1, 2};\n    printf(\"%d\\n\", memchr(ints, 1, sizeof ints) != NULL);"
+        ),
+        "unsupported: `memchr` of other than bytes: no rule yet, at line 6"
+    );
+    assert_eq!(
+        refused(
+            "search_text",
             "    printf(\"%d\\n\", memchr(argv[0], 'a', 1) != NULL);"
         ),
         "unsupported: `memchr` of text: no rule yet, at line 5"
@@ -126,21 +133,36 @@ fn a_place_that_a_search_found_and_that_is_used_is_refused() {
     };
     let used = "unsupported: the pointer `p`: a place that a search found, used as a pointer: no rule yet, at line 5";
     assert_eq!(
-        refused("cut", "    char *p = strchr(buf, ',');\n    if (p) *p = 0;"),
+        refused(
+            "search_cut",
+            "    char *p = strchr(buf, ',');\n    if (p) *p = 0;"
+        ),
         used
     );
     assert_eq!(
         refused(
-            "again",
+            "search_again",
             "    char *p = strchr(buf, ',');\n    while (p) p = strchr(p + 1, ',');"
         ),
         used
     );
     assert_eq!(
         refused(
-            "offset",
+            "search_offset",
             "    char *p = strrchr(buf, ',');\n    if (p) printf(\"%ld\\n\", p - buf);"
         ),
         used
     );
+}
+
+/// A local pointer that no search reaches is no search's result.
+#[test]
+fn a_pointer_that_only_holds_null_stays_a_pointer() {
+    let rust = check(
+        "search_null",
+        "#include <stdio.h>\nint main(void) {\n    char *q = NULL;\n    if (!q) puts(\"null\");\n    return 0;\n}\n",
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["let q: Option<&str> = None;"]);
 }

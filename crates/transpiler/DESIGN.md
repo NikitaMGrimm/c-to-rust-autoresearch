@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, join, ends -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, join, ends, found -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, join, ends -> facts -> cursors ->
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -176,7 +176,7 @@ to C, before the pointers are analysed:
    value such a variable gets must be an offset from a base or from another
    such variable, which joins the two into one group.
 2. A group has exactly one base. Its variables get the type `Type::Index`,
-   the one type of the tree that C does not have, and every use of them is
+   a type of the tree that C does not have, and every use of them is
    rewritten as the table says. A use that needs the pointer itself becomes
    `&a[p]`, which the analysis takes for a pointer into an array, and so
    `&a[p..]`.
@@ -495,8 +495,8 @@ become a fact and a refusal:
   point to the caller's local: `int *p = identity(&x); return p;` is
   translated and does not compile, where the result should be refused.
 - `getenv` reads the environment with `std::env::var`, which gives no
-  value for a variable that is not UTF-8, and stops the program for a
-  name with `=` or a NUL, where C finds the bytes or NULL.
+  value for a variable that is not UTF-8, where C finds the bytes, and
+  may differ from C for a name with `=` or a NUL.
 - A local pointer to an array is a borrow of it, and the analysis does
   not know which array a local points into. A call that takes the pointer
   to store through and the array itself, as `char *p = s; memmove(p + 1,

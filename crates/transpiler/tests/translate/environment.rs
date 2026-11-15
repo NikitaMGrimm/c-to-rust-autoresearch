@@ -16,6 +16,7 @@ int number(const char *name, int otherwise) {
     if (!v) return otherwise;
     return atoi(v);
 }
+void show(const char *v) { printf("%d\n", v != NULL); }
 int main(int argc, char *argv[]) {
     if (argc != 2) return 2;
     printf("%d\n", number(argv[1], 42));
@@ -26,6 +27,9 @@ int main(int argc, char *argv[]) {
     const char *v = getenv("T3_TEST_UNSET");
     if (v == NULL) v = "7";
     printf("%d %d %d\n", atoi(v), getenv("PATH") != NULL, getenv("T3_TEST_UNSET") == NULL);
+    show(getenv("T3_TEST_UNSET"));
+    show(path);
+    show(path);
     char name[5] = "PATH";
     printf("%d\n", getenv(name) != NULL && *getenv(name) == '/');
     return 0;
@@ -41,6 +45,8 @@ int main(int argc, char *argv[]) {
             "let Some(v) = v.as_deref() else {",
             "let path: Option<String> = std::env::var(\"PATH\").ok();",
             "v = Some(String::from(\"7\"));",
+            "show(std::env::var(\"T3_TEST_UNSET\").ok().as_deref());",
+            "show(path.as_deref());",
             "i32::from(std::env::var(\"PATH\").is_ok()),",
             "i32::from(std::env::var(\"T3_TEST_UNSET\").is_err()),",
         ],
