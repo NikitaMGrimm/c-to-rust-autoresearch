@@ -271,14 +271,36 @@ fn plain(name: &str) -> String {
 /// `printHexLine` as `print_hex_line`: the name as the compiler's lint for
 /// snake case writes it, with the underscores it starts and ends with.
 /// The Rust name of a C label, for the block that a `goto` leaves. It is
-/// no keyword and none of the labels that a `switch` gets.
+/// no keyword and none of the labels that a `switch` or a loop gets.
 pub fn label(name: &str) -> String {
     let name = snake(name);
-    match RESERVED.contains(&name.as_str()) || name.starts_with("switch") {
+    let looped = name
+        .strip_prefix("outer")
+        .is_some_and(|rest| rest.is_empty() || rest.strip_prefix('_').is_some_and(is_number));
+    match RESERVED.contains(&name.as_str()) || name.starts_with("switch") || looped {
         true => format!("{name}_label"),
         false => name,
     }
 }
+
+fn is_number(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// The label of a C loop at this depth, which a `break` or `continue`
+/// names from inside a block entered at a label: one inside another needs
+/// a label of its own.
+pub fn loop_label(depth: usize) -> String {
+    match depth {
+        0 | 1 => "outer".to_owned(),
+        depth => format!("outer_{depth}"),
+    }
+}
+
+/// The name of the variable that says at which part a block entered at a
+/// label begins, and of the loop that enters it: `entry` is reserved, so
+/// no C name and no C label becomes it.
+pub const ENTRY: &str = "entry";
 
 fn snake(name: &str) -> String {
     let inner = name.trim_matches('_');

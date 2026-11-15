@@ -98,6 +98,7 @@ Keep to these:
 | `for (int i = a; i < b; i++)` | `for i in a..b`, when the body changes neither `i` nor the bound |
 | `switch` | `match`; cases that fall through share one arm, `entry @ (2 \| 1) => { if entry == 2 { … } … }` |
 | `goto out;` with `out:` later in the same block or one around it | `'out: { …; break 'out; … }` |
+| `goto` back to a label of a block around it, or past another label | `let mut entry = 0; 'entry: loop { if entry == 0 { … } if entry <= 1 { … } …; break; }`, a `goto` is `entry = 1; continue 'entry;`, and a `break` or `continue` of a loop around names it, `'outer` |
 | `printf` with a literal format | `print!` or `println!`, the format converted at translation time |
 | `const char *` that only holds string literals | `&str` |
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
@@ -445,8 +446,11 @@ place:
   second use is a use after a move. `Rc` belongs only on a slot that a fact
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
-- **Others.** `goto` to a label before it or into a loop (a jump forward
-  is a `break` of a labelled block, R48), a `case` that falls through with
+- **Others.** `goto` into a loop or a block from outside it, to a label
+  under a `case`, from a `switch` into a block entered at a label, and a
+  local of one part of such a block that a later part uses (a jump forward
+  is a `break` of a labelled block, R48, and one back a loop entered at a
+  part, R49), a computed `goto`, a `case` that falls through with
   a variable that a later case uses, a `case` inside a loop (Duff's
   device), unions other than the bits of a number (an `enum` when a
   tag says which member is live, `to_ne_bytes` for bytes beside a number),

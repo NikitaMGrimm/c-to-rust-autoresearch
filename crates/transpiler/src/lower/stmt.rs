@@ -1,15 +1,19 @@
 //! Rules for statements.
 
 use super::input::Read;
-use super::{Helper, Lower, Nest, R, unsupported};
+use super::{Entered, Helper, Lower, Nest, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, VarId, VarKind, any_expr};
 use crate::facts::Slot;
+use crate::names::{ENTRY, loop_label};
 use crate::normalise::leaves;
 use crate::rust;
 use syn::parse_quote;
 
 impl Lower<'_> {
     pub(super) fn stmts(&mut self, stmts: &[Stmt]) -> R<Vec<syn::Stmt>> {
+        if let Some(entered) = self.entered(stmts)? {
+            return Ok(entered);
+        }
         if let Some(labelled) = self.labelled(stmts)? {
             return Ok(labelled);
         }
@@ -90,6 +94,222 @@ impl Lower<'_> {
         Ok(Some(out))
     }
 
+    /// R49: the statements whose labels R48 cannot write, as a jump back
+    /// to one of them or a jump into a part behind another label needs:
+    /// split at the labels into parts, they are a loop that runs each part
+    /// whose label is at or after the one it is entered at, and a `goto`
+    /// sets that label and starts the loop again. The statements before the
+    /// first that holds a jump run once, before the loop.
+    fn entered(&mut self, stmts: &[Stmt]) -> R<Option<Vec<syn::Stmt>>> {
+        let Some(function) = self.function else {
+            return Ok(None);
+        };
+        let body = self.program.functions[function].body.as_slice();
+        let at: Vec<usize> = (0..stmts.len())
+            .filter(|&index| matches!(stmts[index], Stmt::Label(_)))
+            .collect();
+        let labels: Vec<&String> = at
+            .iter()
+            .filter_map(|&index| match &stmts[index] {
+                Stmt::Label(label) => Some(label),
+                _ => None,
+            })
+            .collect();
+        // A label that no `goto` reaches stays refused.
+        if labels.is_empty()
+            || forward(stmts, body)
+            || labels.iter().any(|label| jumps(body, label) == 0)
+        {
+            return Ok(None);
+        }
+        for label in &labels {
+            let under_case = holder(body, label).is_some_and(|holder| {
+                holder
+                    .iter()
+                    .any(|stmt| matches!(stmt, Stmt::Case(_) | Stmt::Default))
+            });
+            if under_case || jumps(stmts, label) != jumps(body, label) {
+                return unsupported(self.unjumped(label), 0);
+            }
+        }
+        if self.entered.is_some() {
+            return unsupported("a block entered at a label inside another: no rule yet", 0);
+        }
+        // Each part as the range of its statements.
+        let mut parts: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0;
+        for &index in &at {
+            parts.push((start, index));
+            start = index + 1;
+        }
+        parts.push((start, stmts.len()));
+        let holds = |stmt: &Stmt| {
+            labels
+                .iter()
+                .any(|label| jumps(std::slice::from_ref(stmt), label) > 0)
+        };
+        let once = stmts[..parts[0].1]
+            .iter()
+            .position(holds)
+            .unwrap_or(parts[0].1);
+        parts[0].0 = once;
+        // `body` gives a function's last `return` its value after the
+        // statements before it.
+        let last = match body.split_last() {
+            Some((Stmt::Return(Some(value)), rest)) if std::ptr::eq(rest, stmts) => Some(value),
+            _ => None,
+        };
+        // A local of a part ends with it.
+        let vars = &self.program.vars;
+        for (part, &(start, end)) in parts.iter().enumerate() {
+            for index in start..end {
+                let declared: Vec<VarId> = declared(&stmts[index..=index]).collect();
+                for var in declared {
+                    let names =
+                        |expr: &Expr| matches!(expr.kind, ExprKind::Var(named) if named == var);
+                    let later = parts[part + 1..].iter().any(|&(start, end)| {
+                        any_expr(&stmts[start..end], vars, &mut names.clone())
+                    }) || last.is_some_and(|value| value.any(&mut names.clone()));
+                    if !later {
+                        continue;
+                    }
+                    let skipped = labels[part..]
+                        .iter()
+                        .any(|label| jumps(&stmts[..index], label) > 0);
+                    let initialised =
+                        matches!(stmts[index], Stmt::Decl(var) if vars[var].init.is_some());
+                    return unsupported(
+                        match skipped && initialised {
+                            true => {
+                                "a `goto` over a declaration with an initialiser into its scope: no rule yet"
+                            }
+                            false => {
+                                "a variable declared in one part of a block entered at a label and used in a later one or after it: no rule yet"
+                            }
+                        },
+                        0,
+                    );
+                }
+            }
+        }
+        let (&(last_start, last_end), before) = parts.split_last().expect("a part");
+        let entry = before.iter().any(|&(start, end)| start < end);
+        let mut out = self.stmts(&stmts[..once])?;
+        self.entered = Some(Entered {
+            labels: labels.into_iter().cloned().collect(),
+            depth: self.nesting.len(),
+            entry,
+        });
+        let lowered = self.parts(stmts, before, (last_start, last_end));
+        self.entered = None;
+        let name = rust::ident(ENTRY);
+        let label = entry_label();
+        if entry {
+            out.push(parse_quote!(let mut #name = 0;));
+        }
+        let lowered = lowered?;
+        out.push(syn::Stmt::Expr(
+            parse_quote!(#label: loop { #(#lowered)* }),
+            None,
+        ));
+        Ok(Some(out))
+    }
+
+    /// The body of R49's loop: each part but the last runs when the block
+    /// is entered at its label or before it, and the last ends the loop
+    /// unless it leaves on every path.
+    fn parts(
+        &mut self,
+        stmts: &[Stmt],
+        before: &[(usize, usize)],
+        (start, end): (usize, usize),
+    ) -> R<Vec<syn::Stmt>> {
+        let name = rust::name(ENTRY);
+        let mut out = Vec::new();
+        for (part, &(start, end)) in before.iter().enumerate() {
+            if start == end {
+                continue;
+            }
+            let body = self.block(&stmts[start..end])?;
+            let test = match part {
+                0 => rust::binary(name.clone(), "==", rust::int(0, "")),
+                part => rust::binary(name.clone(), "<=", rust::int(part as i128, "")),
+            };
+            out.push(syn::Stmt::Expr(parse_quote!(if #test #body), None));
+        }
+        let last = &stmts[start..end];
+        out.extend(self.stmts(last)?);
+        if !ends(last) {
+            out.push(parse_quote!(break;));
+        }
+        Ok(out)
+    }
+
+    /// A `goto`: R48's `break` of the block that ends at its label, or
+    /// R49's new start of the loop at its part.
+    fn goto(&mut self, label: &str, out: &mut Vec<syn::Stmt>) -> R<()> {
+        if self.labels.iter().any(|open| open == label) {
+            let label = block_label(label);
+            out.push(parse_quote!(break #label;));
+            return Ok(());
+        }
+        let Some(entered) = &self.entered else {
+            return unsupported(self.unjumped(label), 0);
+        };
+        let Some(part) = entered.labels.iter().position(|open| open == label) else {
+            return unsupported(self.unjumped(label), 0);
+        };
+        // A `switch` arm may have an `entry` of its own (R45).
+        if self.nesting[entered.depth..]
+            .iter()
+            .any(|nest| matches!(nest, Nest::Switch { .. }))
+        {
+            return unsupported(
+                format!(
+                    "`goto {label}` from a `switch` into a block entered at a label: no rule yet"
+                ),
+                0,
+            );
+        }
+        if entered.entry {
+            let (name, part) = (rust::ident(ENTRY), rust::int(part as i128 + 1, ""));
+            out.push(parse_quote!(#name = #part;));
+        }
+        let label = entry_label();
+        out.push(parse_quote!(continue #label;));
+        Ok(())
+    }
+
+    /// Why a `goto` to the label has no rule.
+    fn unjumped(&self, label: &str) -> String {
+        let body = match self.function {
+            Some(function) => self.program.functions[function].body.as_slice(),
+            None => &[],
+        };
+        match holder(body, label) {
+            Some(holder)
+                if holder
+                    .iter()
+                    .any(|stmt| matches!(stmt, Stmt::Case(_) | Stmt::Default)) =>
+            {
+                format!("`goto {label}` to a label under a `case`: no rule yet")
+            }
+            Some(holder) if jumps(holder, label) < jumps(body, label) => {
+                format!("`goto {label}` into a block from outside it: no rule yet")
+            }
+            _ => format!("`goto {label}`: no rule yet"),
+        }
+    }
+
+    /// Whether the nest at this index of `nesting` is outside the block
+    /// entered at a label that is being translated, so that a statement
+    /// that leaves it must name it.
+    fn outside(&self, index: usize) -> bool {
+        self.entered
+            .as_ref()
+            .is_some_and(|entered| index < entered.depth)
+    }
+
     /// The statements as a block of their own.
     fn block(&mut self, stmts: &[Stmt]) -> R<syn::Block> {
         Ok(rust::block(self.stmts(stmts)?))
@@ -116,23 +336,23 @@ impl Lower<'_> {
             Stmt::While(cond, body) => match self.decided(cond)? {
                 Some(false) => {}
                 Some(true) => {
-                    let body = self.loop_body(body)?;
-                    out.push(parse_quote!(loop #body));
+                    let (body, label) = self.loop_body(body)?;
+                    out.push(parse_quote!(#label loop #body));
                 }
                 None => {
                     let cond = self.cond(cond)?;
-                    let body = self.loop_body(body)?;
-                    out.push(parse_quote!(while #cond #body));
+                    let (body, label) = self.loop_body(body)?;
+                    out.push(parse_quote!(#label while #cond #body));
                 }
             },
             Stmt::DoWhile(body, cond) => {
                 if continues(body) {
                     return unsupported("`continue` in a `do` loop: no rule yet", cond.at);
                 }
-                let mut body = self.loop_body(body)?;
+                let (mut body, label) = self.loop_body(body)?;
                 let cond = rust::unary("!", self.cond(cond)?);
                 body.stmts.push(parse_quote!(if #cond { break; }));
-                out.push(parse_quote!(loop #body));
+                out.push(parse_quote!(#label loop #body));
             }
             Stmt::For {
                 init,
@@ -153,8 +373,17 @@ impl Lower<'_> {
             Stmt::Switch(value, body) => out.push(self.switch(value, body)?),
             Stmt::Break => {
                 let depth = self.switches();
+                let index = self.nesting.len().wrapping_sub(1);
+                // `outside` only where `nesting` has the index.
+                let outside = self.outside(index).then(|| self.loop_label(index));
                 match self.nesting.last_mut() {
-                    Some(Nest::Loop) => out.push(parse_quote!(break;)),
+                    // R49: a `break` of a loop around a block entered at a
+                    // label names the loop.
+                    Some(Nest::Loop { named }) if outside.is_some() => {
+                        *named = true;
+                        out.push(parse_quote!(break #outside;));
+                    }
+                    Some(Nest::Loop { .. }) => out.push(parse_quote!(break;)),
                     // R32: a `break` that is not the end of its case
                     // leaves the block around the `match`.
                     Some(Nest::Switch { left }) => {
@@ -165,7 +394,17 @@ impl Lower<'_> {
                     None => return unsupported("`break` outside a loop and a `switch`", 0),
                 }
             }
-            Stmt::Continue => out.push(parse_quote!(continue;)),
+            Stmt::Continue => {
+                let looped = |nest: &Nest| matches!(nest, Nest::Loop { .. });
+                match self.nesting.iter().rposition(looped) {
+                    Some(index) if self.outside(index) => {
+                        let label = self.loop_label(index);
+                        self.nesting[index] = Nest::Loop { named: true };
+                        out.push(parse_quote!(continue #label;));
+                    }
+                    _ => out.push(parse_quote!(continue;)),
+                }
+            }
             Stmt::Return(value) => out.push(match value {
                 Some(value) if self.in_main() => match self.exits {
                     true => {
@@ -218,15 +457,8 @@ impl Lower<'_> {
             Stmt::Case(_) | Stmt::Default => {
                 return unsupported("a `case` outside the top of its `switch`", 0);
             }
-            // R48: a jump to a label that follows leaves the block that
-            // ends there.
-            Stmt::Goto(label) if self.labels.contains(label) => {
-                let label = block_label(label);
-                out.push(parse_quote!(break #label;));
-            }
-            Stmt::Goto(label) | Stmt::Label(label) => {
-                return unsupported(format!("`goto {label}`: no rule yet"), 0);
-            }
+            Stmt::Goto(label) => self.goto(label, out)?,
+            Stmt::Label(label) => return unsupported(self.unjumped(label), 0),
         }
         Ok(())
     }
@@ -427,11 +659,28 @@ impl Lower<'_> {
         })
     }
 
-    fn loop_body(&mut self, body: &[Stmt]) -> R<syn::Block> {
-        self.nesting.push(Nest::Loop);
+    /// The body of a loop, and the loop's label if a statement in it
+    /// names the loop.
+    fn loop_body(&mut self, body: &[Stmt]) -> R<(syn::Block, Option<syn::Label>)> {
+        self.nesting.push(Nest::Loop { named: false });
+        let label = self.loop_label(self.nesting.len() - 1);
         let body = self.block(body);
-        self.nesting.pop();
-        body
+        let named = matches!(self.nesting.pop(), Some(Nest::Loop { named: true }));
+        Ok((
+            body?,
+            named.then(|| syn::Label {
+                name: label,
+                colon_token: Default::default(),
+            }),
+        ))
+    }
+
+    /// The label of the loop at this index of `nesting`.
+    fn loop_label(&self, index: usize) -> syn::Lifetime {
+        let looped = |nest: &&Nest| matches!(nest, Nest::Loop { .. });
+        let depth = self.nesting.iter().take(index + 1).filter(looped).count();
+        let name = format!("'{}", loop_label(depth));
+        syn::Lifetime::new(&name, proc_macro2::Span::call_site())
     }
 
     /// R1, R5, R6, R7, R8: a local variable. One without an initialiser
@@ -526,8 +775,8 @@ impl Lower<'_> {
                 true => parse_quote!(#start..=#bound),
                 false => parse_quote!(#start..#bound),
             };
-            let body = self.loop_body(body)?;
-            out.push(parse_quote!(for #name in #range #body));
+            let (body, label) = self.loop_body(body)?;
+            out.push(parse_quote!(#label for #name in #range #body));
             return Ok(());
         }
         if continues(body) && step.is_some() {
@@ -554,15 +803,17 @@ impl Lower<'_> {
             }
             _ => (None, body),
         };
-        let mut body = self.loop_body(body)?;
+        let (mut body, label) = self.loop_body(body)?;
         if let Some(step) = step {
             body.stmts.extend(self.effect(step)?);
         }
         stmts.push(match cond.map(|cond| self.cond(cond)).transpose()? {
-            Some(cond) => parse_quote!(while #cond #body),
+            Some(cond) => parse_quote!(#label while #cond #body),
             None => match found {
-                Some((pattern, value)) => parse_quote!(while let #pattern = #value #body),
-                None => parse_quote!(loop #body),
+                Some((pattern, value)) => {
+                    parse_quote!(#label while let #pattern = #value #body)
+                }
+                None => parse_quote!(#label loop #body),
             },
         });
         // The loop's own variables end with it.
@@ -902,6 +1153,67 @@ fn declared(stmts: &[Stmt]) -> impl Iterator<Item = VarId> + '_ {
 fn block_label(label: &str) -> syn::Lifetime {
     let name = format!("'{}", crate::names::label(label));
     syn::Lifetime::new(&name, proc_macro2::Span::call_site())
+}
+
+/// The label of R49's loop.
+fn entry_label() -> syn::Lifetime {
+    syn::Lifetime::new(&format!("'{ENTRY}"), proc_macro2::Span::call_site())
+}
+
+/// Whether R48 writes every label of the statements: the last of them is
+/// the target of jumps that all come before it, and so are the labels of
+/// the statements before that label's block and in it.
+fn forward(stmts: &[Stmt], body: &[Stmt]) -> bool {
+    let Some(at) = stmts
+        .iter()
+        .rposition(|stmt| matches!(stmt, Stmt::Label(_)))
+    else {
+        return true;
+    };
+    let Stmt::Label(label) = &stmts[at] else {
+        return true;
+    };
+    let Some(first) = stmts[..at]
+        .iter()
+        .position(|stmt| jumps(std::slice::from_ref(stmt), label) > 0)
+    else {
+        return false;
+    };
+    jumps(&stmts[first..at], label) == jumps(body, label)
+        && forward(&stmts[..first], body)
+        && forward(&stmts[first..at], body)
+}
+
+/// The statements that hold the label as one of them.
+fn holder<'s>(stmts: &'s [Stmt], label: &str) -> Option<&'s [Stmt]> {
+    if stmts
+        .iter()
+        .any(|stmt| matches!(stmt, Stmt::Label(named) if named == label))
+    {
+        return Some(stmts);
+    }
+    stmts.iter().find_map(|stmt| match stmt {
+        Stmt::Block(body)
+        | Stmt::While(_, body)
+        | Stmt::DoWhile(body, _)
+        | Stmt::Switch(_, body) => holder(body, label),
+        Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => {
+            holder(then, label).or_else(|| holder(other, label))
+        }
+        Stmt::For { init, body, .. } => holder(init, label).or_else(|| holder(body, label)),
+        Stmt::LetSome { otherwise, .. } => holder(otherwise, label),
+        _ => None,
+    })
+}
+
+/// Whether the statements leave the block they are in on every path.
+fn ends(stmts: &[Stmt]) -> bool {
+    leaves(stmts)
+        || match stmts.last() {
+            Some(Stmt::If(_, then, other)) => ends(then) && ends(other),
+            Some(Stmt::Block(body)) => ends(body),
+            _ => false,
+        }
 }
 
 /// How many `goto` statements in the statements jump to the label.

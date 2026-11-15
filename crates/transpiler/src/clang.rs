@@ -591,6 +591,7 @@ impl Reader<'_> {
                 Some(label) => out.push(Stmt::Goto(label.clone())),
                 None => return unsupported("a `goto` without its label", node),
             },
+            "IndirectGotoStmt" => return unsupported("a computed `goto`: no rule yet", node),
             "LabelStmt" => {
                 out.push(Stmt::Label(text(node, "name").to_owned()));
                 if let Some(body) = part(0) {
@@ -778,6 +779,7 @@ impl Reader<'_> {
                 ExprKind::InitList(items.iter().map(|item| self.expr(item)).collect::<R<_>>()?)
             }
             "ImplicitValueInitExpr" => ExprKind::Zero,
+            "AddrLabelExpr" => return unsupported("a computed `goto`: no rule yet", node),
             other => return unsupported(format!("Clang's `{other}`"), node),
         };
         Ok(Expr {

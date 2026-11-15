@@ -39,10 +39,10 @@ fn lists_the_refusals_of_every_function() {
     std::fs::create_dir_all(&dir).unwrap();
     let input = dir.join("input.c");
     let source = "#include <stdio.h>\n\
-        static int first(int n) {\nagain:\n    n++;\n    if (n < 2) goto again;\n    return n;\n}\n\
+        static int first(int n) {\n    if (n < 2) goto again;\n    {\nagain:\n    n++;\n    }\n    return n;\n}\n\
         static int second(int n, ...) {\n    return n;\n}\n\
-        int main(void) {\n    int n = 0;\nstart:\n    printf(\"%d\\n\", first(n));\n    \
-        if (n++ < 1) goto start;\n    return second(0);\n}\n";
+        int main(void) {\n    int n = 0;\n    if (n++ < 1) goto start;\n    {\nstart:\n    printf(\"%d\\n\", first(n));\n    \
+        }\n    return second(0);\n}\n";
     std::fs::write(&input, source).unwrap();
     let run = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_transpiler"))
@@ -62,11 +62,14 @@ fn lists_the_refusals_of_every_function() {
     assert_eq!(
         lines,
         [
-            "rules\tfirst\tunsupported: `goto again`: no rule yet\t2",
+            "rules\tfirst\tunsupported: `goto again` into a block from outside it: no rule yet\t2",
             "rules\tsecond\tunsupported: the variadic function `second`\t1",
-            "rules\tmain\tunsupported: `goto start`: no rule yet\t2",
+            "rules\tmain\tunsupported: `goto start` into a block from outside it: no rule yet\t2",
         ]
     );
-    assert_eq!(refusal.trim_end(), "unsupported: `goto again`: no rule yet");
+    assert_eq!(
+        refusal.trim_end(),
+        "unsupported: `goto again` into a block from outside it: no rule yet"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }

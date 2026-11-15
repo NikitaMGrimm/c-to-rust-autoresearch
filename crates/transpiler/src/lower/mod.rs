@@ -896,13 +896,22 @@ impl Helper {
 /// What `break` leaves.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nest {
-    Loop,
+    /// A loop, and whether a statement in it names it, from inside a block
+    /// that is entered at a label (R49).
+    Loop { named: bool },
     /// One arm of a `switch`, with the cases that fall through into each
     /// other, and whether a `break` in the middle of it leaves the
     /// `switch`.
-    Switch {
-        left: bool,
-    },
+    Switch { left: bool },
+}
+
+/// A block entered at a label (R49): the labels that begin its parts after
+/// the first, the depth of `nesting` around it, and whether it needs the
+/// variable that says at which part it is entered.
+struct Entered {
+    labels: Vec<String>,
+    depth: usize,
+    entry: bool,
 }
 
 /// The item `struct Globals`, and the value `main` starts it with.
@@ -935,6 +944,8 @@ struct Lower<'a> {
     /// Whether the last call of a function of the program was written as a
     /// block that splits an array first (R54).
     split: bool,
+    /// The block entered at a label that is being translated (R49).
+    entered: Option<Entered>,
     /// The library's records that the translation names: `div_t` and its
     /// like.
     quotients: std::cell::RefCell<BTreeSet<usize>>,
@@ -962,6 +973,7 @@ impl<'a> Lower<'a> {
             labels: Vec::new(),
             counters: Vec::new(),
             split: false,
+            entered: None,
             quotients: Default::default(),
             zeroing: Default::default(),
             listing,
@@ -1337,7 +1349,12 @@ impl Lower<'_> {
         }
         self.exits = !returns_only_zero(&function.body, program, self.facts);
         body.extend(self.body(&function.body)?);
-        if self.exits && !matches!(function.body.last(), Some(Stmt::Return(Some(_)))) {
+        // A `goto` at the end jumps back (R49), and the loop never ends.
+        let ends = matches!(
+            function.body.last(),
+            Some(Stmt::Return(Some(_)) | Stmt::Goto(_))
+        );
+        if self.exits && !ends {
             body.push(syn::Stmt::Expr(parse_quote!(ExitCode::SUCCESS), None));
         }
         (self.argc, self.argv) = (None, None);

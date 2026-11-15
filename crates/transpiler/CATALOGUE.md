@@ -986,10 +986,11 @@ Entry format, newest last:
   where Rust keeps the name for itself
 - Needs: `narrow` leaves a guard, `if (!p) goto out;`, a plain test where
   a label follows it in its block, since the label is reached without it
-- Refused: a `goto` to a label before it or into a loop or a branch, with
-  `` `goto label`: no rule yet ``; a `break` or `continue` of a loop around
-  the block inside it, which Rust does not allow in a labelled block; a
-  local declared in the block and used after the label
+- Refused: a `goto` into a loop or a branch, with
+  `` `goto label` into a block from outside it `` (a jump back is R49's);
+  a `break` or `continue` of a loop around the block inside it, which Rust
+  does not allow in a labelled block; a local declared in the block and
+  used after the label
 - Motivation: `g5_cleanup` jumps to its cleanup
 - Changes: nothing
 
@@ -1018,3 +1019,35 @@ Entry format, newest last:
   `fread(in, 1, sizeof(in), stdin)`; it is refused next for a pointer that
   `strchr` found and that steps on
 - Changes: none
+## R49: `goto` back, or past another label
+
+- C: the labels of a block that R48 cannot write as blocks that end at
+  them: a `goto` from below the label, such as `retry:` at the top of a
+  function or a jump back inside a loop's body, or a jump forward into the
+  part after one label from before another; every `goto` to them is inside
+  the block
+- Rust: the statements before the first that holds such a `goto` stay as
+  they are, as they run once; the rest, split at the labels into parts, is
+  `'entry: loop { … }`, where each part but the last is
+  `if entry <= k { … }` (`entry == 0` for the first) and the last ends with
+  `break;` unless it leaves on every path. A `goto` is
+  `entry = k; continue 'entry;`, with `let mut entry = 0;` before the loop
+  where a part tests it. A `break` or `continue` in a part of a loop around
+  the block names the loop, `'outer: while …` with `break 'outer;`, one
+  inside another `'outer_2`; a C label of such a name gets `_label`
+- Needs: nothing
+- Refused: a `goto` into a loop or a block from outside it,
+  `` `goto label` into a block from outside it ``; to a label under a
+  `case`; from a `switch` inside the block, whose arm may have an `entry`
+  of its own (R45); a block entered at a label inside another; a local
+  declared in one part and used in a later one or by the function's last
+  `return`, and a `goto` over a declaration with an initialiser into its
+  scope; a computed `goto`
+- Motivation: `g5_021_complex_goto` jumps back to a label in a loop's body,
+  and forward past it to the next
+- Changes: R48 keeps the blocks whose labels it writes; a block with one
+  label that it cannot write takes R49 for all its labels, so a jump back is
+  no longer refused, and R48's refusals of a jump into a loop or a block
+  name the jump. A C label `outer` or `outer_2` gets `_label` in R48's block
+  too. A `main` with an exit code that ends with a `goto` gets no
+  `ExitCode::SUCCESS` after it (R1), as the loop does not end
