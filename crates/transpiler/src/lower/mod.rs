@@ -893,6 +893,8 @@ struct Lower<'a> {
     /// The library's records that the translation names: `div_t` and its
     /// like.
     quotients: std::cell::RefCell<BTreeSet<usize>>,
+    /// The records whose zero is being written, the outermost first.
+    zeroing: std::cell::RefCell<Vec<usize>>,
     /// Where a listing collects the refusals, which then do not end the
     /// translation.
     listing: Option<&'a mut Listing>,
@@ -912,6 +914,7 @@ impl<'a> Lower<'a> {
             exits: false,
             nesting: Vec::new(),
             quotients: Default::default(),
+            zeroing: Default::default(),
             listing,
         }
     }

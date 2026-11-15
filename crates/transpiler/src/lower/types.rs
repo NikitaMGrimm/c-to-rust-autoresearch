@@ -107,10 +107,24 @@ impl Lower<'_> {
                 let name = rust::ident(self.names.record(*id));
                 self.ty(ty, at)?;
                 // A record has `Default` only where every field has a zero.
-                for (index, field) in self.program.records[*id].fields.iter().enumerate() {
-                    let slot = field.ty.is_pointer().then_some(Slot::Field(*id, index));
-                    self.zero_of(&field.ty, slot, at)?;
+                // A record that owns another of its kind, never NULL, would
+                // have a zero without an end.
+                if self.zeroing.borrow().contains(id) {
+                    return unsupported(
+                        "a record that owns a record of its own type that is never NULL",
+                        at,
+                    );
                 }
+                self.zeroing.borrow_mut().push(*id);
+                let fields = self.program.records[*id].fields.iter().enumerate();
+                let zeros: R<Vec<syn::Expr>> = fields
+                    .map(|(index, field)| {
+                        let slot = field.ty.is_pointer().then_some(Slot::Field(*id, index));
+                        self.zero_of(&field.ty, slot, at)
+                    })
+                    .collect();
+                self.zeroing.borrow_mut().pop();
+                zeros?;
                 parse_quote!(#name::default())
             }
             Type::Pointer(_) if ty.function().is_some() => {

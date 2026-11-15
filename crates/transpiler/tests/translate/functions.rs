@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
             "run: fn(i32) -> i32,",
             "(o.run)(x) + o.bias",
             r#"println!("{}", (o.run)(x));"#,
-            "let a: Op = Op { bias: 1, run: twice };",
+            "let a = Op { bias: 1, run: twice };",
             "b.run = negate;",
         ],
     );
@@ -402,7 +402,7 @@ int main(int argc, char **argv) {
         &[
             "on: Option<fn(i32) -> i32>,",
             "Self { id: 0, on: None }",
-            "let mut h: Handler = Handler { id: 1, on: None };",
+            "let mut h = Handler { id: 1, on: None };",
             "h.on = Some(square);",
             r#"println!("{}", h.on.unwrap()(k));"#,
             r#"println!("{}", f.unwrap()(k));"#,
@@ -554,4 +554,16 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
     for (name, main, refusal) in cases {
         assert_eq!(refused(name, main), refusal, "{name}");
     }
+}
+
+/// A record that owns another of its own type, never NULL, has no zero to
+/// start with: the translation refuses it instead of writing one without
+/// an end.
+#[test]
+fn a_record_that_owns_itself_without_null_is_refused() {
+    let c = "#include <stdio.h>\n#include <stdlib.h>\nstruct node { struct node *next; int value; };\nint main(void) {\n    struct node *ring = malloc(sizeof(struct node));\n    ring->value = 3;\n    ring->next = ring;\n    printf(\"%d\\n\", ring->next->value);\n    return 0;\n}\n";
+    assert_eq!(
+        translate("ring", c).unwrap_err(),
+        "unsupported: a record that owns a record of its own type that is never NULL"
+    );
 }

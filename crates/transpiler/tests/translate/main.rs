@@ -5,11 +5,8 @@ mod common;
 mod compare;
 mod copies;
 mod cursors;
-<<<<<<< HEAD
 mod environment;
-=======
 mod functions;
->>>>>>> 498e22d (feat(transpiler): hold a pointer to a function as an fn value)
 mod globals;
 mod heap;
 mod input;
