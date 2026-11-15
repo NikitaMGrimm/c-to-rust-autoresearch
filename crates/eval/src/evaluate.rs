@@ -179,9 +179,11 @@ pub fn evaluate_all(
     translator: &Translator,
     jobs: usize,
 ) -> Result<Vec<Record>, String> {
+    // Numbered directories: a program's name in a path would show in the
+    // process list, where anyone on the machine reads it.
     let scratch = Scratch::new("eval")?;
-    for program in programs {
-        std::fs::create_dir(scratch.join(program.file_stem().unwrap_or_default()))
+    for index in 0..programs.len() {
+        std::fs::create_dir(scratch.join(index.to_string()))
             .map_err(|err| format!("cannot create scratch directory: {err}"))?;
     }
     let next = AtomicUsize::new(0);
@@ -189,8 +191,12 @@ pub fn evaluate_all(
     std::thread::scope(|scope| {
         for _ in 0..jobs.min(programs.len()) {
             scope.spawn(|| {
-                while let Some(program) = programs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let work = scratch.join(program.file_stem().unwrap_or_default());
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(program) = programs.get(index) else {
+                        break;
+                    };
+                    let work = scratch.join(index.to_string());
                     let record = evaluate(program, translator, &work);
                     records.lock().unwrap().push(record);
                 }
@@ -202,7 +208,9 @@ pub fn evaluate_all(
     Ok(records)
 }
 
-/// Evaluates one C program, using `work` as its scratch directory.
+/// Evaluates one C program, using `work` as its scratch directory. `work`
+/// gets a copy of the program, so it must be where the sandbox hides it:
+/// under the temporary directory or the home directory.
 pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
     let start = Instant::now();
     let name = c_file
@@ -266,9 +274,16 @@ fn stages(
             );
         }
     };
+    // The compiler and the transpiler read a copy under a fixed name, so that
+    // no command line names the program. The sandbox hides the copy from
+    // every translation, as it hides the program.
+    let source = work.join("c/program.c");
+    if let Err(err) = std::fs::copy(c_file, &source) {
+        return (Stage::CInvalid, format!("cannot copy the program: {err}"));
+    }
     // The same file name in both directories gives both the same argv[0].
     let (c_program, rust_program) = (work.join("c/program"), rust_dir.join("program"));
-    let built = build_c(c_file, &c_program, &c_flags);
+    let built = build_c(&source, &c_program, &c_flags);
     if built.exit != Some(0) {
         return (
             Stage::CInvalid,
@@ -285,7 +300,7 @@ fn stages(
     }
 
     let rust_file = rust_dir.join("translation.rs");
-    if let Err(detail) = translate(c_file, translator, &rust_file) {
+    if let Err(detail) = translate(&record.name, &source, translator, &rust_file) {
         return (Stage::TranspileFail, detail);
     }
     let compiled = compile(&rust_file, &rust_program);

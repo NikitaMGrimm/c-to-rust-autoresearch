@@ -121,8 +121,10 @@ fn cargo_executable(command: &mut Command) -> Result<PathBuf, String> {
         .ok_or_else(|| "cargo reported no transpiler executable".to_owned())
 }
 
-/// Writes the translation of `c_file` to `rust_file`, or says why it could not.
+/// Writes the translation of the program `name` to `rust_file`, or says why
+/// it could not. The transpiler reads the program from `c_file`.
 pub(crate) fn translate(
+    name: &str,
     c_file: &Path,
     translator: &Translator,
     rust_file: &Path,
@@ -153,9 +155,7 @@ pub(crate) fn translate(
             Err(format!("{reason}{}", tail(&transpiled.stderr)))
         }
         Translator::Existing(dir) => {
-            let existing = dir
-                .join(c_file.file_name().unwrap_or_default())
-                .with_extension("rs");
+            let existing = dir.join(format!("{name}.rs"));
             std::fs::copy(&existing, rust_file)
                 .map(drop)
                 .map_err(|err| format!("no translation {}: {err}", existing.display()))
