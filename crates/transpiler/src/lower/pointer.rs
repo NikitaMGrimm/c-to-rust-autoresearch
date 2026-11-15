@@ -160,9 +160,6 @@ impl Lower<'_> {
         let repr = self.repr(slot, at)?;
         if let Some(function) = pointer.function() {
             let ty = self.fn_type(function, at)?;
-            if repr.nullable {
-                return unsupported("a pointer to a function that may be NULL: no rule yet", at);
-            }
             return Ok(match repr.nullable {
                 true => parse_quote!(Option<#ty>),
                 false => ty,
