@@ -142,9 +142,13 @@ Entry format, newest last:
   call with two arguments that point into the same memory, such as
   `f(a, a + 1)`, when the function stores through one of them, since Rust
   lends memory once to whoever stores there, unless R53 gives the call a
-  copy of the function
+  copy of the function; and a local pointer to a variable of its function
+  that is used after the variable itself was stored to since the pointer
+  got its address, or read where the pointer is stored through, since the
+  borrow is still in use there
 - Needs: `Facts::pointer` for each slot, with `local` for a pointer into a
-  variable of its function; `Facts::stored_through` for `mut` on the
+  variable of its function; `Facts::in_use` for the first such use, in the
+  order of the statements, where a loop's body follows itself; `Facts::stored_through` for `mut` on the
   binding of an owner or an `Option`. A store through `&s->items[i]`, an
   element behind a pointer that a record holds, is a store through the
   pointer to the record as well, which Rust reaches the element through

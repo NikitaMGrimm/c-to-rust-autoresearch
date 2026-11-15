@@ -108,6 +108,9 @@ pub struct Facts {
     /// The functions that take the globals only because another function
     /// of their type needs them.
     idle: HashSet<FuncId>,
+    /// Where each function first uses a local pointer to one of its
+    /// variables after the variable itself was used meanwhile.
+    in_use: HashMap<FuncId, u32>,
     /// False for the facts before the first round, which know nothing.
     settled: bool,
 }
@@ -207,6 +210,14 @@ impl Facts {
     /// it has them only for the other functions of its type.
     pub fn idle(&self, function: FuncId) -> bool {
         self.idle.contains(&function)
+    }
+
+    /// Where the function first uses a local pointer to one of its
+    /// variables after that variable was stored to since the pointer got
+    /// its address, or read while the pointer is stored through: Rust
+    /// rejects the borrow that the pointer is.
+    pub fn in_use(&self, function: FuncId) -> Option<u32> {
+        self.in_use.get(&function).copied()
     }
 
     /// The value of a condition that the facts decide: a constant, or a
@@ -619,7 +630,22 @@ impl<'a> Walk<'a> {
                     })
             })
             .collect();
+        let in_use = program
+            .functions
+            .iter()
+            .enumerate()
+            .filter_map(|(id, function)| {
+                let mut walk = InUse {
+                    pointers: &self.pointers,
+                    program,
+                    found: None,
+                };
+                walk.stmts(&function.body, &mut Some(HashMap::new()));
+                walk.found.map(|at| (id, at))
+            })
+            .collect();
         Facts {
+            in_use,
             pointers: self.pointers,
             mutated: self.mutated,
             through: self.through,
@@ -1242,5 +1268,241 @@ impl<'a> Walk<'a> {
             Slot::Var(var) => self.program.vars[var].kind.is_global(),
             Slot::Field(..) | Slot::Return(_) => true,
         }
+    }
+}
+
+/// The local pointers that hold the address of a variable of the function,
+/// with those variables, and whether the variable was stored to, or read
+/// while the pointer is stored through, since the pointer got its address.
+/// `None` where no path reaches the statement.
+type Borrows = Option<HashMap<VarId, (HashSet<VarId>, bool)>>;
+
+/// A local pointer to a variable of the function is a borrow of it in
+/// Rust, which the variable itself cannot be stored to while the borrow is
+/// used later, nor read while it is `&mut`. This finds the first use of
+/// such a pointer after such a store or read since the pointer got its
+/// address. "After" is the order of the statements, the branches of an
+/// `if` each from the state before it, and a loop's condition, body and
+/// step twice, so that everything in a loop also follows itself.
+struct InUse<'a> {
+    pointers: &'a HashMap<Slot, Pointer>,
+    program: &'a Program,
+    found: Option<u32>,
+}
+
+impl InUse<'_> {
+    fn stmts(&mut self, stmts: &[Stmt], state: &mut Borrows) {
+        for stmt in stmts {
+            self.stmt(stmt, state);
+        }
+    }
+
+    fn stmt(&mut self, stmt: &Stmt, state: &mut Borrows) {
+        match stmt {
+            Stmt::Expr(expr) => self.expr(expr, state),
+            Stmt::Decl(var) => {
+                if let Some(init) = &self.program.vars[*var].init {
+                    self.expr(init, state);
+                    self.assigned(*var, init, state);
+                }
+            }
+            Stmt::Block(body) => self.stmts(body, state),
+            Stmt::If(cond, then, other) => {
+                self.expr(cond, state);
+                self.branches(then, other, state);
+            }
+            Stmt::IfSome {
+                source,
+                then,
+                other,
+                ..
+            } => {
+                self.expr(source, state);
+                self.branches(then, other, state);
+            }
+            Stmt::LetSome {
+                source, otherwise, ..
+            } => {
+                self.expr(source, state);
+                self.branches(otherwise, &[], state);
+            }
+            Stmt::While(cond, body) => {
+                for _ in 0..2 {
+                    self.expr(cond, state);
+                    self.stmts(body, state);
+                }
+            }
+            Stmt::DoWhile(body, cond) => {
+                for _ in 0..2 {
+                    self.stmts(body, state);
+                    self.expr(cond, state);
+                }
+            }
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                self.stmts(init, state);
+                for _ in 0..2 {
+                    cond.iter().for_each(|cond| self.expr(cond, state));
+                    self.stmts(body, state);
+                    step.iter().for_each(|step| self.expr(step, state));
+                }
+            }
+            Stmt::Switch(cond, body) => {
+                self.expr(cond, state);
+                self.stmts(body, state);
+            }
+            Stmt::Parse { call, start, .. } => {
+                self.expr(call, state);
+                start.iter().for_each(|(start, _)| self.expr(start, state));
+            }
+            Stmt::Return(value) => {
+                value.iter().for_each(|value| self.expr(value, state));
+                *state = None;
+            }
+            Stmt::Goto(_) => *state = None,
+            // A jump may reach a label from anywhere: what it brings is
+            // not followed.
+            Stmt::Label(_) => {
+                state.get_or_insert_with(HashMap::new);
+            }
+            Stmt::Case(_) | Stmt::Default | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+
+    /// Each branch from the state before it, and after them what either
+    /// leaves.
+    fn branches(&mut self, then: &[Stmt], other: &[Stmt], state: &mut Borrows) {
+        let mut second = state.clone();
+        self.stmts(then, state);
+        self.stmts(other, &mut second);
+        match (state.as_mut(), second) {
+            (Some(first), Some(second)) => {
+                for (pointer, (targets, touched)) in second {
+                    let entry = first.entry(pointer).or_default();
+                    entry.0.extend(targets);
+                    entry.1 |= touched;
+                }
+            }
+            (None, second) => *state = second,
+            (Some(_), None) => {}
+        }
+    }
+
+    fn expr(&mut self, expr: &Expr, state: &mut Borrows) {
+        match &expr.kind {
+            ExprKind::Assign { op, target, value } => {
+                self.expr(value, state);
+                match &target.kind {
+                    ExprKind::Var(var) if op.is_none() => self.assigned(*var, value, state),
+                    _ => match target.root_var() {
+                        Some(var) => {
+                            self.parts(target, state);
+                            self.stored(var, state);
+                        }
+                        None => self.expr(target, state),
+                    },
+                }
+            }
+            ExprKind::IncDec { target, .. } => match target.root_var() {
+                Some(var)
+                    if !matches!(target.kind, ExprKind::Var(_)) || !target.ty.is_pointer() =>
+                {
+                    self.parts(target, state);
+                    self.stored(var, state);
+                }
+                _ => self.expr(target, state),
+            },
+            ExprKind::Var(var) => self.read(*var, expr.at, state),
+            _ => {
+                for child in expr.children() {
+                    self.expr(child, state);
+                }
+            }
+        }
+    }
+
+    /// The indices inside a place that is a variable's own part.
+    fn parts(&mut self, place: &Expr, state: &mut Borrows) {
+        match &place.kind {
+            ExprKind::Member { base, .. } => self.parts(base, state),
+            ExprKind::Index(base, index) => {
+                if let ExprKind::Decay(array) = &base.kind {
+                    self.parts(array, state);
+                }
+                self.expr(index, state);
+            }
+            _ => {}
+        }
+    }
+
+    fn read(&mut self, var: VarId, at: u32, state: &mut Borrows) {
+        let Some(borrows) = state else { return };
+        if let Some((_, true)) = borrows.get(&var) {
+            self.found.get_or_insert(at);
+        }
+        for (pointer, (targets, touched)) in borrows.iter_mut() {
+            if targets.contains(&var)
+                && self
+                    .pointers
+                    .get(&Slot::Var(*pointer))
+                    .is_some_and(|p| p.written)
+            {
+                *touched = true;
+            }
+        }
+    }
+
+    fn stored(&mut self, var: VarId, state: &mut Borrows) {
+        let Some(borrows) = state else { return };
+        for (targets, touched) in borrows.values_mut() {
+            if targets.contains(&var) {
+                *touched = true;
+            }
+        }
+    }
+
+    /// `var = value`: a pointer gets the variables whose address the
+    /// value is, and a store to any other variable is a store.
+    fn assigned(&mut self, var: VarId, value: &Expr, state: &mut Borrows) {
+        let program = self.program;
+        let pointer = &program.vars[var];
+        if !pointer.ty.is_pointer() || pointer.kind.is_global() {
+            self.stored(var, state);
+            return;
+        }
+        let Some(borrows) = state else { return };
+        let mut targets = HashSet::new();
+        addresses(program, value, &mut targets);
+        if targets.is_empty() {
+            borrows.remove(&var);
+        } else {
+            borrows.insert(var, (targets, false));
+        }
+    }
+}
+
+/// The variables of the function whose address the pointer value is, as
+/// `&v.field`, `&a[1][3]`, or an array `a` used as a pointer.
+fn addresses(program: &Program, value: &Expr, targets: &mut HashSet<VarId>) {
+    match &value.kind {
+        ExprKind::Cast(inner) => addresses(program, inner, targets),
+        ExprKind::AddrOf(place) | ExprKind::Decay(place) => {
+            if let Some(var) = place.root_var() {
+                let var = &program.vars[var];
+                if matches!(var.kind, VarKind::Local | VarKind::Param) && !var.ty.is_pointer() {
+                    targets.extend(place.root_var());
+                }
+            }
+        }
+        ExprKind::Binary(BinOp::Add | BinOp::Sub, left, right) => addresses(
+            program,
+            if left.ty.is_pointer() { left } else { right },
+            targets,
+        ),
+        _ => {}
     }
 }

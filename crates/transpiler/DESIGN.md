@@ -135,9 +135,15 @@ between owners, `&mut *b` or `as_deref_mut()` from an owner to a borrow, and
 so on. What the borrow checker then rejects is refused by `rustc`, which is
 the intended division of work: the analysis picks types, the compiler proves
 them. Where a rule can see that the compiler will reject its translation, it
-refuses with the reason instead: a result that points to a local, and two
+refuses with the reason instead: a result that points to a local, two
 arguments of one call that point into the same memory when the function
-stores through one of them. Two elements of one array of which one is
+stores through one of them, and a local pointer to a variable of its
+function that is used after the variable itself was stored to since the
+pointer got its address, or read where the pointer is stored through
+(`Facts::in_use`). "After" is the order of the statements, with each
+branch of an `if` from the state before it and the body of a loop
+following itself; a pointer that gets the address from another pointer,
+or through a narrowing, is not followed. Two elements of one array of which one is
 before the other on every run are no such case: the array is split between
 them (R54). Where the two arguments are the same pointer,
 `normalise::same` first gives the call a copy of the function in which
@@ -650,10 +656,12 @@ become a fact and a refusal:
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.
-- A local pointer to an array is a borrow of it, and the analysis does
-  not know which array a local points into. A call that takes the pointer
-  to store through and the array itself, as `char *p = s; memmove(p + 1,
-  s, 3);` does, is translated and does not compile.
+- A local pointer to an array is a borrow of it. A use of the pointer
+  after a store to the array, or after a read of it where the pointer is
+  stored through, is refused, but one call that takes the pointer to
+  store through and the array itself, as `char *p = s; memmove(p + 1, s,
+  3);` does, is translated and does not compile, as is the same with a
+  parameter `s`, whose memory the analysis does not follow.
 - An operation whose two operands are the same expression, `x / x` or
   `a - a`, is translated as written and does not compile: Rust's lints
   deny it.

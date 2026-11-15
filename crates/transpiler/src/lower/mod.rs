@@ -1397,6 +1397,12 @@ impl Lower<'_> {
                 );
             }
         }
+        if let Some(at) = self.function.and_then(|id| self.facts.in_use(id)) {
+            self.listed(unsupported(
+                "a variable that is used while a pointer to it is in use",
+                at,
+            ))?;
+        }
         let mut body = self.seeded(rest)?;
         if let Some(value) = last {
             let value = match self.in_main() {

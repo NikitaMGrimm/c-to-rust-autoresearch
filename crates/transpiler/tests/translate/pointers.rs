@@ -362,3 +362,40 @@ int main(int argc, char *argv[]) {
         );
     }
 }
+
+/// A local pointer to a variable is a borrow that ends with its last use,
+/// so the variable is free again after it, after the pointer gets the
+/// address anew, and in a branch that the use is not in.
+#[test]
+fn a_variable_is_used_again_after_the_pointer_to_it() {
+    let rust = check(
+        "borrow_ends",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct gauge { int low; int high; };
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct gauge g = {1, 2};
+    struct gauge *view = &g;
+    view->low = n;
+    g.high = view->low + 1;
+    view = &g;
+    view->high += 2;
+    int levels[4] = {0};
+    const int *top = &levels[3];
+    int seen = levels[3] + *top;
+    if (n > 3) {
+        levels[3] = n;
+    } else {
+        seen += *top;
+    }
+    printf("%d %d %d %d\n", g.low, g.high, seen, levels[3]);
+    return 0;
+}
+"#,
+        &[&["2"], &["7"]],
+        "",
+    );
+    assert_lines(&rust, &["view = &mut g;", "seen += *top;"]);
+}

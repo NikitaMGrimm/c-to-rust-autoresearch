@@ -101,3 +101,39 @@ fn a_program_that_a_rule_would_get_wrong_is_refused() {
         "unsupported: two arguments that point into the same memory, one of them to store through, at line 6"
     );
 }
+
+/// A local pointer to a variable of the function is a borrow of it, so the
+/// variable may not be stored to while the pointer is used later, nor read
+/// while a pointer that is stored through is.
+#[test]
+fn a_variable_used_while_a_pointer_to_it_is_in_use_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    assert_eq!(
+        refused(
+            "borrowed_record",
+            "struct point { int row; int col; };\nint main(void) {\n    struct point at;\n    struct point *here;\n    here = &at;\n    at.row = 4;\n    here->col = 5;\n    return here->row + here->col;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 7"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_rows",
+            "int main(void) {\n    int cells[3][2], (*rows)[2] = cells;\n    int *corner = &cells[2][1];\n    cells[2][1] = 6;\n    return rows[2][1] + *corner - 12;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_loop",
+            "int main(void) {\n    int total = 0, step = 1;\n    int *into = &total;\n    for (int i = 0; i < 3; i++) {\n        *into += i;\n        total += step;\n    }\n    return total;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_read",
+            "int main(void) {\n    int level = 2;\n    int *raise = &level;\n    *raise = 3;\n    int seen = level;\n    *raise = seen + 1;\n    return level;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 6"
+    );
+}
