@@ -7,7 +7,7 @@ stays fixed while a loop runs.
 |---|---|---|
 | `transpiler` | Translates one C file to Rust, in the stages of its [design](../crates/transpiler/DESIGN.md) | the loop |
 | `eval` | The evaluator library, the `eval` command, the loop's `gate` and `transfer` | the owner |
-| `bench` | Builds the benchmark sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` | the owner |
+| `bench` | Builds the benchmark sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies`, and a practice `pool` | the owner |
 | `transcripts` | Reads Claude Code transcripts: model `usage` and the loop's `audit` | the owner |
 
 ## Evaluating a program

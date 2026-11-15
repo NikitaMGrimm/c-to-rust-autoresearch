@@ -1,13 +1,17 @@
 //! Marks private programs that nearly repeat a development program. A rule
 //! learned on the development program passes such a twin almost for free, so
-//! private results are reported with and without them.
+//! private results are reported with and without them. For a practice pool,
+//! which a driver reads, it removes the pool's programs that nearly repeat a
+//! private one instead.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: near-copies PRIVATE_DIR\n\
-     Writes PRIVATE_DIR/near-copies.json and prints counts only.";
+const USAGE: &str = "usage: near-copies PRIVATE_DIR [--pool POOL_DIR]\n\
+     Writes PRIVATE_DIR/near-copies.json and prints counts only. With --pool it\n\
+     writes nothing there: it deletes the programs in POOL_DIR that nearly\n\
+     repeat a private program or share a private program's name.";
 /// Jaccard similarity of token 4-grams from which a private program counts as
 /// a near copy of its closest development program. The TRACTOR sets have no
 /// scores between 0.41 and 0.53.
@@ -20,11 +24,15 @@ type Shingles = BTreeSet<Vec<String>>;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [private] = args.as_slice() else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
+    let done = match args.as_slice() {
+        [private] => mark(Path::new(private)),
+        [private, flag, pool] if flag == "--pool" => clean(Path::new(private), Path::new(pool)),
+        _ => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
     };
-    match mark(Path::new(private)) {
+    match done {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");
@@ -64,6 +72,56 @@ fn mark(private: &Path) -> Result<(), String> {
     let path = private.join("near-copies.json");
     std::fs::write(&path, format!("{json:#}\n"))
         .map_err(|err| format!("cannot write {}: {err}", path.display()))
+}
+
+/// Deletes the programs in `pool` that nearly repeat a program of a private
+/// set, or have the name of one or of a variant, which the audit of a
+/// transcript would take for the private program. It says how many, not
+/// which.
+fn clean(private: &Path, pool: &Path) -> Result<(), String> {
+    let mut sets = Vec::new();
+    let mut names = BTreeSet::new();
+    for set in SETS {
+        if private.join(set).is_dir() {
+            let programs = shingled(&private.join(set))?;
+            names.extend(programs.keys().cloned());
+            sets.extend(programs.into_values());
+        }
+    }
+    let variants = private.join("variants");
+    if variants.is_dir() {
+        for dir in eval::entries(&variants)? {
+            if dir.is_dir() {
+                names.extend(shingled(&dir)?.into_keys());
+            }
+        }
+    }
+    if sets.is_empty() {
+        return Err(format!("no private programs in {}", private.display()));
+    }
+    let programs = shingled(pool)?;
+    let (mut copies, mut named) = (0, 0);
+    for (name, shingles) in &programs {
+        let copy = sets
+            .iter()
+            .any(|other| similarity(shingles, other) >= THRESHOLD);
+        if !copy && !names.contains(name) {
+            continue;
+        }
+        *if copy { &mut copies } else { &mut named } += 1;
+        for extension in ["c", "json", eval::FUZZ_EXTENSION] {
+            let file = pool.join(name).with_extension(extension);
+            if file.exists() {
+                std::fs::remove_file(&file)
+                    .map_err(|err| format!("cannot delete {}: {err}", file.display()))?;
+            }
+        }
+    }
+    println!(
+        "pool: deleted {copies} near-copies of private programs and {named} with a private name, of {} programs",
+        programs.len()
+    );
+    Ok(())
 }
 
 fn shingled(dir: &Path) -> Result<BTreeMap<String, Shingles>, String> {
@@ -135,6 +193,8 @@ fn tokens(source: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -153,6 +213,40 @@ mod tests {
         assert_eq!(similarity(&program, &same_with_comment), 1.0);
         assert_eq!(similarity(&program, &other), 0.0);
         assert!(similarity(&shingles("a"), &shingles("a")) == 0.0);
+    }
+
+    #[test]
+    fn a_pool_loses_what_repeats_a_private_program_and_nothing_is_written() {
+        let scratch = eval::Scratch::new("near-copies").unwrap();
+        let (private, pool) = (scratch.join("private"), scratch.join("pool"));
+        let program = "int main(void) { int total = 0; for (int i = 0; i < 9; i++) total += i * i; return total; }";
+        let other = "#include <stdio.h>\nint main(void) { puts(\"a b c d e f g h\"); return 0; }";
+        let write = |path: PathBuf, text: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(private.join("validation/g1_secret.c"), program);
+        write(private.join("held-out/g1_other.c"), "int f(void);");
+        write(
+            private.join("variants/held-out/g1_other__r.c"),
+            "int g(void);",
+        );
+        write(
+            pool.join("g1_p_copy.c"),
+            &format!("// from elsewhere\n{program}"),
+        );
+        write(pool.join("g1_p_copy.json"), "{}");
+        write(pool.join("g1_p_new.c"), other);
+        write(pool.join("g1_other__r.c"), other);
+        clean(&private, &pool).unwrap();
+        let left: Vec<_> = eval::entries(&pool)
+            .unwrap()
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["g1_p_new.c"]);
+        assert!(!private.join("near-copies.json").exists());
+        assert!(clean(&scratch.join("nothing"), &pool).is_err());
     }
 
     #[test]
