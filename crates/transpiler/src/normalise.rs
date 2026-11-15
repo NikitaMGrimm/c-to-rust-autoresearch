@@ -23,6 +23,10 @@
 //! library found, and is only tested, whether and where it found it. It
 //! needs no facts and is in a file of its own.
 //!
+//! `same`, R53, gives a call that hands one pointer in several arguments
+//! a copy of the function in which those parameters are one; it is in a
+//! file of its own.
+//!
 //! `cursors`, R24, makes a pointer that walks an array an index beside the
 //! array; it is in a file of its own.
 //!
@@ -35,12 +39,14 @@ mod cursors;
 mod ends;
 mod errno;
 mod found;
+mod same;
 mod unions;
 mod voids;
 
 pub use cursors::cursors;
 pub use ends::ends;
 pub use found::{SEARCHES, found, is_search};
+pub use same::same;
 pub use unions::unions;
 pub use voids::voids;
 

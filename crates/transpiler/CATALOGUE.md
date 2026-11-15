@@ -135,7 +135,8 @@ Entry format, newest last:
   parameter of its function, which ends where the function returns; and a
   call with two arguments that point into the same memory, such as
   `f(a, a + 1)`, when the function stores through one of them, since Rust
-  lends memory once to whoever stores there
+  lends memory once to whoever stores there, unless R53 gives the call a
+  copy of the function
 - Needs: `Facts::pointer` for each slot, with `local` for a pointer into a
   variable of its function; `Facts::stored_through` for `mut` on the
   binding of an owner or an `Option`. A store through `&s->items[i]`, an
@@ -1051,3 +1052,33 @@ Entry format, newest last:
   name the jump. A C label `outer` or `outer_2` gets `_label` in R48's block
   too. A `main` with an exit code that ends with a `goto` gets no
   `ExitCode::SUCCESS` after it (R1), as the loop does not end
+## R53: one pointer handed in several arguments
+
+- C: a call of one of the program's functions that hands the same pointer
+  in several arguments, `f(out, out, out, len)`: reads of one variable, one
+  array or the address of one variable, under any conversions, in a call
+  whose arguments have no side effects, where the function stores through
+  or owns one of the parameters that receive it
+- Rust: a copy of the function in which the parameters that receive the
+  pointer are one, the first of them, `f_same(out, len)` with
+  `fn f_same(out: &mut [i32], len: i32)`; its parameters and
+  locals are variables of its own, and a `static` local stays the one
+  variable it is. One copy for each grouping of a function's parameters,
+  with the function's name and `_same`, `_same2`, … until no function or
+  global has it; a call in a copy is rewritten in the same way, so a
+  function that calls itself with the same arguments calls its copy. The
+  function stays as it is beside its copies
+- Needs: `normalise::same`, on the facts of the program as written:
+  `Facts::pointer` for whether a parameter is written or owned, which is
+  what the lowering of the call refuses, and `Facts::mutated` and
+  `Facts::addressed` for a parameter that may stop being the pointer it was
+  handed
+- Refused: with R7's refusal, a group whose parameters have different
+  types, that the function assigns, moves or takes the address of, a call
+  with a side effect in any argument, and the same pointer written another
+  way: offsets into one array, `f(a, a + 1)`, and the same field,
+  `f(s->data, s->data)`
+- Motivation: `g3_030_mutable_buffer_overlap_extrahard` hands one buffer
+  as the result and every operand of a function
+- Changes: narrows R7's refusal of two arguments that point into the same
+  memory
