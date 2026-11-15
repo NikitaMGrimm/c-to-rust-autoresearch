@@ -50,7 +50,9 @@ functions, `main`), `types.rs`, `expr.rs`, `stmt.rs`, `pointer.rs`,
 
 - Clang prints a construct that the front end does not read: `clang.rs`, and
   `c.rs` if the tree has no node for it. The tree keeps what C means, not how
-  Clang prints it. Types, tags and typedefs are found by name, so a program
+  Clang prints it. A documentation comment, which Clang hangs on its
+  declaration, is taken out of the tree before it is read (R57). Types,
+  tags and typedefs are found by name, so a program
   that gives one name two meanings in different scopes is refused.
 - A rule needs to know something about the rest of the program (is this
   pointer ever NULL, does this function change a global, is this array

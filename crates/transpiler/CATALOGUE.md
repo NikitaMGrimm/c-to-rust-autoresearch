@@ -1154,3 +1154,19 @@ Entry format, newest last:
 - Motivation: the development programs `g5_hm_geti`, `g5_intput`,
   `g5_sh_puts` and `g5_str_put` expand macros into statement expressions
 - Changes: R34 reads its own expansion first
+
+
+## R57: a documentation comment
+
+- C: a comment that starts with `/**`, `///`, `/*!` or `//!`, or with
+  `/**<` or `///<` after what it describes, at a function, a parameter, a
+  record and its fields, an enumeration and its values, a `typedef`, a
+  global or a local variable. Clang hangs it on the declaration as a
+  `FullComment`; an ordinary comment is not in its tree
+- Rust: nothing, as for an ordinary comment: the declaration is read as
+  it is without the comment
+- Needs: nothing
+- Motivation: programs outside the development set document their
+  functions in this way and were refused for Clang's `FullComment`; no
+  development program needs it
+- Changes: none

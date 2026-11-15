@@ -85,6 +85,16 @@ fn changes_layout(kind: &str) -> bool {
     matches!(kind, "PackedAttr" | "AlignedAttr" | "MaxFieldAlignmentAttr")
 }
 
+/// R57: takes the documentation comments out of the tree. Clang hangs a
+/// comment that starts with `/**` or `///` on the declaration it stands
+/// at; it says nothing that the program does.
+pub fn without_comments(node: &mut Value) {
+    if let Some(parts) = node.get_mut("inner").and_then(Value::as_array_mut) {
+        parts.retain(|part| part["kind"] != "FullComment");
+        parts.iter_mut().for_each(without_comments);
+    }
+}
+
 fn children(node: &Value) -> &[Value] {
     node["inner"].as_array().map_or(&[], Vec::as_slice)
 }

@@ -97,7 +97,10 @@ pub fn clang_ast(input: &Path) -> Result<serde_json::Value, String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(|err| format!("invalid AST from {CLANG}: {err}"))
+    let mut ast = serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("invalid AST from {CLANG}: {err}"))?;
+    clang::without_comments(&mut ast);
+    Ok(ast)
 }
 
 /// Reads a C syntax tree into the tree the rules work on.

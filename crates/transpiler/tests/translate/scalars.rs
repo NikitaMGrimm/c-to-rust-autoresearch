@@ -1165,3 +1165,54 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn a_documentation_comment_is_left_out() {
+    // R57: Clang hangs such a comment on its declaration.
+    let rust = check(
+        "documented",
+        r#"#include <stdio.h>
+/** A pair of numbers. */
+struct pair {
+    int left; /**< the first */
+    /// the second
+    int right;
+};
+/*! How often `sum` ran. */
+static int runs;
+/**
+ * @brief Adds the two numbers of a pair.
+ * @param p the pair
+ * @return their sum
+ */
+static int sum(struct pair p /**< by value */) {
+    /** counted here */
+    runs++;
+    return p.left + p.right;
+}
+int main(int argc, char **argv) {
+    /** from the arguments */
+    struct pair p = { argc, 4 }; ///< trailing
+    /** a loop */
+    for (int i = 0; i < 2; i++) {
+        /** in the loop */
+        int twice = sum(p) * 2;
+        printf("%d\n", twice);
+    }
+    printf("%d\n", runs);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "struct Pair {",
+            "left: i32,",
+            "fn sum(globals: &mut Globals, p: Pair) -> i32 {",
+        ],
+    );
+    assert!(!rust.contains("A pair") && !rust.contains("counted"));
+}
