@@ -27,6 +27,7 @@ loop/cargo test -p transpiler
 loop/cargo clippy -p transpiler --all-targets -- -D warnings
 loop/cargo test -p transpiler --test dev -- --nocapture   # why each dev program is refused
 loop/cargo run -q -p transpiler -- bench/dev/NAME.c -o local/NAME.rs
+loop/cargo run -q -p transpiler -- --list bench/dev/NAME.c      # all that the program still needs
 cargo run -p eval -- --quiet                               # the dev scores; sandboxes the transpiler itself
 ```
 
@@ -47,12 +48,19 @@ own as tests.
 
 ## One step
 
-1. Choose what to do. The refusal reasons of the development programs, the
-   weak spots and the list of what is not built in `DESIGN.md`, and
-   `local/rounds.md`, the gate's results so far, which the first judging
-   writes, say what is missing. Prefer what unblocks the most, and what
-   later steps will build on. Build a construct as a family, as the next
-   section says, not as the one shape a development program has.
+1. Choose what to do. A program passes only when its last missing
+   construct is built, and a refusal names only the first. So list what
+   each development program that does not pass still needs, keep the result
+   in `local/blockers.md`, and take the programs with the fewest blockers
+   left. Where the transpiler has no listing yet, build it first: a second
+   entry point that goes on after a refusal, a refactoring that leaves the
+   translation and the text of a refusal as they are. The weak spots and
+   the list of what is not built in `DESIGN.md`, and `local/rounds.md`, the
+   gate's results so far, which the first judging writes, say what else is
+   missing. A weak spot that prints another output than the C program,
+   with no refusal, comes before a new construct. Build a construct as a
+   family, as the next section says, not as the one shape a development
+   program has.
 2. Make one step, in the stage where the design puts it:
    - a **rule**: one C construct gets a translation, or an earlier rule
      covers more. Add its entry to `crates/transpiler/CATALOGUE.md`, in the
@@ -81,14 +89,16 @@ own as tests.
    rises, and a refactoring or a fix when it does not drop; in both cases the
    validation score may not drop. It prints the development results and its
    decision. After a rejection, change the commit and judge again, or go back
-   with `git reset --hard run/RUN`. One judging is one construct family: a
-   rule that passes no development program by itself is rejected, so commit
-   the rules of a family one by one and judge them as one. Do not put two
-   families into one judging, nor a fix that belongs to neither: the gate
-   then cannot tell which of them changed the score. The one exception: when
-   the programs that a family unblocks also need a second family, so that
-   neither raises the score alone, build both and judge them as one, and say
-   so in the report.
+   with `git reset --hard run/RUN`. One judging is what completes a
+   development program: a rule that passes no development program by itself
+   is rejected, so build the constructs that the listing shows a program to
+   need, commit their rules one by one, and have them judged as one once
+   the program passes on your branch. Say in the report which constructs
+   shared a judging. Do not add a family or a fix that the program does not
+   need: the gate then cannot tell which of them changed the score. A
+   family that completes no program yet stays on a branch of its own,
+   rebased on the kept head. When a program shows a second blocker that the
+   listing did not have, leave it and take the next.
 
 ## A construct family
 
@@ -118,10 +128,16 @@ above about the sandbox and the private programs, word for word. Read each
 diff yourself, run its probes on your branch, bring what is good onto it, and
 have it judged. Decisions about the design stay with you.
 
+Run at most three workers at a time. A brief names what to build and
+forbids other changes; what a worker would change beside it, it reports and
+leaves. It commits each rule by itself, and runs a translation through the
+evaluator only. A diff that you cannot read whole is too large: have it
+split before you take it.
+
 ## The end of a stretch
 
-A stretch is about fifteen kept commits, or what the owner's message says.
-At its end:
+A stretch is three hours of building, or what the owner's message says;
+note the time when you start. At its end:
 
 1. **Differential testing.** `delegate_task` with GPT 6.1 Sol at high effort,
    read-only: it looks for translations that compile and behave differently
@@ -135,9 +151,10 @@ At its end:
    programmer would not write. They go on the list in `DESIGN.md` of what to
    build next; they are not judged.
 3. **Report and stop.** Tell the owner what was kept and rejected, the
-   development scores by group, for each family its shapes and how many
-   probes pass and are refused, what the workers built, the refusal reasons
-   that remain, what the reviews found, and what you would do next. The owner
+   development scores by group, the blockers of each program at the start
+   and at the end, for each family its shapes and how many probes pass and
+   are refused, what the workers built, what stays on a branch and why,
+   what the reviews found, and what you would do next. The owner
    has the transcripts audited and reads the validation results before the
    next stretch.
 
