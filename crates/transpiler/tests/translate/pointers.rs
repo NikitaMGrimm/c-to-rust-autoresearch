@@ -256,3 +256,90 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn two_elements_of_an_array_one_before_the_other_are_split() {
+    let rust = check(
+        "elements_apart",
+        r#"#include <stdio.h>
+typedef struct { int n; int data[2]; } item;
+static void copy(const item *from, item *to) {
+    to->n = from->n + 1;
+    to->data[1] = from->data[0] * 2;
+}
+static void swap(item *a, item *b) {
+    item t = *a;
+    *a = *b;
+    *b = t;
+}
+static void spread(item *all, int count) {
+    for (int i = 1; i < count; i++) copy(&all[0], &all[i]);
+}
+int main(int argc, char *argv[]) {
+    item items[5];
+    for (int i = 0; i < 5; i++) {
+        items[i].n = i * argc;
+        items[i].data[0] = i + argc;
+        items[i].data[1] = 0;
+    }
+    spread(items, 3);
+    for (int i = 4; i < 5; i += 2) copy(&items[i], &items[3]);
+    swap(&items[1], &items[4]);
+    for (int i = 0; i < 5; i++) printf("%d %d %d\n", items[i].n, items[i].data[0], items[i].data[1]);
+    return 0;
+}
+"#,
+        &[&[], &["a", "b"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let (lower, upper) = all.split_at_mut(i as usize);",
+            "copy(&lower[0], &mut upper[0]);",
+            "let (lower, upper) = items.split_at_mut(i as usize);",
+            "copy(&upper[0], &mut lower[3]);",
+            "let (lower, upper) = items.split_at_mut(4);",
+            "swap(&mut lower[1], &mut upper[0]);",
+        ],
+    );
+    let refused = |name: &str, body: &str| {
+        let c = format!(
+            "typedef struct {{ int n; }} item;\nstatic void copy(const item *from, item *to) {{ to->n = from->n; }}\nstatic void add(const int *from, int *to, int n) {{ for (int i = 0; i < n; i++) to[i] += from[i]; }}\nint main(int argc, char *argv[]) {{\n    item items[4] = {{{{1}}, {{2}}, {{3}}, {{4}}}};\n    int v[4] = {{1, 2, 3, 4}};\n{body}\n    return items[argc].n + v[3];\n}}\n"
+        );
+        crate::common::translate(name, &c).unwrap_err()
+    };
+    for (name, body) in [
+        // The counter starts at the other element.
+        (
+            "apart_from_same",
+            "    for (int i = 0; i < 4; i++) copy(&items[0], &items[i]);",
+        ),
+        ("apart_same", "    copy(&items[2], &items[2]);"),
+        // The constant is not below where the counter starts.
+        (
+            "apart_above",
+            "    for (int i = 0; i < 2; i++) copy(&items[3], &items[i]);",
+        ),
+        (
+            "apart_down",
+            "    for (int i = 3; i > 0; i--) copy(&items[0], &items[i]);",
+        ),
+        (
+            "apart_variable",
+            "    int at = argc; copy(&items[0], &items[at]);",
+        ),
+        (
+            "apart_moved",
+            "    for (int i = 1; i < 4; i++) { copy(&items[0], &items[i]); if (argc > 5) i--; }",
+        ),
+        // The rest of the array from an element reaches the other one.
+        ("apart_slices", "    add(&v[0], &v[2], 2);"),
+    ] {
+        assert_eq!(
+            refused(name, body),
+            "unsupported: two arguments that point into the same memory, one of them to store through, at line 7",
+            "{name}"
+        );
+    }
+}

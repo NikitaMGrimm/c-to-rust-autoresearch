@@ -896,6 +896,12 @@ struct Lower<'a> {
     untyped: BTreeSet<VarId>,
     /// The labels whose blocks are open, which a `goto` may leave (R48).
     labels: Vec<String>,
+    /// The counters of the `for` loops that are open and count up from a
+    /// constant, with that constant (R54).
+    counters: Vec<(VarId, i128)>,
+    /// Whether the last call of a function of the program was written as a
+    /// block that splits an array first (R54).
+    split: bool,
     /// The library's records that the translation names: `div_t` and its
     /// like.
     quotients: std::cell::RefCell<BTreeSet<usize>>,
@@ -921,6 +927,8 @@ impl<'a> Lower<'a> {
             nesting: Vec::new(),
             untyped: BTreeSet::new(),
             labels: Vec::new(),
+            counters: Vec::new(),
+            split: false,
             quotients: Default::default(),
             zeroing: Default::default(),
             listing,

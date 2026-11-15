@@ -832,6 +832,30 @@ Entry format, newest last:
 - Motivation: `g5_charinbuf` wraps `memchr` in a function and takes the
   position from the result
 - Changes: extends R40 and R47
+## R54: two elements of one array in one call
+
+- C: a call with `&a[i]` and `&a[j]` as two arguments, elements of one
+  array of which the function stores through at least one, where `i` is
+  below `j` on every run: both are constants, or one is a constant and
+  the other the counter of a `for` loop that starts above it, `for (int i
+  = 1; …; i++) copy(&a[0], &a[i]);`, with a step that adds to it and a
+  body that leaves it alone
+- Rust: the array is split before the later element, so that each
+  argument borrows a part of its own: `let (lower, upper) =
+  a.split_at_mut(i as usize); copy(&lower[0], &mut upper[0]);`, in a
+  block where the call's value is used. `lower` and `upper` are names
+  that no C name keeps
+- Needs: `Lower::counters`, the counters of the open `for` loops with the
+  constant they start at
+- Refused, as before, with `two arguments that point into the same
+  memory, one of them to store through`: indices that may be equal (a
+  counter that starts at the constant, a variable, a loop that counts
+  down or whose body moves the counter), more than two such arguments,
+  and a parameter that reads on from its element as an array, which
+  would reach the other argument
+- Motivation: `g4_memcpy_fun_buffers` copies its first buffer to each of
+  the others
+- Changes: R7 no longer refuses these calls
 ## R42: pointers to functions
 
 - C: a pointer to a function, `R (*)(A, B)`, also through a `typedef` of

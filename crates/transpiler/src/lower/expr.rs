@@ -767,8 +767,11 @@ impl Lower<'_> {
         }
         // Rust lends memory to a function once if it may store there, and
         // gives it away once.
-        let mut lent: Vec<(Vec<Part>, bool)> = Vec::new();
-        for (&param, arg) in function.params.iter().zip(args) {
+        let mut lent: Vec<(usize, Vec<Part>, bool)> = Vec::new();
+        // R54: the two arguments that are elements of one array, the first
+        // of them before the second.
+        let mut apart: Option<(usize, usize)> = None;
+        for (position, (&param, arg)) in function.params.iter().zip(args).enumerate() {
             let ty = &program.vars[param].ty;
             if !ty.is_pointer() || ty.function().is_some() {
                 continue;
@@ -782,16 +785,27 @@ impl Lower<'_> {
                 let common = other.len().min(memory.len());
                 other[..common] == memory[..common]
             };
-            if lent
+            let overlaps: Vec<usize> = lent
                 .iter()
-                .any(|(other, other_stores)| (stores || *other_stores) && shared(other))
-            {
-                return unsupported(
-                    "two arguments that point into the same memory, one of them to store through",
-                    arg.at,
-                );
+                .filter(|(_, other, other_stores)| (stores || *other_stores) && shared(other))
+                .map(|(other, ..)| *other)
+                .collect();
+            match (overlaps.as_slice(), apart) {
+                ([], _) => {}
+                ([other], None) if self.before(&args[*other], arg).is_some() => {
+                    apart = match self.before(&args[*other], arg) {
+                        Some(true) => Some((*other, position)),
+                        _ => Some((position, *other)),
+                    };
+                }
+                _ => {
+                    return unsupported(
+                        "two arguments that point into the same memory, one of them to store through",
+                        arg.at,
+                    );
+                }
             }
-            lent.push((memory, stores));
+            lent.push((position, memory, stores));
         }
         let mut values = Vec::new();
         if self.facts.access(id) != Access::None {
@@ -806,7 +820,83 @@ impl Lower<'_> {
                 false => self.typed(arg)?,
             });
         }
-        Ok(rust::call(self.names.function(id), values))
+        self.split = apart.is_some();
+        let Some((low, high)) = apart else {
+            return Ok(rust::call(self.names.function(id), values));
+        };
+        // The array is split before the second element, so that each
+        // argument borrows a part of its own.
+        let offset = values.len() - args.len();
+        let element = |value: &syn::Expr| match value {
+            syn::Expr::Reference(syn::ExprReference {
+                mutability, expr, ..
+            }) => match &**expr {
+                // An element, not the rest of the array from it, which
+                // would reach the other argument.
+                syn::Expr::Index(syn::ExprIndex { expr, index, .. })
+                    if !matches!(**index, syn::Expr::Range(_)) =>
+                {
+                    Some((*mutability, (**expr).clone(), (**index).clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let (Some((low_mut, array, low_index)), Some((high_mut, other, high_index))) = (
+            element(&values[offset + low]),
+            element(&values[offset + high]),
+        ) else {
+            return unsupported(
+                "two arguments that point into the same memory, one of them to store through",
+                call.at,
+            );
+        };
+        let tokens = |side: &syn::Expr| quote::ToTokens::to_token_stream(side).to_string();
+        if tokens(&array) != tokens(&other) {
+            return unsupported(
+                "two arguments that point into the same memory, one of them to store through",
+                call.at,
+            );
+        }
+        values[offset + low] = parse_quote!(&#low_mut lower[#low_index]);
+        values[offset + high] = parse_quote!(&#high_mut upper[0]);
+        let call = rust::call(self.names.function(id), values);
+        Ok(parse_quote!({
+            let (lower, upper) = #array.split_at_mut(#high_index);
+            #call
+        }))
+    }
+
+    /// R54: whether the first of two addresses of elements of one array,
+    /// `&a[i]` and `&a[j]`, is before the second on every run, or after it:
+    /// both indices are constants, or one is a constant and the other the
+    /// counter of a `for` loop that starts above it.
+    fn before(&self, first: &Expr, second: &Expr) -> Option<bool> {
+        let element = |pointer: &'_ Expr| match &pointer.uncast().kind {
+            ExprKind::AddrOf(place) => match &place.kind {
+                ExprKind::Index(array, index) => Some(((**array).clone(), (**index).clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        let ((array, first), (other, second)) = (element(first)?, element(second)?);
+        if !same_place(&array, &other) || !array.is_pure() {
+            return None;
+        }
+        // The least value an index takes.
+        let least = |index: &Expr| match index.uncast().kind {
+            ExprKind::Var(var) => self
+                .counters
+                .iter()
+                .find(|(counter, _)| *counter == var)
+                .map(|(_, start)| (*start, false)),
+            _ => index.constant(self.program).map(|value| (value, true)),
+        };
+        match (least(&first)?, least(&second)?) {
+            ((first, true), (second, _)) if (0..second).contains(&first) => Some(true),
+            ((first, _), (second, true)) if (0..first).contains(&second) => Some(false),
+            _ => None,
+        }
     }
 
     /// R2: `target = value` or `target op= value`.
@@ -990,7 +1080,20 @@ impl Lower<'_> {
             } => statement(self.step(target, *increment)?),
             ExprKind::Cast(inner) if expr.ty == Type::Void => self.effect(inner)?,
             ExprKind::Comma(first, last) => [self.effect(first)?, self.effect(last)?].concat(),
-            ExprKind::Call(callee, args) => statement(self.call(expr, callee, args)?),
+            ExprKind::Call(callee, args) => {
+                let call = self.call(expr, callee, args)?;
+                match (std::mem::take(&mut self.split), call) {
+                    // R54: as a statement, the call follows the split.
+                    (true, syn::Expr::Block(block)) => {
+                        let mut stmts = block.block.stmts;
+                        if let Some(syn::Stmt::Expr(_, semi)) = stmts.last_mut() {
+                            *semi = Some(Default::default());
+                        }
+                        stmts
+                    }
+                    (_, call) => statement(call),
+                }
+            }
             // A value that is not used, as in `(void)argc;`.
             _ if expr.is_pure() => Vec::new(),
             _ => statement(self.expr(expr)?),
@@ -1023,6 +1126,32 @@ fn pointed(pointer: &Expr) -> Option<Vec<Part>> {
             Some(parts)
         }
         _ => None,
+    }
+}
+
+/// Whether two expressions name the same place: a variable, a member of
+/// such a place, or what a pointer there points to.
+fn same_place(one: &Expr, other: &Expr) -> bool {
+    match (&one.kind, &other.kind) {
+        (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
+        (
+            ExprKind::Member {
+                base: one,
+                field: one_field,
+                arrow: one_arrow,
+                ..
+            },
+            ExprKind::Member {
+                base: other,
+                field: other_field,
+                arrow: other_arrow,
+                ..
+            },
+        ) => one_field == other_field && one_arrow == other_arrow && same_place(one, other),
+        (ExprKind::Decay(one), ExprKind::Decay(other))
+        | (ExprKind::Deref(one), ExprKind::Deref(other)) => same_place(one, other),
+        (ExprKind::Cast(one), ExprKind::Cast(other)) => same_place(one, other),
+        _ => false,
     }
 }
 

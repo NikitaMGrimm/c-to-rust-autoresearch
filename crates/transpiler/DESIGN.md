@@ -135,7 +135,9 @@ the intended division of work: the analysis picks types, the compiler proves
 them. Where a rule can see that the compiler will reject its translation, it
 refuses with the reason instead: a result that points to a local, and two
 arguments of one call that point into the same memory when the function
-stores through one of them.
+stores through one of them. Two elements of one array of which one is
+before the other on every run are no such case: the array is split between
+them (R54).
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again

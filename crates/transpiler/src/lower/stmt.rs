@@ -139,7 +139,17 @@ impl Lower<'_> {
                 cond,
                 step,
                 body,
-            } => self.for_loop(init, cond.as_ref(), step.as_ref(), body, out)?,
+            } => {
+                // R54: a counter that only its step moves, and upwards, is
+                // at least where it starts.
+                let counter = self.counter(init, step.as_ref(), body);
+                self.counters.extend(counter);
+                let lowered = self.for_loop(init, cond.as_ref(), step.as_ref(), body, out);
+                if counter.is_some() {
+                    self.counters.pop();
+                }
+                lowered?
+            }
             Stmt::Switch(value, body) => out.push(self.switch(value, body)?),
             Stmt::Break => {
                 let depth = self.switches();
@@ -537,6 +547,39 @@ impl Lower<'_> {
             out.extend(stmts);
         }
         Ok(())
+    }
+
+    /// The variable of `for (int i = start; …; i++)` and its constant start,
+    /// if the step adds to it and the body leaves it alone.
+    fn counter(&self, init: &[Stmt], step: Option<&Expr>, body: &[Stmt]) -> Option<(VarId, i128)> {
+        let program: &Program = self.program;
+        let [Stmt::Decl(var)] = init else {
+            return None;
+        };
+        let var = *var;
+        let declared = &program.vars[var];
+        let start = declared.init.as_ref()?.constant(program)?;
+        if declared.kind != VarKind::Local || !matches!(declared.ty, Type::Int { .. }) {
+            return None;
+        }
+        let is_var = |expr: &Expr| matches!(expr.kind, ExprKind::Var(named) if named == var);
+        let steps = match &step?.kind {
+            ExprKind::IncDec {
+                target, increment, ..
+            } => *increment && is_var(target),
+            ExprKind::Assign {
+                op: Some((BinOp::Add, _)),
+                target,
+                value,
+            } => is_var(target) && value.constant(program).is_some_and(|by| by > 0),
+            _ => false,
+        };
+        let moved = any_expr(body, &program.vars, &mut |part| match &part.kind {
+            ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => is_var(target),
+            ExprKind::AddrOf(inner) => is_var(inner),
+            _ => false,
+        });
+        (steps && !moved).then_some((var, start))
     }
 
     /// The parts of `for (int i = start; i < bound; i++)`, if the loop is

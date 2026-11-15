@@ -58,6 +58,8 @@ const RESERVED: &[&str] = &[
     "random",
     "Random",
     "entry",
+    "lower",
+    "upper",
     "parse_int",
     "peek_byte",
     "read_byte",
