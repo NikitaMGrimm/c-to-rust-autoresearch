@@ -1275,3 +1275,19 @@ next:
         ],
     );
 }
+
+/// The part of a conditional that a decided test leaves is converted as
+/// it would be alone.
+#[test]
+fn a_decided_conditional_converts_what_is_left() {
+    let rust = check(
+        "cond-converted",
+        "#include <stdio.h>\nint main(void) {\n    unsigned most = 0 ? 0 : -1;\n    long under = 1 ? -2 : 0;\n    unsigned char cut = sizeof(int) == 4 ? 300 : 7;\n    printf(\"%u %ld %d\\n\", most, under, cut);\n    return 0;\n}\n",
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["let most: u32 = 4294967295;", "let under: i64 = -2;"],
+    );
+}

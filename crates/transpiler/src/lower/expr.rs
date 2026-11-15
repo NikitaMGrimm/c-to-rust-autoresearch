@@ -94,6 +94,24 @@ impl Lower<'_> {
             | ExprKind::Deref(_) => self.place(expr, false),
             ExprKind::Unary(op, operand) => self.unary(expr, *op, operand),
             ExprKind::Binary(op, left, right) => self.binary(expr, *op, left, right),
+            // The conversion of a conditional whose test is decided is
+            // that of the part that is left, which may be a constant that
+            // the conversion changes: `0 ? 0 : -1` as an `unsigned`.
+            ExprKind::Cast(inner)
+                if let ExprKind::Cond(cond, then, other) = &inner.kind
+                    && let Some(truth) = self.decided(cond)? =>
+            {
+                let left = match truth {
+                    true => then,
+                    false => other,
+                };
+                let converted = Expr {
+                    ty: expr.ty.clone(),
+                    kind: ExprKind::Cast(left.clone()),
+                    at,
+                };
+                self.value(&converted, typed)
+            }
             ExprKind::Cast(inner) => self.convert(inner, &expr.ty, at, typed),
             ExprKind::Bits(inner) => self.bits(expr, inner),
             ExprKind::Cond(cond, then, other) => match self.decided(cond)? {
