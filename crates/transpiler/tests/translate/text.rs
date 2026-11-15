@@ -578,7 +578,7 @@ int main(int argc, char **argv) {
             "let (n, end, range) = parse_int_checked(&args[1]);",
             "if range {",
             "let (u, _, range) = parse_uint_checked(&args[2]);",
-            "let bad: i32 = range as i32;",
+            "let bad = range as i32;",
             "let (d, end, range) = parse_float_checked::<f64>(&args[3], f64::MIN_POSITIVE);",
             "let (f, _, range) = parse_float_checked::<",
         ],
