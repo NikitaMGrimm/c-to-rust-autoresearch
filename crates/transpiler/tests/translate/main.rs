@@ -15,3 +15,4 @@ mod refusals;
 mod scalars;
 mod text;
 mod unions;
+mod voids;
