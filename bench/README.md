@@ -244,10 +244,13 @@ comes from the intake tool's feature detection. Before anything of a
 program runs, its object files, built as the reference builds them, may
 need no symbol beside a fixed list of the C library's, which reach only
 memory, standard input and the standard streams, and its text may not name
-assembly. That leaves out the network, other processes, files and the
-terminal, and the clock and `getenv` too, so that a run repeats. It is a
-filter for sources that were not written against it, not a sandbox:
-assembly behind pasted tokens and `main`'s third parameter pass it. The
+assembly, nor may an object file define a symbol that configures a
+sanitizer. That leaves out the library's functions for the network, other
+processes, files and the terminal, and those for the clock and `getenv`
+too, so that a run repeats. It is a filter for sources that were not
+written against it, not a sandbox: assembly behind pasted tokens, an
+instruction from a compiler's intrinsic, such as a read of the processor's
+time stamp, and `main`'s third parameter pass it. The
 evaluator runs C programs without a sandbox, so take a pool only from a
 source that you would run so. The collection itself runs through
 `loop/cargo`, with both directories in the checkout.

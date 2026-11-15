@@ -61,10 +61,30 @@ const BUILDS: [&[&str]; 4] = [
     &["clang-18", "-O2", "-w"],
     &["gcc", "-O2", "-w"],
 ];
-/// What the sanitizers' own symbols start with.
+/// The symbols that the sanitizers' instrumentation needs, by name and by
+/// what they start with. Not the sanitizers' interface for programs, which
+/// can write reports to files.
 #[rustfmt::skip]
-const SANITIZERS: [&str; 6] = [
-    "__asan_", "__ubsan_", "__msan_", "__sanitizer_", "__start_asan_", "__stop_asan_",
+const INSTRUMENTATION: &[&str] = &[
+    "__asan_init", "__asan_version_mismatch_check_v8", "__asan_register_elf_globals",
+    "__asan_unregister_elf_globals", "__start_asan_globals", "__stop_asan_globals",
+    "__asan_option_detect_stack_use_after_return", "__asan_handle_no_return", "__asan_memcpy",
+    "__asan_memset", "__asan_memmove", "__asan_alloca_poison", "__asan_allocas_unpoison",
+    "__asan_poison_stack_memory", "__asan_unpoison_stack_memory", "__msan_init", "__msan_memcpy",
+    "__msan_memset", "__msan_memmove", "__msan_poison_stack", "__msan_poison_alloca",
+    "__msan_unpoison_alloca",
+];
+#[rustfmt::skip]
+const INSTRUMENTATION_STARTS: &[&str] = &[
+    "__ubsan_handle_", "__asan_report_", "__asan_stack_malloc_", "__asan_stack_free_",
+    "__asan_set_shadow_", "__asan_load", "__asan_store", "__msan_warning", "__msan_va_arg_",
+    "__msan_param_", "__msan_retval_",
+];
+/// What a symbol starts with that configures a sanitizer when a program
+/// defines it, such as `__asan_default_options`.
+#[rustfmt::skip]
+const SANITIZER_HOOKS: &[&str] = &[
+    "__asan", "__ubsan", "__msan", "__lsan", "__tsan", "__hwasan", "__sanitizer", "__sancov",
 ];
 /// math.h, each also with the suffixes `f` and `l`.
 #[rustfmt::skip]
@@ -231,13 +251,14 @@ fn check(file: &Path, stem: &str, work: &Path) -> Result<(u8, String), String> {
 }
 
 /// Whether an object file of the program, in any of the reference's builds,
-/// needs a symbol beside those in [`LIBRARY`] and [`MATHS`], or its text
-/// names assembly. The object file decides, not the source: a macro, a
-/// declaration under another name or a function that is only called in one
-/// build ends as a symbol there. This is a filter for programs from a
-/// source that was not written against it, not a sandbox: assembly behind
-/// pasted tokens passes it, and so does `main`'s third parameter, the
-/// environment.
+/// needs a symbol beside those in [`LIBRARY`] and [`MATHS`] or defines one
+/// that configures a sanitizer, or its text names assembly. The object file
+/// decides, not the source: a macro, a declaration under another name or a
+/// function that is only called in one build ends as a symbol there. This
+/// is a filter for programs from a source that was not written against it,
+/// not a sandbox. What passes it: assembly behind pasted tokens, an
+/// instruction from a compiler's intrinsic, such as a read of the
+/// processor's time stamp, and `main`'s third parameter, the environment.
 fn reaches_outside(c_file: &Path, source: &str, work: &Path) -> Result<bool, String> {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     if source.split(|c| !word(c)).any(|name| name.contains("asm")) {
@@ -258,7 +279,7 @@ fn reaches_outside(c_file: &Path, source: &str, work: &Path) -> Result<bool, Str
             return Err("c_build: object".to_owned());
         }
         let symbols = Command::new("nm")
-            .args(["--undefined-only", "--format=posix"])
+            .arg("--format=posix")
             .arg(&object)
             .output()
             .map_err(|err| format!("cannot run nm: {err}"))?;
@@ -266,8 +287,20 @@ fn reaches_outside(c_file: &Path, source: &str, work: &Path) -> Result<bool, Str
             return Err("c_build: symbols".to_owned());
         }
         let symbols = String::from_utf8_lossy(&symbols.stdout);
-        let names = symbols.lines().filter_map(|line| line.split(' ').next());
-        if !names.into_iter().all(in_library) {
+        let outside = symbols.lines().any(|line| {
+            let mut fields = line.split(' ');
+            let (name, kind) = (fields.next().unwrap_or_default(), fields.next());
+            match kind {
+                // Undefined, also weakly.
+                Some("U" | "w" | "v") => !in_library(name),
+                // Defined for other files to see.
+                Some(kind) if kind.starts_with(|c: char| c.is_ascii_uppercase()) => {
+                    SANITIZER_HOOKS.iter().any(|hook| name.starts_with(hook))
+                }
+                _ => false,
+            }
+        });
+        if outside {
             return Ok(true);
         }
     }
@@ -276,7 +309,8 @@ fn reaches_outside(c_file: &Path, source: &str, work: &Path) -> Result<bool, Str
 
 /// Whether an object file may need the symbol `name`.
 fn in_library(name: &str) -> bool {
-    if SANITIZERS.iter().any(|prefix| name.starts_with(prefix)) {
+    let starts = |prefix: &&str| name.starts_with(*prefix);
+    if INSTRUMENTATION.contains(&name) || INSTRUMENTATION_STARTS.iter().any(starts) {
         return true;
     }
     // glibc's names for a function by the C standard in force, and its
@@ -333,6 +367,11 @@ mod tests {
             "extern char system;\nint main(void) { return ((int (*)(const char *))&system)(\"true\"); }",
             "extern int system(const char *);\n\
              int main(void) { char c __attribute__((cleanup(system))) = 0; return 0; }",
+            // The sanitizers' interface for programs, and their hooks.
+            "#ifndef __has_feature\n#define __has_feature(x) 0\n#endif\n\
+             void __sanitizer_set_report_path(const char *);\nint main(void) {\n\
+             #if __has_feature(address_sanitizer)\n__sanitizer_set_report_path(\"/tmp/r\");\n#endif\nreturn 0; }",
+            "const char *__asan_default_options(void) { return \"log_path=/tmp/r\"; }\nint main(void) { return 0; }",
             // An inline definition gives no symbol of its own.
             "inline int system(const char *s) { return 0; }\nint main(void) { return system(\"true\"); }",
         ] {
