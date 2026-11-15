@@ -266,6 +266,16 @@ fn plain(name: &str) -> String {
 
 /// `printHexLine` as `print_hex_line`: the name as the compiler's lint for
 /// snake case writes it, with the underscores it starts and ends with.
+/// The Rust name of a C label, for the block that a `goto` leaves. It is
+/// no keyword and none of the labels that a `switch` gets.
+pub fn label(name: &str) -> String {
+    let name = snake(name);
+    match RESERVED.contains(&name.as_str()) || name.starts_with("switch") {
+        true => format!("{name}_label"),
+        false => name,
+    }
+}
+
 fn snake(name: &str) -> String {
     let inner = name.trim_matches('_');
     let (before, after) = name.split_once(inner).unwrap_or((name, ""));

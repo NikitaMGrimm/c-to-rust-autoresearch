@@ -15,7 +15,7 @@ fn a_construct_without_a_rule_is_refused() {
     assert_eq!(
         refused(
             "goto",
-            "int main(void) {\n    goto end;\nend:\n    return 0;\n}\n"
+            "int main(int argc, char *argv[]) {\nend:\n    if (argc-- > 1) goto end;\n    return 0;\n}\n"
         ),
         "unsupported: `goto end`: no rule yet"
     );

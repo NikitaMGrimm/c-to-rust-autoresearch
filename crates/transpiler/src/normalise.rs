@@ -198,7 +198,9 @@ impl Narrow<'_> {
             if some.is_empty() && leaves(&none) {
                 // A guard: the pointer is set in all that follows.
                 let mut after: Vec<Stmt> = rest.collect();
-                if assigns(&after, self.vars, var) {
+                // A label among them is reached without the guard too.
+                let labelled = after.iter().any(|stmt| matches!(stmt, Stmt::Label(_)));
+                if labelled || assigns(&after, self.vars, var) {
                     out.push(guard(cond, set_in_then, none));
                     out.extend(self.block(after));
                     return out;

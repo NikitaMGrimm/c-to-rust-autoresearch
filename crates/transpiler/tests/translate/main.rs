@@ -10,6 +10,7 @@ mod functions;
 mod globals;
 mod heap;
 mod input;
+mod jumps;
 mod output;
 mod pointers;
 mod records;

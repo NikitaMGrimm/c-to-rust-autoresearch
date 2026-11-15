@@ -891,6 +891,8 @@ struct Lower<'a> {
     /// exit code.
     exits: bool,
     nesting: Vec<Nest>,
+    /// The labels whose blocks are open, which a `goto` may leave (R48).
+    labels: Vec<String>,
     /// The library's records that the translation names: `div_t` and its
     /// like.
     quotients: std::cell::RefCell<BTreeSet<usize>>,
@@ -914,6 +916,7 @@ impl<'a> Lower<'a> {
             argv: None,
             exits: false,
             nesting: Vec::new(),
+            labels: Vec::new(),
             quotients: Default::default(),
             zeroing: Default::default(),
             listing,

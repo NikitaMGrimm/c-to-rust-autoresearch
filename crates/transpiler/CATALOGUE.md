@@ -891,3 +891,22 @@ Entry format, newest last:
 - Motivation: `g5_siphash` reads the last bytes of a hash through cases
   that fall through; `g5_cleanup` has such cases beside a `goto`
 - Changes: extends R3 and R32; the name `entry` is kept for the translation
+
+## R48: `goto` to a label that follows
+
+- C: `goto label;` where the label is a statement of a block and every
+  `goto` to it is in the statements of that block before it, at any depth:
+  the jump to the cleanup at the end of a function, out of nested loops,
+  past the rest of a loop's body
+- Rust: the statements from the first that holds such a `goto` to the
+  label are a block, `'cleanup: { … }`, and each `goto` is
+  `break 'cleanup;`. The label's name is in snake case, with `_label`
+  where Rust keeps the name for itself
+- Needs: `narrow` leaves a guard, `if (!p) goto out;`, a plain test where
+  a label follows it in its block, since the label is reached without it
+- Refused: a `goto` to a label before it or into a loop or a branch, with
+  `` `goto label`: no rule yet ``; a `break` or `continue` of a loop around
+  the block inside it, which Rust does not allow in a labelled block; a
+  local declared in the block and used after the label
+- Motivation: `g5_cleanup` jumps to its cleanup
+- Changes: nothing

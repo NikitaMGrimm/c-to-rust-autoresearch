@@ -10,6 +10,9 @@ use syn::parse_quote;
 
 impl Lower<'_> {
     pub(super) fn stmts(&mut self, stmts: &[Stmt]) -> R<Vec<syn::Stmt>> {
+        if let Some(labelled) = self.labelled(stmts)? {
+            return Ok(labelled);
+        }
         let mut out = Vec::new();
         for stmt in stmts {
             let nesting = self.nesting.len();
@@ -20,6 +23,71 @@ impl Lower<'_> {
             self.listed(lowered)?;
         }
         Ok(out)
+    }
+
+    /// R48: the statements where the last of them that is a label is the
+    /// target of jumps that all come before it, among these statements:
+    /// the statements from the first jump to the label are a block with
+    /// the label's name, which each `goto` leaves with `break`.
+    fn labelled(&mut self, stmts: &[Stmt]) -> R<Option<Vec<syn::Stmt>>> {
+        let Some(at) = stmts
+            .iter()
+            .rposition(|stmt| matches!(stmt, Stmt::Label(_)))
+        else {
+            return Ok(None);
+        };
+        let Stmt::Label(label) = &stmts[at] else {
+            return Ok(None);
+        };
+        let function = self.function.map(|id| &self.program.functions[id]);
+        let all = function.map_or(0, |function| jumps(&function.body, label));
+        let Some(first) = stmts[..at]
+            .iter()
+            .position(|stmt| jumps(std::slice::from_ref(stmt), label) > 0)
+        else {
+            return Ok(None);
+        };
+        let (block, rest) = (&stmts[first..at], &stmts[at + 1..]);
+        // A jump from anywhere else, such as one back from below the
+        // label, has no block to leave.
+        if jumps(block, label) != all || self.labels.contains(label) {
+            return Ok(None);
+        }
+        // Rust has no `break` or `continue` of a loop directly in a
+        // labelled block, and a local of the block ends with it.
+        if leaves_loop(block, true) {
+            return unsupported(
+                format!(
+                    "`break` or `continue` of a loop between `goto {label}` and its label: no rule yet"
+                ),
+                0,
+            );
+        }
+        let vars = &self.program.vars;
+        let declared = block.iter().any(|stmt| match stmt {
+            Stmt::Decl(var) => any_expr(
+                rest,
+                vars,
+                &mut |expr| matches!(expr.kind, ExprKind::Var(named) if named == *var),
+            ),
+            _ => false,
+        });
+        if declared {
+            return unsupported(
+                format!(
+                    "a variable declared between `goto {label}` and its label and used after it: no rule yet"
+                ),
+                0,
+            );
+        }
+        let mut out = self.stmts(&stmts[..first])?;
+        self.labels.push(label.clone());
+        let block = self.stmts(block);
+        self.labels.pop();
+        let (block, name) = (block?, block_label(label));
+        out.push(parse_quote!(#name: { #(#block)* }));
+        out.extend(self.stmts(rest)?);
+        Ok(Some(out))
     }
 
     /// The statements as a block of their own.
@@ -139,6 +207,12 @@ impl Lower<'_> {
             } => out.extend(self.parse(*number, *error, *end, call, start.as_ref())?),
             Stmt::Case(_) | Stmt::Default => {
                 return unsupported("a `case` outside the top of its `switch`", 0);
+            }
+            // R48: a jump to a label that follows leaves the block that
+            // ends there.
+            Stmt::Goto(label) if self.labels.contains(label) => {
+                let label = block_label(label);
+                out.push(parse_quote!(break #label;));
             }
             Stmt::Goto(label) | Stmt::Label(label) => {
                 return unsupported(format!("`goto {label}`: no rule yet"), 0);
@@ -743,6 +817,45 @@ fn declared(stmts: &[Stmt]) -> impl Iterator<Item = VarId> + '_ {
             .copied()
             .collect(),
         _ => Vec::new(),
+    })
+}
+
+/// The label of the block that a `goto` to the C label leaves.
+fn block_label(label: &str) -> syn::Lifetime {
+    let name = format!("'{}", crate::names::label(label));
+    syn::Lifetime::new(&name, proc_macro2::Span::call_site())
+}
+
+/// How many `goto` statements in the statements jump to the label.
+fn jumps(stmts: &[Stmt], label: &str) -> usize {
+    let count = |stmts: &[Stmt]| jumps(stmts, label);
+    let of = |stmt: &Stmt| match stmt {
+        Stmt::Goto(target) => usize::from(target == label),
+        Stmt::Block(body)
+        | Stmt::While(_, body)
+        | Stmt::DoWhile(body, _)
+        | Stmt::Switch(_, body) => count(body),
+        Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => count(then) + count(other),
+        Stmt::For { init, body, .. } => count(init) + count(body),
+        Stmt::LetSome { otherwise, .. } => count(otherwise),
+        _ => 0,
+    };
+    stmts.iter().map(of).sum()
+}
+
+/// Whether the statements hold a `continue` of a loop around them or,
+/// where `breaks` says that no `switch` is between, a `break` of one.
+fn leaves_loop(stmts: &[Stmt], breaks: bool) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Continue => true,
+        Stmt::Break => breaks,
+        Stmt::Block(body) => leaves_loop(body, breaks),
+        Stmt::Switch(_, body) => leaves_loop(body, false),
+        Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => {
+            leaves_loop(then, breaks) || leaves_loop(other, breaks)
+        }
+        Stmt::LetSome { otherwise, .. } => leaves_loop(otherwise, breaks),
+        _ => false,
     })
 }
 
