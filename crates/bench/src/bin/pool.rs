@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -18,33 +18,44 @@ const USAGE: &str = "usage: pool TAG SOURCE_DIR POOL_DIR [--jobs N]\n\
      POOL_DIR as gN_TAG_PATH.c. The programs are third-party code and run\n\
      here: call it through loop/cargo, with both directories in the checkout.";
 
-/// Headers of what a pool program may not reach: the network, other
-/// processes, files, the terminal and the clock. The programs run without a
-/// sandbox whenever they are evaluated, so they must need none.
-const HEADERS: [&str; 19] = [
-    "sys/",
-    "netinet/",
-    "arpa/",
-    "netdb.h",
-    "unistd.h",
-    "fcntl.h",
-    "dirent.h",
-    "pthread.h",
-    "threads.h",
-    "signal.h",
-    "setjmp.h",
-    "termios.h",
-    "time.h",
-    "omp.h",
-    "windows.h",
-    "winsock",
-    "conio.h",
-    "GL/",
-    "SDL",
+/// The C library's functions that a pool program may call, beside those it
+/// defines: they reach nothing but its own memory, standard input and the
+/// standard streams. The evaluator runs C programs without a sandbox, so a
+/// pool program must need none. A function that takes a `FILE *` is here
+/// because nothing here opens a file, so only the standard streams exist.
+/// The clock and the environment are left out as well: a run must repeat.
+#[rustfmt::skip]
+const LIBRARY: &[&str] = &[
+    // stdio.h
+    "printf", "fprintf", "sprintf", "snprintf", "vprintf", "vfprintf", "vsprintf", "vsnprintf",
+    "puts", "fputs", "putchar", "putc", "fputc", "fwrite", "fflush", "scanf", "fscanf", "sscanf",
+    "getchar", "getc", "fgetc", "ungetc", "fgets", "fread", "getline", "feof", "ferror",
+    "clearerr", "perror",
+    // stdlib.h
+    "malloc", "calloc", "realloc", "free", "alloca", "abs", "labs", "llabs", "div", "ldiv",
+    "lldiv", "atoi", "atol", "atoll", "atof", "strtol", "strtoul", "strtoll", "strtoull",
+    "strtod", "strtof", "strtold", "qsort", "bsearch", "rand", "srand", "exit", "abort",
+    // string.h
+    "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp", "strncmp", "strchr", "strrchr",
+    "strstr", "strtok", "strspn", "strcspn", "strpbrk", "strdup", "strndup", "memcpy", "memmove",
+    "memset", "memcmp", "memchr",
+    // ctype.h, and what glibc's macros for it, for errno and for assert call
+    "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "ispunct", "isxdigit",
+    "isprint", "iscntrl", "isgraph", "isblank", "toupper", "tolower", "__ctype_b_loc",
+    "__ctype_tolower_loc", "__ctype_toupper_loc", "__errno_location", "__assert_fail",
+    // setjmp.h
+    "setjmp", "_setjmp", "longjmp",
+    // Compiler builtins without a library name, after `__builtin_`
+    "va_start", "va_end", "va_copy", "expect", "unreachable", "trap", "constant_p", "clz", "ctz",
+    "popcount", "bswap16", "bswap32", "bswap64", "isnan", "isinf", "isfinite", "signbit",
+    "huge_val", "inf", "nan",
 ];
-/// Library functions that do the same without one of those headers.
-const CALLS: [&str; 10] = [
-    "fopen", "freopen", "tmpfile", "remove", "rename", "system", "popen", "getenv", "time", "clock",
+/// math.h, each also with the suffixes `f` and `l`.
+#[rustfmt::skip]
+const MATHS: &[&str] = &[
+    "sqrt", "cbrt", "pow", "exp", "exp2", "log", "log2", "log10", "sin", "cos", "tan", "asin",
+    "acos", "atan", "atan2", "sinh", "cosh", "tanh", "fabs", "floor", "ceil", "round", "trunc",
+    "fmod", "fmax", "fmin", "hypot", "modf", "frexp", "ldexp",
 ];
 
 struct Args {
@@ -117,9 +128,9 @@ fn collect(args: &Args) -> Result<(), String> {
     let mut left_out: BTreeMap<String, usize> = BTreeMap::new();
     let mut groups: BTreeMap<u8, usize> = BTreeMap::new();
     let mut names = BTreeSet::new();
-    for (stem, file, outcome) in checked {
-        let group = match outcome {
-            Ok(group) => group,
+    for (stem, _, outcome) in checked {
+        let (group, source) = match outcome {
+            Ok(program) => program,
             Err(reason) => {
                 *left_out.entry(reason).or_default() += 1;
                 continue;
@@ -132,7 +143,9 @@ fn collect(args: &Args) -> Result<(), String> {
             continue;
         }
         let to = args.pool.join(format!("{name}.c"));
-        std::fs::copy(file, &to).map_err(|err| format!("cannot write {}: {err}", to.display()))?;
+        // The text that was checked, not the file, which may have changed.
+        std::fs::write(&to, source)
+            .map_err(|err| format!("cannot write {}: {err}", to.display()))?;
         *groups.entry(group).or_default() += 1;
     }
     println!(
@@ -177,8 +190,9 @@ fn stem(relative: &Path) -> String {
     stem.trim_end_matches('_').to_owned()
 }
 
-/// The group of the program `file` if it may join the pool, or why not.
-fn check(file: &Path, stem: &str, work: &Path) -> Result<u8, String> {
+/// The group and the text of the program `file` if it may join the pool, or
+/// why not.
+fn check(file: &Path, stem: &str, work: &Path) -> Result<(u8, String), String> {
     let source = std::fs::read(file).map_err(|err| format!("unreadable: {}", err.kind()))?;
     let Ok(source) = String::from_utf8(source) else {
         return Err("not_utf8".to_owned());
@@ -186,38 +200,85 @@ fn check(file: &Path, stem: &str, work: &Path) -> Result<u8, String> {
     if stem.is_empty() {
         return Err("no_name".to_owned());
     }
-    if reaches_outside(&source) {
-        return Err("reaches_outside".to_owned());
-    }
     std::fs::create_dir_all(work).map_err(|err| format!("no_scratch: {}", err.kind()))?;
     // Under its own name, as the evaluator will build it.
     let c_file = work.join(format!("{stem}.c"));
     std::fs::write(&c_file, &source).map_err(|err| format!("no_scratch: {}", err.kind()))?;
+    // Before anything of it runs.
+    if reaches_outside(&c_file)? {
+        return Err("reaches_outside".to_owned());
+    }
     let references = References::build(&c_file, &[], work)?;
     references.check(&Input::default())?;
     let (group, _) = bench::classify(&c_file)?;
-    Ok(group)
+    Ok((group, source))
 }
 
-/// Whether the program includes a header or calls a function that reaches
-/// beyond its own memory, standard input and standard output.
-fn reaches_outside(source: &str) -> bool {
-    let included = source
-        .lines()
-        .map(str::trim_start)
-        .filter_map(|line| line.strip_prefix('#'))
-        .map(str::trim_start)
-        .filter_map(|line| line.strip_prefix("include"))
-        .any(|header| HEADERS.iter().any(|name| header.contains(name)));
-    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let called = CALLS.iter().any(|name| {
-        source.match_indices(name).any(|(at, _)| {
-            let before = source[..at].chars().next_back();
-            let after = source[at + name.len()..].trim_start().chars().next();
-            !before.is_some_and(word) && after == Some('(')
+/// Whether the program names a function that it does not define and that is
+/// not in [`LIBRARY`] or [`MATHS`], or holds assembly. Clang's syntax tree
+/// decides, so that neither a macro, a digraph nor a declaration of the
+/// program's own hides a call.
+fn reaches_outside(c_file: &Path) -> Result<bool, String> {
+    let output = Command::new("clang-18")
+        .args(["-Xclang", "-ast-dump=json", "-fsyntax-only", "-w"])
+        .arg(c_file)
+        .output()
+        .map_err(|err| format!("cannot run clang-18: {err}"))?;
+    let ast: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|_| "c_build: no syntax tree".to_owned())?;
+    let own: Vec<&serde_json::Value> = ast["inner"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|decl| {
+            let loc = &decl["loc"];
+            decl["isImplicit"] != true
+                && loc["includedFrom"].is_null()
+                && loc["expansionLoc"]["includedFrom"].is_null()
+                && (loc["offset"].is_number() || loc["expansionLoc"]["offset"].is_number())
         })
-    });
-    included || called
+        .collect();
+    let has_body = |decl: &serde_json::Value| {
+        let mut inner = decl["inner"].as_array().into_iter().flatten();
+        inner.any(|node| node["kind"] == "CompoundStmt")
+    };
+    let defined: BTreeSet<&str> = own
+        .iter()
+        .filter(|decl| decl["kind"] == "FunctionDecl" && has_body(decl))
+        .filter_map(|decl| decl["name"].as_str())
+        .collect();
+    Ok(own.iter().any(|decl| names_outside(decl, &defined)))
+}
+
+fn names_outside(node: &serde_json::Value, defined: &BTreeSet<&str>) -> bool {
+    let kind = node["kind"].as_str().unwrap_or_default();
+    if matches!(kind, "GCCAsmStmt" | "MSAsmStmt" | "FileScopeAsmDecl") {
+        return true;
+    }
+    let referenced = &node["referencedDecl"];
+    if kind == "DeclRefExpr" && referenced["kind"] == "FunctionDecl" {
+        let name = referenced["name"].as_str().unwrap_or_default();
+        if !defined.contains(name) && !in_library(name) {
+            return true;
+        }
+    }
+    let mut inner = node["inner"].as_array().into_iter().flatten();
+    inner.any(|node| names_outside(node, defined))
+}
+
+fn in_library(name: &str) -> bool {
+    let name = name.strip_prefix("__builtin_").unwrap_or(name);
+    let maths = |name: &str| MATHS.contains(&name);
+    let sized = |bits: &&str| {
+        let rest = name.strip_prefix(*bits);
+        rest.is_some_and(|rest| matches!(rest, "l" | "ll"))
+    };
+    LIBRARY.contains(&name)
+        || maths(name)
+        || name
+            .strip_suffix(['f', 'l'])
+            .is_some_and(|base| maths(base) || ["huge_val", "inf", "nan"].contains(&base))
+        || ["clz", "ctz", "popcount"].iter().any(sized)
 }
 
 #[cfg(test)]
@@ -236,20 +297,38 @@ mod tests {
 
     #[test]
     fn programs_that_reach_outside_are_recognised() {
+        let scratch = eval::Scratch::new("pool-outside").unwrap();
+        let reaches = |source: &str| {
+            let c_file = scratch.join("program.c");
+            std::fs::write(&c_file, source).unwrap();
+            reaches_outside(&c_file).unwrap()
+        };
         for source in [
-            "#include <sys/socket.h>\nint main(void) { return 0; }",
-            "  #  include \"unistd.h\"\n",
-            "int main(void) { FILE *f = fopen (\"a\", \"w\"); }",
-            "int main(void) { return (int)time(0); }",
+            "#include <stdio.h>\nint main(void) { FILE *f = (fopen)(\"a\", \"w\"); return !f; }",
+            "#define _LARGEFILE64_SOURCE\n#include <stdio.h>\nint main(void) { return !fopen64(\"a\", \"w\"); }",
+            "%:include <fcntl.h>\nint main(void) { return creat(\"a\", 0600); }",
+            "#/**/include <sys/socket.h>\nint main(void) { return socket(2, 1, 0); }",
+            "int socket(int, int, int);\nint main(void) { return socket(2, 1, 0); }",
+            "int open();\nint main(void) { int (*f)() = open; return f(\"a\", 0); }",
+            "#include <time.h>\nint main(void) { return (int)time(0); }",
+            "#include <stdlib.h>\nint main(void) { return !getenv(\"HOME\"); }",
+            "int main(void) { __asm__(\"nop\"); return 0; }",
         ] {
-            assert!(reaches_outside(source), "{source}");
+            assert!(reaches(source), "{source}");
         }
+        let library = "#include <assert.h>\n#include <ctype.h>\n#include <errno.h>\n\
+            #include <math.h>\n#include <stdarg.h>\n#include <stdio.h>\n#include <stdlib.h>\n\
+            #include <string.h>\n\
+            static int sum(int n, ...) { va_list a; va_start(a, n); int s = va_arg(a, int); va_end(a); return s + n; }\n\
+            int main(void) { char *p = malloc(8); assert(p); strcpy(p, \"ab\"); errno = 0;\n\
+            fprintf(stderr, \"%d %f %d\\n\", isalpha(p[0]), sqrtf(2.0f) + fabsl(1.0L), sum(1, 2));\n\
+            if (isnan(pow(2, 3))) abort(); free(p); return __builtin_popcountll(7) - 3; }";
         for source in [
-            "#include <stdio.h>\n#include <string.h>\nint main(void) { return 0; }",
-            "int runtime(int x) { return my_time(x) + clocks; }",
-            "// no sys/ header here\nint main(void) { return 0; }",
+            library,
+            "#include <time.h>\nint time_left(int x) { return x; }\nint main(void) { return time_left(0); }",
+            "int open(int x) { return x; }\nint main(void) { return open(0); }",
         ] {
-            assert!(!reaches_outside(source), "{source}");
+            assert!(!reaches(source), "{source}");
         }
     }
 
@@ -270,7 +349,7 @@ mod tests {
         );
         write(
             "clock.c",
-            "#include <time.h>\nint main(void) { return 0; }\n",
+            "#include <time.h>\nint main(void) { return (int)time(0) & 0; }\n",
         );
         write("notes.txt", "not a program\n");
         let args = Args {

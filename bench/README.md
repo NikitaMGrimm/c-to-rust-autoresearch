@@ -240,18 +240,22 @@ sources have licences of their own.
 C file under `SOURCE_DIR` to `POOL_DIR/gN_TAG_PATH.c` when it is a program
 that runs without arguments and input and that run passes the same C checks
 as the benchmarks. `PATH` is the file's path in the source, and the group
-comes from the intake tool's feature detection. Before anything is built,
-it leaves out a program that includes a header or calls a function for the
-network, other processes, files, the terminal or the clock: the evaluator
-runs C programs without a sandbox, so a pool program must need none. The
-collection itself runs through `loop/cargo`, with both directories in the
-checkout, because it runs third-party code that nothing has checked yet.
+comes from the intake tool's feature detection. Before anything of a
+program runs, Clang's syntax tree must show that it names no function
+beside those it defines and a fixed list of the C library's, which reach
+only memory, standard input and the standard streams, and that it holds no
+assembly. That leaves out the network, other processes, files and the
+terminal, and the clock and the environment too, so that a run repeats. The
+evaluator runs C programs without a sandbox, so a pool program must need
+none. The collection itself runs through `loop/cargo`, with both
+directories in the checkout, because it runs third-party code.
 
 `cargo run -p bench --bin near-copies -- PRIVATE_DIR --pool POOL_DIR` then
 deletes the pool's programs that are near-copies of a validation, held-out
 or transfer program, and those that have the name of a private program or
-variant. It prints how many and writes nothing to `PRIVATE_DIR`. A driver
-gets the pool only after this.
+variant. It prints how many, also where it fails, and writes nothing to
+`PRIVATE_DIR`; the pool must lie outside it. A driver gets the pool only
+after this.
 
 ## Regenerating
 

@@ -77,29 +77,41 @@ fn mark(private: &Path) -> Result<(), String> {
 /// Deletes the programs in `pool` that nearly repeat a program of a private
 /// set, or have the name of one or of a variant, which the audit of a
 /// transcript would take for the private program. It says how many, not
-/// which.
+/// which, also where it fails: an error names no private program and no
+/// program that it deleted or was about to.
 fn clean(private: &Path, pool: &Path) -> Result<(), String> {
+    let real = |dir: &Path| {
+        dir.canonicalize()
+            .map_err(|err| format!("cannot open {}: {err}", dir.display()))
+    };
+    let (private, pool) = (real(private)?, real(pool)?);
+    // The programs of a private set would repeat themselves and be deleted.
+    if pool.starts_with(&private) || private.starts_with(&pool) {
+        return Err("the pool and the private directory must lie apart".to_owned());
+    }
+    let unread = |_| "cannot read a private set; is it sealed?".to_owned();
     let mut sets = Vec::new();
     let mut names = BTreeSet::new();
     for set in SETS {
-        if private.join(set).is_dir() {
-            let programs = shingled(&private.join(set))?;
-            names.extend(programs.keys().cloned());
-            sets.extend(programs.into_values());
+        if set == "transfer" && !private.join(set).is_dir() {
+            continue;
         }
+        let programs = shingled(&private.join(set)).map_err(unread)?;
+        if programs.is_empty() {
+            return Err(format!("the private set {set} has no programs"));
+        }
+        names.extend(programs.keys().cloned());
+        sets.extend(programs.into_values());
     }
     let variants = private.join("variants");
     if variants.is_dir() {
-        for dir in eval::entries(&variants)? {
+        for dir in eval::entries(&variants).map_err(unread)? {
             if dir.is_dir() {
-                names.extend(shingled(&dir)?.into_keys());
+                names.extend(shingled(&dir).map_err(unread)?.into_keys());
             }
         }
     }
-    if sets.is_empty() {
-        return Err(format!("no private programs in {}", private.display()));
-    }
-    let programs = shingled(pool)?;
+    let programs = shingled(&pool)?;
     let (mut copies, mut named) = (0, 0);
     for (name, shingles) in &programs {
         let copy = sets
@@ -109,11 +121,16 @@ fn clean(private: &Path, pool: &Path) -> Result<(), String> {
             continue;
         }
         *if copy { &mut copies } else { &mut named } += 1;
-        for extension in ["c", "json", eval::FUZZ_EXTENSION] {
-            let file = pool.join(name).with_extension(extension);
-            if file.exists() {
-                std::fs::remove_file(&file)
-                    .map_err(|err| format!("cannot delete {}: {err}", file.display()))?;
+        // The program last, so that a failure leaves it with its files.
+        for extension in [eval::FUZZ_EXTENSION, "json", "c"] {
+            match std::fs::remove_file(pool.join(name).with_extension(extension)) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "cannot delete a file of a pool program: {}",
+                        err.kind()
+                    ));
+                }
+                _ => {}
             }
         }
     }
@@ -247,6 +264,29 @@ mod tests {
         assert_eq!(left, ["g1_p_new.c"]);
         assert!(!private.join("near-copies.json").exists());
         assert!(clean(&scratch.join("nothing"), &pool).is_err());
+
+        // A private set is no pool, by its own path or by a link to it.
+        let link = scratch.join("link");
+        std::os::unix::fs::symlink(private.join("validation"), &link).unwrap();
+        for inside in [private.join("validation"), link, scratch.to_path_buf()] {
+            assert!(clean(&private, &inside).is_err(), "{}", inside.display());
+        }
+        assert!(private.join("validation/g1_secret.c").exists());
+        // Without a set to compare with, nothing is deleted, and a file that
+        // cannot be deleted is not named.
+        write(pool.join("g1_p_copy.c"), program);
+        std::fs::create_dir(pool.join("g1_p_copy.json")).unwrap();
+        let error = clean(&private, &pool).unwrap_err();
+        assert!(
+            !error.contains("copy") && !error.contains("secret"),
+            "{error}"
+        );
+        assert!(pool.join("g1_p_copy.c").exists());
+        std::fs::remove_dir(pool.join("g1_p_copy.json")).unwrap();
+        std::fs::remove_dir_all(private.join("held-out")).unwrap();
+        let error = clean(&private, &pool).unwrap_err();
+        assert!(!error.contains("secret"), "{error}");
+        assert!(pool.join("g1_p_copy.c").exists());
     }
 
     #[test]
