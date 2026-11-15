@@ -1010,7 +1010,8 @@ Entry format, newest last:
   constants that the array is known to hold: C is right with more bytes
   than its buffer as long as the input ends within it, so that helper
   reads into as much of the buffer as there is and stops the program where
-  the input goes on beyond it, where C stores beyond the buffer
+  the input goes on beyond it, where C stores beyond the buffer; a size
+  times a count beyond `usize` is more than any buffer
 - Needs: the helper `read_byte` of R11, so that `scanf`, `fgets` and
   `fread` share what is left of the input
 - Refused: elements that are not bytes, such as `int` or a record, with

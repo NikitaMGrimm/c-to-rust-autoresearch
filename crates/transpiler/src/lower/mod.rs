@@ -672,7 +672,8 @@ impl Helper {
                 /// as the input ends within the buffer, and stores beyond it
                 /// otherwise, where this stops the program.
                 fn read_items_within(buffer: &mut [u8], size: usize, count: usize) -> u64 {
-                    let wanted = size.checked_mul(count).expect("fread reads fewer bytes than fit in memory");
+                    // More bytes than memory has are more than the buffer has.
+                    let wanted = size.saturating_mul(count);
                     let room = wanted.min(buffer.len());
                     let items = read_items(&mut buffer[..room], size);
                     assert!(room == wanted || peek_byte().is_none(), "fread stores beyond its buffer");

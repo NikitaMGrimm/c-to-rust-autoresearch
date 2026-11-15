@@ -278,6 +278,23 @@ int main(int argc, char **argv) {
     for stdin in ["", "abc", "abcdefgh"] {
         rust = check("fread-size", c, &[&[]], stdin);
     }
+    // A size times a count beyond `size_t` reads nothing from no input.
+    check(
+        "fread-overflow",
+        r#"
+#include <stdio.h>
+__attribute__((noinline)) size_t get(char *b) {
+    return fread(b, (size_t)-1, 2, stdin);
+}
+int main(void) {
+    char b[1] = {0};
+    printf("%zu\n", get(b));
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
     assert_lines(
         &rust,
         &["n = read_items_within(&mut in_, 1, (args.len() as i32 + 6) as usize);"],
