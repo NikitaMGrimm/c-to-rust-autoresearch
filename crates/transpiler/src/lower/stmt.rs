@@ -835,7 +835,9 @@ impl Lower<'_> {
         let var = *var;
         let declared = &program.vars[var];
         let start = declared.init.as_ref()?.constant(program)?;
-        if declared.kind != VarKind::Local || !matches!(declared.ty, Type::Int { .. }) {
+        // An unsigned counter wraps to 0, and so does a signed one that is
+        // narrower than `int`; the others may not overflow.
+        if declared.kind != VarKind::Local || !matches!(declared.ty.int(), Some((32 | 64, true))) {
             return None;
         }
         let is_var = |expr: &Expr| matches!(expr.kind, ExprKind::Var(named) if named == var);

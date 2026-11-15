@@ -333,6 +333,15 @@ int main(int argc, char *argv[]) {
             "apart_moved",
             "    for (int i = 1; i < 4; i++) { copy(&items[0], &items[i]); if (argc > 5) i--; }",
         ),
+        // An unsigned counter wraps to the other element.
+        (
+            "apart_unsigned",
+            "    for (unsigned i = 1; i < 2; i += 4294967295U) { copy(&items[0], &items[i]); if (i == 0) break; }",
+        ),
+        (
+            "apart_narrow",
+            "    for (unsigned char i = 1; i < 4; i++) copy(&items[0], &items[i]);",
+        ),
         // The rest of the array from an element reaches the other one.
         ("apart_slices", "    add(&v[0], &v[2], 2);"),
     ] {
