@@ -4,7 +4,7 @@
 
 use super::pointer::Repr;
 use super::{Lower, R, unsupported};
-use crate::c::{BinOp, Expr, ExprKind, Type, UnOp, VarId};
+use crate::c::{BinOp, Expr, ExprKind, Program, Type, UnOp, VarId};
 use crate::facts::{Access, Slot, place_slot};
 use crate::normalise::is_search;
 use crate::rust;
@@ -36,17 +36,6 @@ pub(super) fn symbol(op: BinOp) -> &'static str {
         BinOp::Ne => "!=",
         BinOp::And => "&&",
         BinOp::Or => "||",
-    }
-}
-
-/// The operator that tests the same with its operands swapped.
-fn mirrored(op: BinOp) -> BinOp {
-    match op {
-        BinOp::Lt => BinOp::Gt,
-        BinOp::Gt => BinOp::Lt,
-        BinOp::Le => BinOp::Ge,
-        BinOp::Ge => BinOp::Le,
-        op => op,
     }
 }
 
@@ -169,19 +158,26 @@ impl Lower<'_> {
     /// R2: a constant as a literal: a number, a `sizeof`, or one of them
     /// converted. `sizeof` is the size on x86-64, where the C program ran.
     fn literal(&self, expr: &Expr, typed: bool) -> Option<syn::Expr> {
-        fn folds(expr: &Expr) -> bool {
+        fn folds(expr: &Expr, program: &Program) -> bool {
             match &expr.kind {
                 ExprKind::Int(_) | ExprKind::Char(_) | ExprKind::SizeOf(_) => true,
-                ExprKind::Cast(inner) => inner.ty.is_integer() && folds(inner),
+                ExprKind::Cast(inner) => inner.ty.is_integer() && folds(inner, program),
                 ExprKind::Unary(UnOp::Neg, inner) => matches!(inner.kind, ExprKind::Int(_)),
-                // Arithmetic stays as written, unless it is about sizes.
-                ExprKind::Binary(..) => {
+                // Arithmetic stays as written, unless it is about sizes, or
+                // the compiler's lints refuse it: two constants that are
+                // equal, as in `4 - 4`.
+                ExprKind::Binary(op, left, right) => {
                     expr.any(&mut |part| matches!(part.kind, ExprKind::SizeOf(_)))
+                        || matches!(
+                            op,
+                            BinOp::Sub | BinOp::Div | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+                        ) && left.constant(program).is_some()
+                            && left.constant(program) == right.constant(program)
                 }
                 _ => false,
             }
         }
-        if !folds(expr) {
+        if !folds(expr, self.program) {
             return None;
         }
         if let (Type::Float { .. }, ExprKind::Cast(inner)) = (&expr.ty, &expr.kind) {
@@ -356,6 +352,10 @@ impl Lower<'_> {
     /// stop where C's behaviour is undefined; unsigned arithmetic wraps.
     fn binary(&mut self, expr: &Expr, op: BinOp, left: &Expr, right: &Expr) -> R<syn::Expr> {
         if op.is_comparison() || op.is_logical() {
+            // A test that the facts decide is the number itself.
+            if let Some(truth) = self.decided(expr)? {
+                return Ok(rust::int(i128::from(truth), ""));
+            }
             return Ok(rust::call("i32::from", [self.cond(expr)?]));
         }
         if left.ty.is_pointer() || right.ty.is_pointer() {
@@ -492,6 +492,12 @@ impl Lower<'_> {
                 if self.decided(right)? == Some(*op == BinOp::And) {
                     return self.cond(left);
                 }
+                // The same test twice is one test, and the compiler's
+                // lints refuse it twice. What `same_value` knows has no
+                // effect.
+                if same_value(left, right) {
+                    return self.cond(left);
+                }
                 let (left, right) = (self.cond(left)?, self.cond(right)?);
                 Ok(rust::binary(left, symbol(*op), right))
             }
@@ -606,7 +612,7 @@ impl Lower<'_> {
         }
         // R30: a comparing function of `string.h` against 0, whose sign is
         // all that C fixes.
-        for (call, zero, op) in [(left, right, op), (right, left, mirrored(op))] {
+        for (call, zero, op) in [(left, right, op), (right, left, op.mirrored())] {
             if zero.constant(self.program) == Some(0)
                 && let Some(test) = self.sign_test(call, op)
             {

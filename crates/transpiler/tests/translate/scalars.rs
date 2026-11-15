@@ -478,6 +478,70 @@ fn the_same_value_on_both_sides_is_refused_where_the_lints_refuse_it() {
 }
 
 #[test]
+fn a_comparison_of_two_constants_is_decided() {
+    // Clippy's `eq_op` is an error for two constants that are equal, so
+    // these would not compile as written. C's conversions decide them.
+    let rust = check(
+        "constants",
+        r#"#include <stdio.h>
+enum shade { DARK, PALE = 4, LIGHT };
+int main(void) {
+    int n = 0;
+    if ('c' != 99) n += 1;
+    if (3 * 4 + 2 != 14) n += 2;
+    if (sizeof(short) != 2) n += 4;
+    if (LIGHT == 5) n += 8;
+    if (6 <= 6 && 2 >= 2) n += 16;
+    if (-1 < 1u) n += 32;
+    if ((unsigned char)258 == 2) n += 64;
+    if (sizeof(int) - 5 > 0) n += 128;
+    int same = (11 == 11) + (0xffffffffu < 0) + (-1 < 1l);
+    int folded = 7 - 7 + 12 / 12 + (9 & 9) + (3 | 3) + (5 ^ 5);
+    printf("%d %d %d %d\n", n, same, folded, 20 == 20 ? 1 : 2);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut n: i32 = 0;",
+            "n += 8;",
+            "n += 16;",
+            "n += 64;",
+            "n += 128;",
+            "let same: i32 = 1 + 0 + 1;",
+            "let folded: i32 = 0 + 1 + 9 + 3 + 0;",
+            "println!(\"{} {} {} {}\", n, same, folded, 1);",
+        ],
+    );
+    assert!(!rust.contains("n += 1;") && !rust.contains("n += 32;"));
+}
+
+#[test]
+fn the_same_test_twice_is_one_test() {
+    // Clippy's `eq_op` is an error for `a || a`.
+    let rust = check(
+        "twice",
+        r#"#include <stdio.h>
+int main(int argc, char **argv) {
+    if (argc != 2 || argc != 2) printf("not two\n");
+    if (argc > 0 && argc > 0) printf("some\n");
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["if args.len() as i32 != 2 {", "if args.len() as i32 > 0 {"],
+    );
+}
+
+#[test]
 fn a_literal_near_a_named_constant_keeps_its_value() {
     // Clippy takes `2.718281828` for `std::f64::consts::E` written out and
     // refuses it; the program means the number it wrote.

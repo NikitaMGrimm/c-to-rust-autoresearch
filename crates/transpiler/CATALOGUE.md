@@ -442,8 +442,12 @@ Entry format, newest last:
 - Rust: `x.is_nan()` and `!x.is_nan()`, which is what the comparison
   asks; the compiler's lints refuse `x != x`. Refused, since the same
   lints refuse them: any other comparison of a value with itself, and the
-  same value on both sides of `-`, `/`, `&`, `|` or `^`
-- Needs: nothing
+  same value on both sides of `-`, `/`, `&`, `|` or `^`. Two constants
+  are no such case: a comparison of two constants is its value as C's
+  conversions give it, `true` or `false` in a test, which then goes with
+  its dead branch, and `1` or `0` as a number; `4 - 4` and `8 / 8` are the
+  number. The same test on both sides of `||` or `&&` is that test once
+- Needs: `Facts::truth`, which decides a comparison of constants
 - Motivation: `g3_maxnmin` tests `d != d` before it converts `d` to `int`,
   and did not compile
 - Changes: extends R2

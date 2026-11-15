@@ -347,6 +347,17 @@ impl BinOp {
         matches!(self, Lt | Gt | Le | Ge | Eq | Ne)
     }
 
+    /// The operator that tests the same with its operands swapped.
+    pub fn mirrored(self) -> BinOp {
+        match self {
+            BinOp::Lt => BinOp::Gt,
+            BinOp::Gt => BinOp::Lt,
+            BinOp::Le => BinOp::Ge,
+            BinOp::Ge => BinOp::Le,
+            op => op,
+        }
+    }
+
     pub fn is_logical(self) -> bool {
         matches!(self, BinOp::And | BinOp::Or)
     }
