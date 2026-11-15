@@ -127,10 +127,11 @@ impl Lower<'_> {
             }
             Stmt::Parse {
                 number,
+                error,
                 end,
                 call,
                 start,
-            } => out.extend(self.parse(*number, *end, call, start.as_ref())?),
+            } => out.extend(self.parse(*number, *error, *end, call, start.as_ref())?),
             Stmt::Case(_) | Stmt::Default => {
                 return unsupported("a `case` outside the top of its `switch`", 0);
             }
@@ -143,9 +144,11 @@ impl Lower<'_> {
 
     /// R21: `strtol` and its like with an end pointer give the number and
     /// the index in the text where it ends.
+    /// R37: with `error`, also whether the number was beyond its type.
     fn parse(
         &mut self,
         number: Option<VarId>,
+        error: Option<VarId>,
         end: VarId,
         call: &Expr,
         start: Option<&(Expr, VarId)>,
@@ -170,21 +173,6 @@ impl Lower<'_> {
             );
         }
         let text = self.text(text, true)?;
-        let parsed: syn::Expr = match name {
-            "strtoul" | "strtoull" => {
-                self.helper(Helper::ParseUintPrefix);
-                parse_quote!(parse_uint_prefix(#text))
-            }
-            "strtod" | "strtof" => {
-                let ty = self.ty(&call.ty, at)?;
-                self.helper(Helper::ParseFloatPrefix);
-                parse_quote!(parse_float_prefix::<#ty>(#text))
-            }
-            _ => {
-                self.helper(Helper::ParseIntPrefix);
-                parse_quote!(parse_int_prefix(#text))
-            }
-        };
         // A variable that nothing reads gets no name.
         let body = match self.function {
             Some(function) => self.program.functions[function].body.as_slice(),
@@ -197,6 +185,7 @@ impl Lower<'_> {
                 &mut |part| matches!(part.kind, ExprKind::Var(named) if named == var),
             )
         };
+        let error = error.filter(|error| read(*error));
         let pattern = |lower: &Self, var: Option<VarId>| -> syn::Pat {
             match var.filter(|var| read(*var)) {
                 Some(var) => {
@@ -208,16 +197,52 @@ impl Lower<'_> {
                 None => parse_quote!(_),
             }
         };
+        let parsed: syn::Expr = match (name, error.is_some()) {
+            ("strtoul" | "strtoull", false) => {
+                self.helper(Helper::ParseUintPrefix);
+                parse_quote!(parse_uint_prefix(#text))
+            }
+            ("strtoul" | "strtoull", true) => {
+                self.helper(Helper::ParseUintChecked);
+                parse_quote!(parse_uint_checked(#text))
+            }
+            ("strtod" | "strtof", checked) => {
+                let ty = self.ty(&call.ty, at)?;
+                match checked {
+                    false => {
+                        self.helper(Helper::ParseFloatPrefix);
+                        parse_quote!(parse_float_prefix::<#ty>(#text))
+                    }
+                    true => {
+                        self.helper(Helper::ParseFloatChecked);
+                        let smallest: syn::Expr = match call.ty {
+                            Type::Float { bits: 32 } => parse_quote!(f64::from(f32::MIN_POSITIVE)),
+                            _ => parse_quote!(f64::MIN_POSITIVE),
+                        };
+                        parse_quote!(parse_float_checked::<#ty>(#text, #smallest))
+                    }
+                }
+            }
+            (_, false) => {
+                self.helper(Helper::ParseIntPrefix);
+                parse_quote!(parse_int_prefix(#text))
+            }
+            (_, true) => {
+                self.helper(Helper::ParseIntChecked);
+                parse_quote!(parse_int_checked(#text))
+            }
+        };
         let number = pattern(self, number);
         let end = pattern(self, Some(end));
+        let error = error.map(|error| pattern(self, Some(error))).into_iter();
         Ok(match start {
-            None => vec![parse_quote!(let (#number, #end) = #parsed;)],
+            None => vec![parse_quote!(let (#number, #end #(, #error)*) = #parsed;)],
             // The helper counts from where it starts to read.
             Some((start, read)) => {
                 let read = rust::ident(self.names.var(*read));
                 let start = self.expr(start)?;
                 vec![
-                    parse_quote!(let (#number, #read) = #parsed;),
+                    parse_quote!(let (#number, #read #(, #error)*) = #parsed;),
                     parse_quote!(let #end: usize = #start + #read;),
                 ]
             }

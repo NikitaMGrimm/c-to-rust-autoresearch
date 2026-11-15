@@ -627,3 +627,33 @@ Entry format, newest last:
   `strtod` and `strtoul` stopped, and `g3_023_struct_and_errno` gives the end
   the text as its first value
 - Changes: extends R17, R18 and R21
+
+## R37: `errno` of a number that is read
+
+- C: `errno = 0;`, then a call of `strtol`, `strtoll`, `strtoul`,
+  `strtoull`, `strtod` or `strtof` with `&end` as R21 and R36 take it,
+  then reads of `errno`: `errno == ERANGE`, `errno != 0`, `errno == 0`,
+  `!errno`, `errno` as a test, `errno == EDOM` and the like, in the
+  statements after the call in its block and in the branches of an `if`
+  there, up to the next call that may set it
+- Rust: `let (n, end, range) = parse_int_checked(&args[1]);`, and
+  `parse_uint_checked`, `parse_float_checked::<f64>(text, f64::MIN_POSITIVE)`,
+  helpers that also return whether glibc sets `ERANGE`: an integer beyond
+  `i64`, digits beyond `u64` (a `-` before them is no error), a `double`
+  that is infinite from digits or, with a digit that is not 0, below the
+  least normal number of its type. The reads are `range`, `!range` and
+  `false` for any other number, the store is dropped, and a call whose
+  `errno` nothing reads keeps two results. Refused, with `a read of `errno`
+  that is not one call's error`: a read without the store before the call
+  in its block, after a call between that may set `errno` (a function of
+  the program, any library function but the printers and those of
+  `string.h` and the absolute values), after a loop or a branch that holds
+  one, after other calls such as `atoi` or `malloc`. Refused too: `errno`
+  as a number (`printf("%d", errno)`, `int e = errno;`), any other store,
+  and `&errno`
+- Needs: `normalise::errno`, run at the end of `ends`, which gives the
+  `Stmt::Parse` a variable for the error and rewrites the reads it reaches
+- Motivation: `g1_016_switch_arith` and `g3_023_struct_and_errno` test
+  `errno` after `strtoul` and `strtol`, and `g1_007_errno_pow` after
+  `strtod`
+- Changes: extends R21 and R36

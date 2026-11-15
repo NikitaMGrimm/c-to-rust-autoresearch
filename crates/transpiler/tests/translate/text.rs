@@ -523,3 +523,105 @@ int main(int argc, char **argv) {
         "unsupported: this call of the library's `strtoul`: no rule yet, at line 5"
     );
 }
+
+#[test]
+fn errno_after_a_number_is_whether_it_was_beyond_its_type() {
+    // The edges of each type, and `inf`, `nan`, overflow and underflow of
+    // a `double`, where glibc sets `ERANGE` and where it does not.
+    let rust = check(
+        "errno-range",
+        r#"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    if (argc != 4) return 2;
+    char *end;
+    errno = 0;
+    long n = strtol(argv[1], &end, 10);
+    if (errno == ERANGE) printf("long range %ld\n", n);
+    else if (end == argv[1]) puts("no long");
+    errno = 0;
+    char *rest;
+    unsigned long u = strtoul(argv[2], &rest, 10);
+    int bad = errno != 0;
+    printf("%lu %d %d %d\n", u, bad, !errno, errno == EDOM);
+    errno = 0;
+    double d = strtod(argv[3], &end);
+    printf("%g %d [%s]\n", d, errno == ERANGE, end);
+    errno = 0;
+    float f = strtof(argv[3], &end);
+    if (errno) printf("float range %g\n", f);
+    return errno == ERANGE ? 3 : 0;
+}
+"#,
+        &[
+            &["12", "12", "1.5"],
+            &["9223372036854775807", "18446744073709551615", "1e308"],
+            &["9223372036854775808", "18446744073709551616", "1e309"],
+            &["-9223372036854775808", "-18446744073709551615", "-1e309"],
+            &["-9223372036854775809", "-18446744073709551616", "1e-310"],
+            &["x", "-1", "1e-400"],
+            &["", "", "inf"],
+            &["-", "+", "nan"],
+            &["7z", " 3", "1e-5"],
+            &["0", "0", "0e-999"],
+            &["1", "1", "1e-40"],
+            &["1", "1", "3.5e38"],
+            &["1", "1", "x"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let (n, end, range) = parse_int_checked(&args[1]);",
+            "if range {",
+            "let (u, _, range) = parse_uint_checked(&args[2]);",
+            "let bad: i32 = range as i32;",
+            "let (d, end, range) = parse_float_checked::<f64>(&args[3], f64::MIN_POSITIVE);",
+            "let (f, _, range) = parse_float_checked::<",
+        ],
+    );
+    let refused = |name, c: &str| translate(name, c).unwrap_err();
+    let program = |lines: &str| {
+        format!(
+            "#include <errno.h>\n#include <stdio.h>\n#include <stdlib.h>\nint twice(int x) {{ return 2 * x; }}\nint main(int argc, char **argv) {{\n    char *end;\n{lines}\n    return 0;\n}}\n"
+        )
+    };
+    let read = "unsupported: a read of `errno` that is not one call's error, at line";
+    for (name, lines, message) in [
+        (
+            "errno-no-store",
+            "    long n = strtol(argv[1], &end, 10);\n    if (errno == ERANGE) printf(\"%ld\\n\", n);",
+            format!("{read} 8"),
+        ),
+        (
+            "errno-call-between",
+            "    errno = 0;\n    long n = strtol(argv[1], &end, 10);\n    int t = twice(1);\n    if (errno == ERANGE) printf(\"%ld %d\\n\", n, t);",
+            format!("{read} 10"),
+        ),
+        (
+            "errno-after-loop",
+            "    long n = 0;\n    errno = 0;\n    for (int i = 1; i < argc; i++) n += strtol(argv[i], &end, 10);\n    if (errno) printf(\"%ld\\n\", n);",
+            format!("{read} 10"),
+        ),
+        (
+            "errno-atoi",
+            "    errno = 0;\n    int n = atoi(argv[1]);\n    if (errno) printf(\"%d\\n\", n);",
+            format!("{read} 9"),
+        ),
+        (
+            "errno-value",
+            "    errno = 0;\n    long n = strtol(argv[1], &end, 10);\n    printf(\"%ld %d\\n\", n, errno);",
+            "unsupported: the number in `errno`, which is the platform's, at line 9".to_owned(),
+        ),
+        (
+            "errno-store",
+            "    errno = EINVAL;\n    long n = strtol(argv[1], &end, 10);\n    if (errno) printf(\"%ld\\n\", n);",
+            "unsupported: a store to `errno` other than 0 before a call, at line 7".to_owned(),
+        ),
+    ] {
+        assert_eq!(refused(name, &program(lines)), message, "{name}");
+    }
+}

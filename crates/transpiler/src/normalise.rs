@@ -25,6 +25,7 @@
 
 mod cursors;
 mod ends;
+mod errno;
 mod unions;
 
 pub use cursors::cursors;

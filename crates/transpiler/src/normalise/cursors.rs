@@ -205,7 +205,11 @@ impl<'a> Scan<'a> {
                 self.block(otherwise);
             }
             Stmt::Parse {
-                number, end, call, ..
+                number,
+                error,
+                end,
+                call,
+                ..
             } => {
                 self.expr(call);
                 if let ExprKind::Call(_, args) = &call.kind
@@ -214,7 +218,7 @@ impl<'a> Scan<'a> {
                     self.values.entry(*end).or_default().push(text);
                     self.ends.insert(*end);
                 }
-                for &var in number.iter().chain([end]) {
+                for &var in number.iter().chain(error.iter()).chain([end]) {
                     self.visible.insert(var, self.scope.clone());
                     self.scope.push(var);
                     self.declared.push(var);

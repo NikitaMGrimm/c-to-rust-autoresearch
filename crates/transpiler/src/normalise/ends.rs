@@ -1,5 +1,5 @@
-//! `ends`, R21: the end of a number that `strtol` stores through its second
-//! argument becomes a result of the call. C declares `char *end` once and
+//! `ends`, R21 and R36: the end of a number that `strtol` and its like
+//! store through their second argument becomes a result of the call. C declares `char *end` once and
 //! hands `&end` to every call; here each call gets a variable of its own
 //! for the end, which `cursors` then makes an index into the text that was
 //! read, and the call becomes the statement `Stmt::Parse`.
@@ -54,10 +54,11 @@ pub fn ends(program: &mut Program) {
         }
         program.functions[function].body = body;
     }
+    super::errno::errno(program);
 }
 
 /// Adds the locals that the statements declare, at any depth.
-fn declared(stmts: &[Stmt], found: &mut Vec<VarId>) {
+pub(super) fn declared(stmts: &[Stmt], found: &mut Vec<VarId>) {
     for stmt in stmts {
         match stmt {
             Stmt::Decl(var) => found.push(*var),
@@ -295,7 +296,12 @@ impl Ends<'_> {
                 }
                 false
             });
-            if named > addresses {
+            // A read of `errno` asks for the call's error, which only
+            // `Stmt::Parse` returns (R37).
+            let errno = any_expr(std::slice::from_ref(stmt), &self.vars, &mut |expr| {
+                expr.is_errno()
+            });
+            if named > addresses || errno {
                 return true;
             }
             if self.sets(stmt) {
@@ -386,6 +392,7 @@ impl Ends<'_> {
         };
         let parse = Stmt::Parse {
             number,
+            error: None,
             end: this_end,
             call,
             start: None,

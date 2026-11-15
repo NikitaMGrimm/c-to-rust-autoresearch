@@ -166,6 +166,9 @@ impl Lower<'_> {
             let name = callee.function().unwrap_or_default();
             return match self.program.function(name) {
                 Some(function) => Ok(Slot::Return(function)),
+                None if name == "__errno_location" => {
+                    unsupported("`errno` as a place: no rule yet", pointer.at)
+                }
                 None => unsupported(format!("a pointer from the library's `{name}`"), pointer.at),
             };
         }

@@ -34,6 +34,9 @@ enum Helper {
     ParseUintPrefix,
     ParseFloat,
     ParseFloatPrefix,
+    ParseIntChecked,
+    ParseUintChecked,
+    ParseFloatChecked,
     FormatE,
     FormatG,
     PeekByte,
@@ -79,6 +82,9 @@ impl Helper {
             Helper::ParseIntPrefix => &[Helper::ParseInt],
             Helper::ParseUintPrefix => &[Helper::ParseUint],
             Helper::ParseFloat => &[Helper::ParseFloatPrefix],
+            Helper::ParseIntChecked => &[Helper::ParseIntPrefix],
+            Helper::ParseUintChecked => &[Helper::ParseUintPrefix],
+            Helper::ParseFloatChecked => &[Helper::ParseFloatPrefix],
             Helper::FormatG => &[Helper::FormatE],
             Helper::StoreTextWithin => &[Helper::StoreTextCut],
         }
@@ -232,6 +238,46 @@ impl Helper {
                         }
                     }
                     (trimmed[..end].parse().unwrap_or_default(), skipped + end)
+                }
+            },
+            Helper::ParseIntChecked => parse_quote! {
+                /// As `parse_int_prefix`, and whether the number is beyond
+                /// `i64`, where C's `strtoll` sets `errno` to `ERANGE`.
+                fn parse_int_checked(text: &str) -> (i64, usize, bool) {
+                    let (value, end) = parse_int_prefix(text);
+                    let number = text[..end].trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
+                    (value, end, end > 0 && number.parse::<i64>().is_err())
+                }
+            },
+            Helper::ParseUintChecked => parse_quote! {
+                /// As `parse_uint_prefix`, and whether the digits are beyond
+                /// `u64`, where C's `strtoull` sets `errno` to `ERANGE`; a `-`
+                /// before them is no error.
+                fn parse_uint_checked(text: &str) -> (u64, usize, bool) {
+                    let (value, end) = parse_uint_prefix(text);
+                    let digits = text[..end].trim_start_matches(|c: char| !c.is_ascii_digit());
+                    (value, end, end > 0 && digits.parse::<u64>().is_err())
+                }
+            },
+            Helper::ParseFloatChecked => parse_quote! {
+                /// As `parse_float_prefix`, and whether glibc's `strtod` sets
+                /// `errno` to `ERANGE`: a number that is infinite or, with a
+                /// digit that is not 0, below `smallest`, the least normal
+                /// number of `T`. The words `inf` and `nan` are no error.
+                fn parse_float_checked<T: std::str::FromStr + Default + Copy + Into<f64>>(
+                    text: &str,
+                    smallest: f64,
+                ) -> (T, usize, bool) {
+                    let (value, end) = parse_float_prefix::<T>(text);
+                    let number = &text[..end];
+                    let word = number.contains(['n', 'N']);
+                    let digit = number
+                        .bytes()
+                        .take_while(|byte| !matches!(byte, b'e' | b'E'))
+                        .any(|byte| (b'1'..=b'9').contains(&byte));
+                    let wide: f64 = value.into();
+                    let range = !word && (wide.is_infinite() || digit && wide.abs() < smallest);
+                    (value, end, range)
                 }
             },
             Helper::FormatE => parse_quote! {

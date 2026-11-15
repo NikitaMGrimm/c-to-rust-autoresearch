@@ -360,6 +360,8 @@ pub enum Stmt {
     },
     /// `normalise::ends` writes this for a call of `strtol` that stores
     /// where its number ends. `call` is the call without its end pointer.
+    /// `error`, where the program reads `errno` after the call, is true
+    /// where the call reported that the number was beyond its type.
     /// The statement declares `number` for the call's value, if the
     /// program uses it, and `end` for the end, which `cursors` makes an
     /// index into the text. Where the text that the call reads is not the
@@ -367,6 +369,7 @@ pub enum Stmt {
     /// a variable for the number of bytes that the call read.
     Parse {
         number: Option<VarId>,
+        error: Option<VarId>,
         end: VarId,
         call: Expr,
         start: Option<(Expr, VarId)>,
@@ -380,6 +383,14 @@ impl Expr {
             ExprKind::Cast(inner) => inner.uncast(),
             _ => self,
         }
+    }
+
+    /// Whether the expression is `errno`, which Clang reads as
+    /// `*__errno_location()`.
+    pub fn is_errno(&self) -> bool {
+        matches!(&self.uncast().kind, ExprKind::Deref(inner)
+            if matches!(&inner.uncast().kind, ExprKind::Call(callee, args)
+                if args.is_empty() && callee.function() == Some("__errno_location")))
     }
 
     /// The value of a constant integer expression, with `sizeof` as on

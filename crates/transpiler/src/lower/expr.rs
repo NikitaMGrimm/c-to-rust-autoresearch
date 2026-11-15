@@ -79,6 +79,9 @@ impl Lower<'_> {
         if expr.ty.is_pointer() {
             return unsupported("a pointer where no rule expects one", at);
         }
+        if expr.is_errno() {
+            return unsupported("the number in `errno`, which is the platform's", at);
+        }
         match &expr.kind {
             ExprKind::Float(value) => Ok(rust::float(*value, float_suffix(&expr.ty, typed))),
             ExprKind::Enumerator(index) => {
@@ -221,8 +224,12 @@ impl Lower<'_> {
         if let Some(original) = round_trip(inner, to) {
             return self.value(original, typed);
         }
-        let value = self.expr(inner)?;
         let target = self.ty(to, expr.at)?;
+        if *from == Type::Bool && to.is_integer() {
+            // R37 writes `!range` as a `bool`, which is a test.
+            return Ok(rust::cast(self.cond(inner)?, target));
+        }
+        let value = self.expr(inner)?;
         let same = |left: &Type, right: &Type| {
             let byte = Type::Int {
                 bits: 8,
@@ -374,6 +381,17 @@ impl Lower<'_> {
 
     /// R3: an expression as a `bool`, for a test.
     pub(super) fn cond(&mut self, cond: &Expr) -> R<syn::Expr> {
+        // R37 rewrote each read of `errno` that is one call's error.
+        let errno = match &cond.kind {
+            ExprKind::Unary(UnOp::Not, inner) => inner.is_errno(),
+            ExprKind::Binary(BinOp::Eq | BinOp::Ne, left, right) => {
+                left.is_errno() || right.is_errno()
+            }
+            _ => cond.is_errno(),
+        };
+        if errno {
+            return unsupported("a read of `errno` that is not one call's error", cond.at);
+        }
         if let Some(truth) = self.decided(cond)? {
             return Ok(match truth {
                 true => parse_quote!(true),
@@ -415,7 +433,9 @@ impl Lower<'_> {
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
                 self.comparison(*op, left, right, cond.at)
             }
-            ExprKind::Cast(inner) if cond.ty == Type::Bool || inner.ty.is_pointer() => {
+            ExprKind::Cast(inner)
+                if cond.ty == Type::Bool || inner.ty == Type::Bool || inner.ty.is_pointer() =>
+            {
                 self.cond(inner)
             }
             _ if cond.ty.is_pointer() => self.is_set(cond, true),
@@ -706,6 +726,9 @@ impl Lower<'_> {
         target: &Expr,
         value: &Expr,
     ) -> R<syn::Expr> {
+        if target.is_errno() {
+            return unsupported("a store to `errno` other than 0 before a call", expr.at);
+        }
         if target.ty.is_pointer() {
             let (None, Some(slot)) = (op, place_slot(target)) else {
                 return unsupported("a pointer that is moved or stored with no rule", expr.at);

@@ -301,7 +301,7 @@ call returns the error beside its value:
 
 | C | Rust, or the refusal |
 | --- | --- |
-| `errno = 0; n = strtol(text, &end, 10); if (errno == ERANGE)` | `let (n, end, range) = parse_int_checked(text);` and `if range`; `range` is whether the number was beyond its type, which is all that `strtol`, `strtoul`, `strtod` and their like report in base 10 |
+| `errno = 0; n = strtol(text, &end, 10); if (errno == ERANGE)` | `let (n, end, range) = parse_int_checked(text);` and `if range`; `range` is whether the number was beyond its type, which is all that `strtol`, `strtoul`, `strtod` and their like report in base 10 (R37); `parse_uint_checked`, and `parse_float_checked::<f64>(text, f64::MIN_POSITIVE)`, whose second argument is the least normal number of the type |
 | `errno == ERANGE`, `errno != 0`, `errno`, `errno == 0`, `!errno` after such a call | `range`, `range`, `range`, `!range`, `!range` |
 | `errno == EDOM`, `errno == EINVAL` after such a call | `false`: the call never reports it |
 | `errno = 0; r = pow(x, y);` and the same tests, also for `sqrt`, `log`, `exp` and the other functions of `math.h` with a rule | `let r = x.powf(y);` and a test of the result as glibc makes it: `EDOM` where the result is NaN and no argument is, `ERANGE` where it is infinite and the arguments are finite, or zero for `pow` and `exp` where an exact result would not be |
@@ -313,9 +313,13 @@ call returns the error beside its value:
 | `&errno`, and `errno` set in one function and read in another | refused |
 | `errno` after `malloc`, `fopen`, `fgets`, `scanf` and other calls that report something else through it | refused |
 
-The rewrite `normalise::ends` does this with the end pointer: the call
-becomes `Stmt::Parse` with a variable for the error, and each read of
-`errno` that the call reaches becomes a read of that variable.
+The rewrite `normalise::errno`, at the end of `ends`, does this: the call
+is the `Stmt::Parse` that `ends` makes, with a variable for the error, and
+each read of `errno` that the call reaches becomes a test of that
+variable. A call reaches a read where the call follows `errno = 0` and
+precedes the read in the statements of one block, or in the branches of an
+`if` there, and nothing between them may set `errno`. A `strtol` with a
+NULL end has no `Stmt::Parse`, so its `errno` is refused.
 
 **The end of a number**, beyond what Cursors above describes:
 
