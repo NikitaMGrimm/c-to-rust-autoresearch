@@ -242,8 +242,19 @@ impl Facts {
             _ if cond.ty.is_pointer() => self.null(program, cond).map(|null| !null),
             // A comparison of two constants, which Rust's lints refuse
             // where the two are equal.
-            ExprKind::Binary(op, ..) if op.is_comparison() => {
-                cond.constant(program).map(|value| value != 0)
+            ExprKind::Binary(op, left, right) if op.is_comparison() => {
+                if let Some(value) = cond.constant(program) {
+                    return Some(value != 0);
+                }
+                // A comparison that the type of one side decides, as
+                // `u < 0` for an unsigned `u`: the lints refuse it too.
+                let (value, op, constant) = match (left.constant(program), right.constant(program))
+                {
+                    (None, Some(constant)) => (left, *op, constant),
+                    (Some(constant), None) => (right, op.mirrored(), constant),
+                    _ => return None,
+                };
+                Expr::limited(op, value.range()?, constant)?.ok()
             }
             _ => None,
         }

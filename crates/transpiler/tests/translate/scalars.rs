@@ -542,6 +542,71 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn a_comparison_that_the_type_decides_is_decided() {
+    // Clippy's `absurd_extreme_comparisons` is an error for `u < 0` and
+    // for `n >= INT_MAX`, so these would not compile as written.
+    let rust = check(
+        "limits",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
+int main(int argc, char **argv) {
+    int n = atoi(argv[1]);
+    unsigned u = (unsigned)n;
+    unsigned char c = (unsigned char)n;
+    long r = 0;
+    if (n >= INT_MAX) r += 1;
+    if (INT_MIN >= n) r += 2;
+    if (u >= 0) r += 4;
+    if (u < 0) r += 8;
+    if (u <= 0) r += 16;
+    if (n > INT_MAX) r += 32;
+    if (0 <= u) r += 64;
+    if (c <= 255) r += 128;
+    if (c > 300) r += 256;
+    if (c >= 255) r += 2048;
+    if (4294967295u <= u) r += 512;
+    if (n > 7) r += 1024;
+    printf("%ld %d\n", r, (u < 0) + 2 * (u >= 0));
+    return 0;
+}
+"#,
+        &[
+            &["5"],
+            &["0"],
+            &["-1"],
+            &["2147483647"],
+            &["-2147483648"],
+            &["255"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "if n == 2147483647 {",
+            "if i32::MIN == n {",
+            "r += 4;",
+            "if u == 0 {",
+            "r += 64;",
+            "r += 128;",
+            "if c as i32 == 255 {",
+            "if 4294967295 == u {",
+            "if n > 7 {",
+        ],
+    );
+    assert!(!rust.contains("r += 8;") && !rust.contains("r += 32;") && !rust.contains("r += 256;"));
+    assert_eq!(
+        translate(
+            "limit-effect",
+            "unsigned next(void);\nunsigned next(void) { return 1; }\nint main(void) {\n    if (next() >= 0) return 1;\n    return 0;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: a test that the analysis decides but that calls or assigns, at line 4"
+    );
+}
+
+#[test]
 fn a_literal_near_a_named_constant_keeps_its_value() {
     // Clippy takes `2.718281828` for `std::f64::consts::E` written out and
     // refuses it; the program means the number it wrote.

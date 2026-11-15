@@ -545,6 +545,54 @@ impl Expr {
         test(self) || self.children().into_iter().any(|child| child.any(test))
     }
 
+    /// The least and the greatest value that the expression's type lets it
+    /// have. A conversion that keeps every value has those of what it
+    /// converts. An index has none: it is no number of C.
+    pub fn range(&self) -> Option<(i128, i128)> {
+        let outer = match self.ty {
+            Type::Index => return None,
+            _ => match self.ty.int()? {
+                (1, _) => (0, 1),
+                (bits, true) => (-(1 << (bits - 1)), (1 << (bits - 1)) - 1),
+                (bits, false) => (0, (1 << bits) - 1),
+            },
+        };
+        match &self.kind {
+            ExprKind::Cast(inner) => Some(match inner.range() {
+                Some(inner) if outer.0 <= inner.0 && inner.1 <= outer.1 => inner,
+                _ => outer,
+            }),
+            _ => Some(outer),
+        }
+    }
+
+    /// What a comparison with a constant says of a value that its type
+    /// keeps between two limits: `Ok` where the limits decide it, as in
+    /// `u < 0`, and `Err` with the operator `==` where only one value is
+    /// left, as in `n >= INT_MAX`. The constant is on the right.
+    pub fn limited(
+        op: BinOp,
+        (least, greatest): (i128, i128),
+        constant: i128,
+    ) -> Option<Result<bool, BinOp>> {
+        let k = constant;
+        Some(match op {
+            BinOp::Lt if k <= least => Ok(false),
+            BinOp::Lt if k > greatest => Ok(true),
+            BinOp::Le if k < least => Ok(false),
+            BinOp::Le if k >= greatest => Ok(true),
+            BinOp::Le if k == least => Err(BinOp::Eq),
+            BinOp::Gt if k >= greatest => Ok(false),
+            BinOp::Gt if k < least => Ok(true),
+            BinOp::Ge if k > greatest => Ok(false),
+            BinOp::Ge if k <= least => Ok(true),
+            BinOp::Ge if k == greatest => Err(BinOp::Eq),
+            BinOp::Eq if k < least || k > greatest => Ok(false),
+            BinOp::Ne if k < least || k > greatest => Ok(true),
+            _ => return None,
+        })
+    }
+
     /// Whether evaluating the expression changes nothing: it has no
     /// assignment and no call.
     pub fn is_pure(&self) -> bool {

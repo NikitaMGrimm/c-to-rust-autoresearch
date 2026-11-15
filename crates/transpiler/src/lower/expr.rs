@@ -610,6 +610,17 @@ impl Lower<'_> {
             // The compiler's lints refuse such a comparison.
             return unsupported("a comparison of a value with itself: no rule yet", at);
         }
+        // `n >= INT_MAX` holds for one value, and the compiler's lints
+        // refuse to have it said otherwise.
+        for (value, constant, op) in [(left, right, op), (right, left, op.mirrored())] {
+            if value.constant(self.program).is_none()
+                && let Some(constant) = constant.constant(self.program)
+                && let Some(range) = value.range()
+                && let Some(Err(equal)) = Expr::limited(op, range, constant)
+            {
+                return self.comparison(equal, left, right, at);
+            }
+        }
         // R30: a comparing function of `string.h` against 0, whose sign is
         // all that C fixes.
         for (call, zero, op) in [(left, right, op), (right, left, op.mirrored())] {

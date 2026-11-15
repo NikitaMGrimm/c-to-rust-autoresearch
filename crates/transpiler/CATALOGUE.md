@@ -446,7 +446,12 @@ Entry format, newest last:
   are no such case: a comparison of two constants is its value as C's
   conversions give it, `true` or `false` in a test, which then goes with
   its dead branch, and `1` or `0` as a number; `4 - 4` and `8 / 8` are the
-  number. The same test on both sides of `||` or `&&` is that test once
+  number. The same test on both sides of `||` or `&&` is that test once.
+  A comparison that the type of one side decides against a constant, as
+  `u < 0` and `u >= 0` for an unsigned `u` or `c > 300` for an `unsigned
+  char`, is decided in the same way, and refused where the other side
+  has an effect; one that leaves a single value, `n >= INT_MAX` or
+  `u <= 0`, is `==`. The lints refuse each of these as written
 - Needs: `Facts::truth`, which decides a comparison of constants
 - Motivation: `g3_maxnmin` tests `d != d` before it converts `d` to `int`,
   and did not compile
