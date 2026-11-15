@@ -96,7 +96,7 @@ impl Lower<'_> {
             | ExprKind::Deref(_) => self.place(expr, false),
             ExprKind::Unary(op, operand) => self.unary(expr, *op, operand),
             ExprKind::Binary(op, left, right) => self.binary(expr, *op, left, right),
-            ExprKind::Cast(inner) => self.cast(expr, inner, typed),
+            ExprKind::Cast(inner) => self.convert(inner, &expr.ty, at, typed),
             ExprKind::Bits(inner) => self.bits(expr, inner),
             ExprKind::Cond(cond, then, other) => match self.decided(cond)? {
                 Some(true) => self.value(then, typed),
@@ -207,10 +207,16 @@ impl Lower<'_> {
 
     /// R2: a conversion between numbers as `as`. A plain `char` is signed
     /// in C and a `u8` here, so it widens through `i8`.
-    fn cast(&mut self, expr: &Expr, inner: &Expr, typed: bool) -> R<syn::Expr> {
-        let (from, to) = (&inner.ty, &expr.ty);
+    pub(super) fn convert(
+        &mut self,
+        inner: &Expr,
+        to: &Type,
+        at: u32,
+        typed: bool,
+    ) -> R<syn::Expr> {
+        let from = &inner.ty;
         if from.is_pointer() || matches!(to, Type::Void) {
-            return unsupported("a conversion with no rule", expr.at);
+            return unsupported("a conversion with no rule", at);
         }
         if *to == Type::Bool {
             return self.cond(inner);
@@ -231,7 +237,21 @@ impl Lower<'_> {
         if let Some(original) = round_trip(inner, to) {
             return self.value(original, typed);
         }
-        let target = self.ty(to, expr.at)?;
+        // A conversion that only widens keeps the value, so the one after it
+        // says the same alone: `(unsigned)(int)c` is `c as i8 as u32`.
+        if let ExprKind::Cast(original) = &inner.kind
+            && widens(&original.ty, from)
+        {
+            return self.convert(original, to, at, typed);
+        }
+        // `strlen` counts in a `usize`, which converts as its `u64` does.
+        if let Some(length) = self.length(inner)? {
+            return Ok(match to {
+                Type::Index => length,
+                _ => rust::cast(length, self.ty(to, at)?),
+            });
+        }
+        let target = self.ty(to, at)?;
         if *from == Type::Bool && to.is_integer() {
             // R37 writes `!range` as a `bool`, which is a test.
             return Ok(rust::cast(self.cond(inner)?, target));
@@ -325,6 +345,7 @@ impl Lower<'_> {
                 expr.at,
             );
         }
+        let right = shift_count(op, right);
         let unsigned = matches!(expr.ty.int(), Some((_, false)));
         match wrapping(op) {
             Some(method) if unsigned => {
@@ -841,8 +862,9 @@ impl Lower<'_> {
         if target.ty == *compute || (narrower && (bitwise || wrapping(*op).is_some())) {
             // The low bits of these operations do not depend on the wider
             // type that C computes in.
-            let value = match target.ty == value.ty {
-                true => self.typed(value)?,
+            let count = shift_count(*op, value);
+            let value = match target.ty == value.ty || !std::ptr::eq(count, value) {
+                true => self.typed(count)?,
                 false => self.typed(&Expr {
                     ty: target.ty.clone(),
                     kind: ExprKind::Cast(Box::new(value.clone())),
@@ -1048,7 +1070,7 @@ fn same_value(left: &Expr, right: &Expr) -> bool {
 
 /// The integer that `value` converted, where converting `value` to `to`
 /// gives that integer back whatever it is: `value` is at least as wide.
-pub(super) fn round_trip<'e>(value: &'e Expr, to: &Type) -> Option<&'e Expr> {
+fn round_trip<'e>(value: &'e Expr, to: &Type) -> Option<&'e Expr> {
     match (&value.kind, to, &value.ty) {
         (ExprKind::Cast(original), Type::Int { bits, .. }, Type::Int { bits: middle, .. })
             if original.ty == *to && middle >= bits =>
@@ -1056,6 +1078,33 @@ pub(super) fn round_trip<'e>(value: &'e Expr, to: &Type) -> Option<&'e Expr> {
             Some(original)
         }
         _ => None,
+    }
+}
+
+/// The count of a shift without a conversion that only widens it: a shift
+/// takes its count in any integer type.
+fn shift_count(op: BinOp, count: &Expr) -> &Expr {
+    match &count.kind {
+        ExprKind::Cast(inner)
+            if matches!(op, BinOp::Shl | BinOp::Shr)
+                && matches!(inner.ty, Type::Int { .. } | Type::Index)
+                && widens(&inner.ty, &count.ty) =>
+        {
+            inner
+        }
+        _ => count,
+    }
+}
+
+/// Whether converting an integer of type `from` to `to` keeps every value.
+/// A `bool` is left out: Rust converts it to an integer only.
+fn widens(from: &Type, to: &Type) -> bool {
+    match (from, from.int(), to.int()) {
+        (Type::Bool, ..) => false,
+        (_, Some((bits, signed)), Some((wide, wide_signed))) => {
+            (wide > bits && (wide_signed || !signed)) || (wide == bits && wide_signed == signed)
+        }
+        _ => false,
     }
 }
 

@@ -521,10 +521,6 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 
 What a third review found beside these, most frequent first:
 
-- **Conversions that one conversion says.** `c as i8 as i32 as u32` is `c
-  as i8 as u32`, `len() as u64 as i32` is `len() as i32`, and a shift takes
-  its count in any integer type. These need only the two types, not the
-  range of a value, as `args.len() as i32 != 2` does.
 - **Types that a method or a literal fixes.** `let result: f64 =
   base.powf(exponent)`, `let in_: u32 = flt.to_bits()`, `let data: &str =
   "string"`, `let mut y: i32 = 2 * x`: the method's signature, the text or

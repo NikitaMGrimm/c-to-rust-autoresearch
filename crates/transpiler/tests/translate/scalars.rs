@@ -680,7 +680,7 @@ int main(int argc, char *argv[]) {
     assert_lines(
         &rust,
         &[
-            "println!(\"{:x} {} {} {}\", u, u, u as i16 as u32, c as i8 as i32 as u8 as i8 as i32);",
+            "println!(\"{:x} {} {} {}\", u, u, u as i16 as u32, c as i8 as i32);",
             "println!(\"{}\", f.level);",
             "show(n != 0, i32::from(n != 0));",
         ],
@@ -806,5 +806,43 @@ int main(int argc, char *argv[]) {
             "int main(void) {\n    srand(3);\n    return 0;\n}\n"
         ),
         "unsupported: `srand` in a program without `rand`, at line 4"
+    );
+}
+
+#[test]
+fn a_conversion_that_only_widens_is_left_out() {
+    let rust = check(
+        "widening",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    char c = n;
+    unsigned char b = n;
+    signed char s = n;
+    unsigned char shift = n & 7;
+    int len = strlen(argv[1]);
+    printf("%x %d\n", (unsigned)(int)c, len);
+    printf("%d %d\n", (int)(signed char)b, (int)(unsigned char)s);
+    long wide = n;
+    wide <<= shift;
+    printf("%lu %d %ld\n", (unsigned long)(long)(short)n, 1 << shift, wide);
+    return 0;
+}
+"#,
+        &[&["3"], &["-70000"], &["200"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let len = args[1].len() as i32;",
+            "println!(\"{:x} {}\", c as i8 as u32, len);",
+            "println!(\"{} {}\", b as i8 as i32, s as u8 as i32);",
+            "wide <<= shift;",
+            "println!(\"{} {} {}\", n as i16 as u64, 1 << shift, wide);",
+        ],
     );
 }

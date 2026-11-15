@@ -2,7 +2,7 @@
 //! standard library where that behaves the same, and to a `Helper`
 //! otherwise.
 
-use super::expr::{round_trip, symbol};
+use super::expr::symbol;
 use super::pointer::Repr;
 use super::{Helper, Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type};
@@ -23,6 +23,24 @@ struct Conversion {
 }
 
 impl Lower<'_> {
+    /// The `usize` that a call of the library's `strlen` counts.
+    pub(super) fn length(&mut self, call: &Expr) -> R<Option<syn::Expr>> {
+        let ExprKind::Call(callee, args) = &call.kind else {
+            return Ok(None);
+        };
+        let (Some("strlen"), [text]) = (callee.function(), &args[..]) else {
+            return Ok(None);
+        };
+        if self.program.function("strlen").is_some() {
+            return Ok(None);
+        }
+        let text = match self.reads_bytes(text) {
+            true => self.until_nul(text)?,
+            false => self.text(text, false)?,
+        };
+        Ok(Some(rust::method(text, "len", [])))
+    }
+
     pub(super) fn library(&mut self, call: &Expr, name: &str, args: &[Expr]) -> R<syn::Expr> {
         let at = call.at;
         match (name, args) {
@@ -43,12 +61,9 @@ impl Lower<'_> {
                 let stream = Stream::of(stream, name, at)?;
                 self.puts(text, stream, false)
             }
-            ("strlen", [text]) => {
-                let text = match self.reads_bytes(text) {
-                    true => self.until_nul(text)?,
-                    false => self.text(text, false)?,
-                };
-                Ok(rust::cast(rust::method(text, "len", []), parse_quote!(u64)))
+            ("strlen", [_]) => {
+                let length = self.length(call)?.expect("a call of strlen");
+                Ok(rust::cast(length, parse_quote!(u64)))
             }
             ("fgets", [buffer, size, stream]) => self.read_line(buffer, size, stream, at),
             ("memset", [target, value, size]) => self.memset(target, value, size, at),
@@ -1035,10 +1050,9 @@ impl Lower<'_> {
                     b'x' | b'X' | b'o' => spec.push(char::from(letter)),
                     _ => {}
                 }
-                match (value.ty == read, round_trip(value, &read)) {
-                    (true, _) => self.expr(value)?,
-                    (false, Some(original)) => self.expr(original)?,
-                    (false, None) => rust::cast(self.expr(value)?, self.ty(&read, at)?),
+                match value.ty == read || value.ty.is_pointer() {
+                    true => self.expr(value)?,
+                    false => self.convert(value, &read, at, false)?,
                 }
             }
             // `%F` prints an infinity in capitals, which Rust does not.
