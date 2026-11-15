@@ -3,7 +3,8 @@
 # for the driver, installed by loop/drive.
 # Claude Code's deny rules cover its own file tools but not the shell, so this
 # blocks any tool call that names a denied place, the TRACTOR or CodeNet
-# corpus or Claude Code's own files, and for the loop agent any MCP tool or
+# corpus, a scratch directory of the evaluator or Claude Code's own files, and
+# for the loop agent any MCP tool or
 # skill from outside loop/skills.
 # Usage: guard [--driver] OWN_DIR MARKER..., where OWN_DIR is the agent's
 # transcript directory, whose saved tool output it may read back. The driver
@@ -59,6 +60,12 @@ for marker in "$@" DARPA-TRACTOR-Program PUBLIC-Test-Corpus Project_CodeNet \
     block "the call names $marker"
   fi
 done
+# While the gate judges a commit, the evaluator's scratch directories hold
+# copies of private programs and their translations. Their names end in
+# numbers, so a start is what gives them away.
+if [[ $text =~ (^|[^A-Za-z0-9_.-])c2r-(eval|gate)- ]]; then
+  block "the call names a scratch directory of the evaluator"
+fi
 # Settings, transcripts, memory and the owner's skills are off limits. The
 # agent may read back the tool output that Claude Code saved for it, but a
 # path with .. could climb out of that directory.

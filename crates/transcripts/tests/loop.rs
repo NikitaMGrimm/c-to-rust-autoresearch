@@ -78,6 +78,11 @@ fn calls_reaching_private_places_are_blocked() {
             "Read",
             json!({"file_path": "/h/.claude/projects/-loop/../-main/s.jsonl"}),
         ),
+        (
+            "Bash",
+            json!({"command": "cat /tmp/c2r-eval-812-0/3/c/program.c"}),
+        ),
+        ("Bash", json!({"command": "ls /tmp/c2r-gate-*"})),
     ];
     for (tool, input) in blocked {
         assert_eq!(guard(tool, input.clone()), Some(2), "{tool} {input}");
@@ -99,6 +104,10 @@ fn ordinary_calls_pass() {
         (
             "Bash",
             json!({"command": "echo https://code.claude.com/docs"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "ls ~/src/c2r-loop-1 abc2r-eval-1"}),
         ),
     ];
     for (tool, input) in allowed {
@@ -157,6 +166,10 @@ fn the_driver_may_use_its_thread_and_skills_but_not_private_places() {
             json!({"command": "cat /h/.claude/skills/x/SKILL.md"}),
         ),
         ("WebFetch", json!({"url": "https://x.org/Project_CodeNet"})),
+        (
+            "Read",
+            json!({"file_path": "/tmp/c2r-eval-812-0/3/rust/translation.rs"}),
+        ),
     ];
     for (tool, input) in blocked {
         assert_eq!(driver_guard(tool, input.clone()), Some(2), "{tool} {input}");

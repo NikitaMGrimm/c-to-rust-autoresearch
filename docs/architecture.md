@@ -48,8 +48,12 @@ emulated C memory needs) and non-blank `lines`. A pass is also `strict` when
 its `lint_allows`, `leaks` and `byte_casts` are all zero. The stage does not
 change; a gate run with `--strict` scores only strict passes.
 
-Both programs run as `./program` from their own directories, so they see the
-same `argv[0]`. Every program may write files of at most 64 MiB and print at
+The evaluator works on each program in a numbered scratch directory, and the
+C compiler and the transpiler read a copy of the program there, `program.c`,
+which is deleted before the translation is compiled. So no command line or
+working directory names the program, and the process list, which every user
+of the machine can read, shows no private name. Both programs run as
+`./program` from their own directories, so they see the same `argv[0]`. Every program may write files of at most 64 MiB and print at
 most 8 MiB; the transpiler and the Rust program may use 4 GiB of address
 space, and the sanitized C program 4 GiB of memory (`run`).
 
@@ -303,15 +307,18 @@ more examples of a construct might, so the loop has several layers:
   `~/.claude`; deny the web tools, network commands and T3 Code's tools; and
   install `loop/guard`. That hook blocks any tool call, shell commands
   included, that names those places, by path or by their own name, or a
-  corpus, or touches Claude Code's files other than the tool output Claude
-  Code saves for the agent. It also blocks every MCP tool, since T3 Code's
+  corpus, or a scratch directory of the evaluator (`c2r-eval-`, `c2r-gate-`),
+  which holds copies of private programs while the gate judges a commit, or
+  touches Claude Code's files other than the tool output Claude Code saves
+  for the agent. It also blocks every MCP tool, since T3 Code's
   reach other threads, a browser and agents in other directories, and every
   skill outside `loop/skills`.
 - `cargo run -p transcripts --bin audit -- PRIVATE_DIR PATH...` reads the
   agent's transcripts afterwards. It reports every private program name in
   what the agent saw or wrote, every tool call that named the private
-  directory or a corpus, looked for TRACTOR or CodeNet on the web or touched Claude
-  Code's files, and every record it cannot read. Reading back a file in a
+  directory, a corpus or a scratch directory of the evaluator, looked for
+  TRACTOR or CodeNet on the web or touched Claude Code's files, and every
+  record it cannot read. Reading back a file in a
   transcript's own directory is no finding, nor in a directory given with
   `--readable DIR`, as `loop/audit` gives a driver's skills. Exit code 0
   means none; a path without transcripts is an error.

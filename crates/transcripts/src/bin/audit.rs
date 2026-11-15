@@ -1,8 +1,8 @@
 //! Checks the loop agent's transcripts for contact with the private sets: the
 //! name of a private program anywhere in what it saw or wrote, and a tool call
-//! that names the private directory or a corpus that holds private programs,
-//! TRACTOR or CodeNet, or touches Claude Code's files. Prints each finding and
-//! a summary line.
+//! that names the private directory, a corpus that holds private programs,
+//! TRACTOR or CodeNet, or a scratch directory of the evaluator, or touches
+//! Claude Code's files. Prints each finding and a summary line.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,6 +27,10 @@ const CORPUS: [&str; 6] = [
     "Project_CodeNet.git",
     ".cache/c-to-rust-autoresearch",
 ];
+/// How the scratch directories of the evaluator and the gate start. While a
+/// commit is judged they hold copies of private programs and their
+/// translations.
+const SCRATCH: [&str; 2] = ["c2r-eval-", "c2r-gate-"];
 
 struct Patterns {
     /// Names of the private programs and their variants.
@@ -203,6 +207,15 @@ fn findings(text: &str, patterns: &Patterns) -> Vec<(usize, String)> {
                     found.push(place);
                 }
             }
+            let scratch = |text: &&str| {
+                SCRATCH.iter().any(|start| {
+                    text.match_indices(start)
+                        .any(|(at, _)| !text[..at].chars().next_back().is_some_and(path))
+                })
+            };
+            if input.iter().any(scratch) {
+                add(format!("{tool} names a scratch directory of the evaluator"));
+            }
             for (word, corpus) in [("tractor", "TRACTOR"), ("codenet", "CodeNet")] {
                 if tool.starts_with("Web")
                     && input.iter().any(|text| text.to_lowercase().contains(word))
@@ -369,6 +382,15 @@ mod tests {
                 "Bash",
                 serde_json::json!({"command": "curl -O https://x.org/1.0.0/Project_CodeNet.tar.gz"}),
             ),
+            tool_use(
+                "Bash",
+                serde_json::json!({"command": "cat /tmp/c2r-eval-812-0/3/c/program.c"}),
+            ),
+            tool_result("clang-18 -o /tmp/c2r-eval-812-0/3/c/program"),
+            tool_use(
+                "Bash",
+                serde_json::json!({"command": "ls ~/src/c2r-loop-1 abc2r-gate-1"}),
+            ),
         ];
         let want = expected(&[
             (1, "private program g1_secret"),
@@ -389,6 +411,7 @@ mod tests {
             (12, "WebSearch looks for CodeNet"),
             (13, "Bash names Project_CodeNet"),
             (14, "Bash names Project_CodeNet.tar.gz"),
+            (15, "Bash names a scratch directory of the evaluator"),
         ]);
         assert_eq!(found(&lines), want);
     }

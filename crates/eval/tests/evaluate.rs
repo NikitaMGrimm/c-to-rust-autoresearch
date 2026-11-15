@@ -293,3 +293,44 @@ fn fuzzed_inputs_are_a_separate_result_for_passes() {
     assert!(detail.starts_with("input fuzz_1: "), "{detail}");
     assert_eq!((failed.stage, failed.fuzz), (Stage::Mismatch, None));
 }
+
+/// Every user on the machine reads the process list, so a private program's
+/// name may be in no command line or working directory.
+#[test]
+fn the_process_list_never_names_the_program() {
+    let c = "#include <stdio.h>\nint main(void) { puts(\"1\"); return 0; }\n";
+    let rust = "fn main() {\n    println!(\"1\");\n}\n";
+    let (dir, transpiler) = setup("listing", c, None, rust);
+    // No other process happens to mention this name.
+    let name = &format!("g1_sought_{}", std::process::id());
+    std::fs::rename(dir.join("g1_program.c"), dir.join(format!("{name}.c"))).unwrap();
+    // Slow enough for the watcher to see the transpiler too.
+    let script = std::fs::read_to_string(&transpiler).unwrap();
+    std::fs::write(&transpiler, script.replacen('\n', "\nsleep 0.3\n", 1)).unwrap();
+    let names = |text: &[u8]| text.windows(name.len()).any(|part| part == name.as_bytes());
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (records, seen) = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let mut seen = std::collections::BTreeSet::new();
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                for process in std::fs::read_dir("/proc").unwrap().flatten() {
+                    let command = std::fs::read(process.path().join("cmdline")).unwrap_or_default();
+                    let cwd = std::fs::read_link(process.path().join("cwd")).unwrap_or_default();
+                    if names(&command) || names(cwd.as_os_str().as_encoded_bytes()) {
+                        let command = String::from_utf8_lossy(&command).replace('\0', " ");
+                        seen.insert(format!("{command} in {}", cwd.display()));
+                    }
+                }
+            }
+            seen
+        });
+        let translator = eval::Translator::Transpiler(transpiler);
+        let records = eval::evaluate_all(&[dir.join(format!("{name}.c"))], &translator, 1);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        (records.unwrap(), watcher.join().unwrap())
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(&records[0].name, name);
+    assert_eq!(records[0].stage, Stage::Pass, "{}", records[0].detail);
+    assert!(seen.is_empty(), "{seen:#?}");
+}
