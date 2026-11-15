@@ -150,7 +150,7 @@ where it is, under its own name, and the pointer variable becomes a `usize`.
 
 | C, with `p` a cursor over `a` | Rust |
 | --- | --- |
-| `T *p = a;`, `T *end = a + n;` | `let mut p: usize = 0;`, `let end: usize = n as usize;` |
+| `T *p = a;`, `T *end = a + n;` | `let mut p: usize = 0;`, `let end = n as usize;` |
 | `*p`, `p[i]`, `p->field` | `a[p]`, `a[p + i]`, `a[p].field` |
 | `p++`, `p--`, `p += n`, `p = q + 1` | `p += 1`, `p -= 1`, `p += n`, `p = q + 1` |
 | `p < end`, `p == q`, `p != a` | `p < end`, `p == q`, `p != 0` |
@@ -301,9 +301,10 @@ What two reviews of the passing translations found that no rule writes as
 Rust would, most frequent first. Each needs the proof named with it, and
 keeps C's promotions, checked arithmetic and the input it consumes:
 
-- **Types that inference gives.** `let foo: FooT = FooT { … }` in every
-  program. An annotation goes where the value alone fixes the type: a
-  record, a call, a cast, a literal with a suffix.
+- **Types that inference gives.** A `let` drops its annotation where the
+  value is a record literal, a cast, a literal with a suffix or a call of
+  a function of the program. A call of a helper or of the standard
+  library, and an operation on values whose types are fixed, keep it.
 - **A value from an expression instead of a variable set later.** `let mut
   x = 0;` and then a store in a branch or after a read, where `let x =
   if …` or `scan_int().map_or(0, …)` says it. Needs every store and read

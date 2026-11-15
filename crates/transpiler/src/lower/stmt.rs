@@ -333,7 +333,14 @@ impl Lower<'_> {
             Some(init) => self.init(&var.ty, None, init)?,
             None => self.zero(&var.ty, var.at)?,
         };
-        Ok(vec![parse_quote!(let #mutability #name: #ty = #value;)])
+        let called = var.init.as_ref().is_some_and(|init| {
+            matches!(&init.kind, ExprKind::Call(callee, _)
+                if callee.function().is_some_and(|name| self.program.function(name).is_some()))
+        });
+        Ok(vec![match fixes_type(&value, called) {
+            true => parse_quote!(let #mutability #name = #value;),
+            false => parse_quote!(let #mutability #name: #ty = #value;),
+        }])
     }
 
     /// R3: a `for` loop. One that counts up to a bound that its body leaves
@@ -587,4 +594,25 @@ fn continues(body: &[Stmt]) -> bool {
         Stmt::LetSome { otherwise, .. } => continues(otherwise),
         _ => false,
     })
+}
+
+/// Whether the value alone gives a `let` its type, so that the type needs
+/// no annotation: a record literal, a cast, a literal with a suffix, or,
+/// where `called` says that it calls a function of the program, a call.
+fn fixes_type(value: &syn::Expr, called: bool) -> bool {
+    match value {
+        syn::Expr::Struct(_) | syn::Expr::Cast(_) => true,
+        syn::Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
+            syn::Lit::Int(int) => !int.suffix().is_empty(),
+            syn::Lit::Float(float) => !float.suffix().is_empty(),
+            _ => false,
+        },
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => matches!(**expr, syn::Expr::Lit(_)) && fixes_type(expr, false),
+        syn::Expr::Call(_) => called,
+        _ => false,
+    }
 }

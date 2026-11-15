@@ -75,17 +75,17 @@ int main(void) {
             "s_at += 1;",
             // Two cursors over one array are compared as indices.
             "let mut ptr: usize = 0;",
-            "let end: usize = size as usize;",
+            "let end = size as usize;",
             "while ptr < end {",
             "if entries[ptr].id == id {",
             "return Some(&mut entries[ptr..]);",
-            "let mut ptr: usize = size as usize;",
-            "let first: usize = start as usize;",
+            "let mut ptr = size as usize;",
+            "let first = start as usize;",
             "ptr -= 1;",
             "sum += array[ptr];",
             // The rest of the array from a cursor.
             "&s[s_at..]",
-            "let distance: i64 = p as i64;",
+            "let distance = p as i64;",
             "let q: usize = p + 1;",
             "n = n.wrapping_add_signed(step as isize);",
         ],
@@ -147,7 +147,7 @@ int main(void) {
         &[
             // NULL reaches the slice, not the index.
             "fn length(s: Option<&[u8]>) -> i32 {",
-            "let end: usize = globals.used as usize;",
+            "let end = globals.used as usize;",
             "let mut it: usize = end;",
             "while i < 3 && it > 0 {",
             "last += STORE[it];",

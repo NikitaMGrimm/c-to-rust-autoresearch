@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
     assert_lines(
         &rust,
         &[
-            "let limit: i32 = parse_int(&args[1]) as i32;",
+            "let limit = parse_int(&args[1]) as i32;",
             "let mut total: i32 = 0;",
             "let label: &str = \"total\";",
             "for i in 0..limit {",
@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
         &rust,
         &[
             "let wide: u64 = parse_uint(&args[1]);",
-            "let narrow: u32 = parse_uint(&args[1]) as u32;",
+            "let narrow = parse_uint(&args[1]) as u32;",
         ],
     );
 }

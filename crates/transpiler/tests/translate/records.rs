@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
             "#[derive(Clone, Copy, Default)]",
             "struct PointT {",
             "fn shifted(mut p: PointT, by: i32) -> PointT {",
-            "let origin: PointT = PointT { x: 0, y: 0 };",
+            "let origin = PointT { x: 0, y: 0 };",
             "let table: [[i32; 3]; 2] = [[1, 2, 3], [4, 5, 6]];",
         ],
     );
@@ -282,5 +282,39 @@ int main(int argc, char *argv[]) {
         &[&["3"]],
         "",
     );
-    assert_lines(&rust, &["let n: Node = Node { id, value, weight: other };"]);
+    assert_lines(&rust, &["let n = Node { id, value, weight: other };"]);
+}
+
+#[test]
+fn a_local_whose_value_fixes_its_type_has_no_annotation() {
+    let rust = check(
+        "inferred",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+typedef struct { int x; int y; } point_t;
+point_t at(int x) { point_t p = {x, x + 1}; return p; }
+int twice(int n) { return 2 * n; }
+int main(int argc, char *argv[]) {
+    point_t p = at(atoi(argv[1]));
+    int n = twice(p.y);
+    int k = 5;
+    long wide = (long)n * k;
+    printf("%d %d %ld\n", p.x, n, wide);
+    return 0;
+}
+"#,
+        &[&["3"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let p = PointT { x, y: x + 1 };",
+            "let p = at(parse_int(&args[1]) as i32);",
+            "let n = twice(p.y);",
+            "let k: i32 = 5;",
+            "let wide: i64 = n as i64 * k as i64;",
+        ],
+    );
 }
