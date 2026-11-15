@@ -409,6 +409,42 @@ like any other and the pointer rules apply.
 | a `void *` parameter of the library (`memcpy`, `memset`, `memcmp`, `free`) | the library's rules, which take the argument's own type |
 | `%p` | refused |
 | a size beside it in bytes, `(void *p, size_t len)` | stays the program's number: it counts elements only where the type is a byte, and no rule changes it |
+### Statement expressions
+
+`({ statements; value; })` is a block that is an expression, as every block
+of Rust is. The front end reads Clang's `StmtExpr` as `c::ExprKind::Block`,
+the statements and the value that the last of them gives, if it is an
+expression; the rule prints `{ statements; value }`. The header `assert.h`
+writes its macro with one, and that expansion is a construct of its own,
+`c::ExprKind::Assert`, since Rust has a word for it.
+
+| Shape | Rust, or the refusal |
+| --- | --- |
+| `assert(e);` as glibc expands it, `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e) ; else __assert_fail(…); }))` | `if !(e) { eprintln!("FILE:LINE: FUNCTION: Assertion `E' failed."); std::process::abort(); }`, with the texts and the line that the expansion holds, in one literal. `assert!` would end the program with another exit code than C's `abort` |
+| `assert(e)` with `NDEBUG`, `((void) (0))` | nothing: a statement without an effect |
+| the condition of an `assert`: a number, a comparison, a pointer, `&&` and `||`, a call, one with a side effect | the condition of an `if`, by the rule for conditions; C evaluates it once, since the operand of `sizeof` is not evaluated, and so does the translation |
+| an `assert` as the left side of a comma, `(assert(n > 0), n)` | the statement before the value, as for any comma |
+| an `assert` where a value is needed | refused: it has none |
+| a value: `int x = ({ int y = f(); y + 1; });` | `let x = { let y = f(); y + 1 };` |
+| the positions of a value: an initialiser, the right side of an assignment, an argument, an operand, a returned value, the condition of an `if` or a loop, the header of a `for`, inside another statement expression | the same block in that position; a condition is evaluated as often as C evaluates it |
+| a statement of its own, `({ a; b; });`, also with a value that nothing reads | a block statement `{ a; b; }`; a last expression without an effect is dropped as in any expression statement |
+| no value: the last statement is no expression, or the block is empty, `({ })` | a block statement where it is a statement; refused where a value is needed |
+| the value's type: an integer, a floating-point number, `_Bool`, an enumeration; with C's promotions of the last expression | a block of that type |
+| a value that is a pointer, a record, an array or a function | refused: `a statement expression that gives a pointer`, …; the analysis has no flow out of a block yet |
+| statements inside: declarations with and without a first value, expression statements, `if`, loops and `switch` that stay inside | the statements of a block. A `break` or `continue` inside belongs to a loop or `switch` inside |
+| `return`, `goto`, a label, and a `break` or `continue` that leaves the statement expression | refused: `a jump out of a statement expression` |
+| a store inside to a variable outside, `x + ({ x = 2; x; })` | as for any assignment inside an expression: the operands run from left to right |
+| a local inside with the name of one outside, `int x = 1; int y = ({ int x = 5; x + 1; });` | the block is a scope: the inner name shadows, and `names` gives each its own name only where one Rust scope would hold both |
+| a pointer inside to a variable outside, `({ int *p = &x; *p += 1; x; })` | the rules for a local pointer; the analysis reads the statements inside like any others of the function |
+| the address of a local of the block as its value | refused with the pointer values above |
+| a macro's `__typeof__(a) _a = (a);` | the type that Clang resolved it to; refused where Clang names none |
+| a statement expression outside a function | not C |
+
+Every stage that walks the statements of a function walks those inside an
+expression too: the analysis, `join`, `ends`, `cursors` and `narrow` find
+them through one walk in `c.rs`. A rewrite that cannot be right for a
+statement inside an expression (an end pointer whose call is there, a
+cursor that is stepped there) leaves it and the program is refused.
 
 ## Not yet built
 
@@ -625,6 +661,9 @@ become a fact and a refusal:
   the locals that were pointers of the two: `int *p = a, *q = b;` in
   `f(void *a, void *b)` called as `f(x, x)` is one `&mut` and one `&` of
   the same memory, and does not compile.
+- A failing `assert` aborts, and C loses what it printed to a `stdout`
+  that is not a terminal and that it has not flushed. Rust's `stdout`
+  writes each line as it ends, so the translation prints those lines.
 
 ## The listing
 

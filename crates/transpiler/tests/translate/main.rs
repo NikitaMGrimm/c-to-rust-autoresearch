@@ -1,6 +1,7 @@
 //! Each test translates a small C program, runs it beside its translation
 //! and checks the Rust that a rule should give.
 
+mod blocks;
 mod common;
 mod compare;
 mod copies;

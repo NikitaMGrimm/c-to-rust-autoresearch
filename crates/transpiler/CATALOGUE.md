@@ -1016,6 +1016,20 @@ Entry format, newest last:
   used after the label; two labels of a function whose Rust names are the
   same, such as `a_b` and `a__b`
 - Motivation: `g5_cleanup` jumps to its cleanup
+## R34: `assert`
+
+- C: `assert(e)` as glibc's `assert.h` expands it, as a statement or on the
+  left of a comma; with `NDEBUG`, `((void) (0))`
+- Rust: `if !(e) { eprintln!(…); std::process::abort(); }`, printing
+  ``FILE:LINE: FUNCTION: Assertion `E' failed.`` with the texts of the
+  expansion in one literal, and the condition by the rule for conditions
+  (R3), evaluated once; nothing
+  where the analysis decides that it holds, or with `NDEBUG`. `abort`
+  rather than `assert!`, which ends the program with another exit code
+- Needs: `Facts::truth`
+- Refused: an `assert` where a value is needed
+- Motivation: the development programs `g5_hm_geti`, `g5_intput`,
+  `g5_sh_puts` and `g5_str_put` were refused for Clang's `StmtExpr`
 - Changes: nothing
 
 ## R50: `fread` of bytes from `stdin`

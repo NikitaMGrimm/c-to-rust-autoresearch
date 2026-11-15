@@ -1,7 +1,16 @@
 //! Runs a C program and its translation side by side.
 
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
+
+/// The exit code, or 128 and the signal that ended the program, as a shell
+/// gives it.
+fn exit_code(status: ExitStatus) -> Option<i32> {
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+}
 
 fn run(command: &mut Command, stdin: &str) -> Output {
     use std::io::Write;
@@ -94,9 +103,9 @@ pub fn check(name: &str, c: &str, runs: &[&[&str]], stdin: &str) -> String {
         assert_eq!(
             (
                 String::from_utf8_lossy(&rust_run.stdout),
-                rust_run.status.code()
+                exit_code(rust_run.status)
             ),
-            (String::from_utf8_lossy(&c.stdout), c.status.code()),
+            (String::from_utf8_lossy(&c.stdout), exit_code(c.status)),
             "with {args:?}: {}\n{rust}",
             String::from_utf8_lossy(&rust_run.stderr)
         );
