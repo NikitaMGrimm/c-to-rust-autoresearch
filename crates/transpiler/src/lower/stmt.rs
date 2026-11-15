@@ -1218,6 +1218,29 @@ fn ends(stmts: &[Stmt]) -> bool {
         }
 }
 
+/// The labels in the statements, at any depth.
+pub(super) fn labels<'s>(stmts: &'s [Stmt], found: &mut Vec<&'s str>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Label(label) => found.push(label),
+            Stmt::Block(body)
+            | Stmt::While(_, body)
+            | Stmt::DoWhile(body, _)
+            | Stmt::Switch(_, body) => labels(body, found),
+            Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => {
+                labels(then, found);
+                labels(other, found);
+            }
+            Stmt::For { init, body, .. } => {
+                labels(init, found);
+                labels(body, found);
+            }
+            Stmt::LetSome { otherwise, .. } => labels(otherwise, found),
+            _ => {}
+        }
+    }
+}
+
 /// How many `goto` statements in the statements jump to the label.
 fn jumps(stmts: &[Stmt], label: &str) -> usize {
     let count = |stmts: &[Stmt]| jumps(stmts, label);

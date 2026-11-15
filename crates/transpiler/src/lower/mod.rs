@@ -1375,6 +1375,18 @@ impl Lower<'_> {
             Some((Stmt::Return(None), rest)) => (rest, None),
             _ => (stmts, None),
         };
+        // Two C labels with one name in Rust would be one block.
+        let mut labels = Vec::new();
+        stmt::labels(stmts, &mut labels);
+        for (index, label) in labels.iter().enumerate() {
+            let same = |other: &&&str| crate::names::label(other) == crate::names::label(label);
+            if let Some(other) = labels[..index].iter().find(same) {
+                return unsupported(
+                    format!("the labels `{other}` and `{label}`, one name in Rust: no rule yet"),
+                    0,
+                );
+            }
+        }
         let mut body = self.seeded(rest)?;
         if let Some(value) = last {
             let value = match self.in_main() {

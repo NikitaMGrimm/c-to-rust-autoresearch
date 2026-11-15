@@ -730,3 +730,23 @@ two:
         assert_eq!(translate(name, c).unwrap_err(), refusal, "{name}");
     }
 }
+
+/// `break 'a_b` would leave the inner of two blocks with that name.
+#[test]
+fn two_labels_with_one_rust_name_are_refused() {
+    for (name, first, second) in [
+        ("labels_snake", "a_b", "a__b"),
+        ("labels_outer", "outer", "outer_label"),
+    ] {
+        let c = format!(
+            "#include <stdio.h>\nint main(int argc, char **argv) {{\n    if (argc == 2) goto {second};\n    if (argc == 3) goto {first};\n    goto {second};\n{first}:\n    puts(\"B\");\n{second}:\n    puts(\"C\");\n    return 0;\n}}\n"
+        );
+        assert_eq!(
+            crate::common::translate(name, &c).unwrap_err(),
+            format!(
+                "unsupported: the labels `{first}` and `{second}`, one name in Rust: no rule yet"
+            ),
+            "{name}"
+        );
+    }
+}

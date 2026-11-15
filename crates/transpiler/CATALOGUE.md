@@ -993,7 +993,8 @@ Entry format, newest last:
   `` `goto label` into a block from outside it `` (a jump back is R49's);
   a `break` or `continue` of a loop around the block inside it, which Rust
   does not allow in a labelled block; a local declared in the block and
-  used after the label
+  used after the label; two labels of a function whose Rust names are the
+  same, such as `a_b` and `a__b`
 - Motivation: `g5_cleanup` jumps to its cleanup
 - Changes: nothing
 
