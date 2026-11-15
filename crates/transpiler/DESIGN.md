@@ -546,6 +546,37 @@ What a third review found beside these, most frequent first:
   is only tested is a `bool`. Needs every store and read of it.
 - **A test before a loop with the same test.** `if s[at] != 0 { while s[at]
   != 0 { … } }` where nothing is between them and the test has no effect.
+- **Tests that are one condition.** `if entry == 0 { if x == 1 { … } }`
+  with nothing else in the outer branch is `if entry == 0 && x == 1`; the
+  float helpers have the same shape. Needs no analysis: the order and the
+  short circuit stay.
+- **Functions that nothing reaches.** A copy with one parameter for two
+  (R53) leaves the function it was made from, and C programs carry helpers
+  that nothing calls. Needs what `main` reaches, through calls and through
+  the functions whose address is taken.
+- **The steps of C's cleanup.** `if let Some(mut a) = Some(a) {
+  drop(take(&mut a.items)); drop(a); }` and `p = None` after a `free`,
+  where the owner's end does it all. The wrapped test needs no analysis;
+  dropping a `free` needs the last use and that the order of releases
+  shows nowhere.
+- **The bytes of a text found again for each search.**
+  `find_byte(until_nul(&in_[s..]), c)` in each round of R52's loop, and
+  `s.iter().take(until_nul(s).len())` for `memchr(s, c, strlen(s))`,
+  where one `let text = until_nul(in_);` serves. The second needs no
+  analysis; the first needs that nothing stores to the array meanwhile.
+- **The type of a callback written out.** `Option<fn(&mut Globals, i32) ->
+  i32>` at each use of a `typedef`: a `type` with the C name. Needs the
+  name kept through the front end.
+- **Labels of a `case` that are a range.** `entry @ (7 | 6 | 5 | 4 | 3 | 2
+  | 1 | 0)` and `matches!(entry, 7 | 6 | 5)` are `0..=7` and `5..=7`.
+  Needs no analysis.
+- **`do { … } while (0)`.** `loop { …; if !false { break; } }` is a block
+  where no `break` or `continue` is in it. Needs no analysis.
+- **A place that is only tested, in a variable.** `let mut bad = s.find(',');
+  if bad.is_some() { … } bad = s.find(';');` is `if s.contains(',')` twice.
+  `normalise::found` knows the local is only tested.
+- **A record for two numbers.** `DivT { quot: x / y, rem: x % y }` for a
+  local whose two members are read is `let (quot, rem) = (x / y, x % y);`.
 
 ## Known weak spots
 
@@ -587,6 +618,9 @@ become a fact and a refusal:
   not know which array a local points into. A call that takes the pointer
   to store through and the array itself, as `char *p = s; memmove(p + 1,
   s, 3);` does, is translated and does not compile.
+- An operation whose two operands are the same expression, `x / x` or
+  `a - a`, is translated as written and does not compile: Rust's lints
+  deny it.
 
 ## The listing
 
