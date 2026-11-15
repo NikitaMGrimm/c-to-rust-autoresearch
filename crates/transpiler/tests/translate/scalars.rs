@@ -607,6 +607,74 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn a_loop_that_never_runs_twice_is_an_if() {
+    // Clippy's `never_loop` is an error, so the loop would not compile.
+    let rust = check(
+        "once",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+static int over(int n) {
+    while (n > 2) {
+        printf("over\n");
+        return n - 2;
+    }
+    return 0;
+}
+int main(int argc, char **argv) {
+    int n = atoi(argv[1]);
+    while (n < 3) {
+        for (int i = 0; i < 2; i++) {
+            if (i == n) break;
+            printf("at %d\n", i);
+        }
+        n += 10;
+        break;
+        printf("never\n");
+    }
+    while (n < 20) {
+        n++;
+        if (n < 15) continue;
+        printf("round %d\n", n);
+        break;
+    }
+    printf("%d %d\n", n, over(n));
+    return 0;
+}
+"#,
+        &[&["0"], &["1"], &["7"], &["30"]],
+        "",
+    );
+    assert_lines(&rust, &["if n > 2 {", "if n < 3 {", "while n < 20 {"]);
+    assert!(!rust.contains("never"));
+    let refused = |name, body: &str| {
+        translate(
+            name,
+            &format!("int main(int argc, char **argv) {{\n    {body}\n    return argc;\n}}\n"),
+        )
+        .unwrap_err()
+    };
+    let reason = "unsupported: a loop that never runs twice: no rule yet, at line 2";
+    assert_eq!(
+        refused("once-do", "do { argc++; break; } while (argc < 9);"),
+        reason
+    );
+    assert_eq!(
+        refused(
+            "once-for",
+            "for (int i = 0; i < argc; i++) { argc++; break; }"
+        ),
+        reason
+    );
+    assert_eq!(
+        refused(
+            "once-two",
+            "while (argc < 9) { if (argc == 2) break; argc++; break; }"
+        ),
+        reason
+    );
+}
+
+#[test]
 fn a_literal_near_a_named_constant_keeps_its_value() {
     // Clippy takes `2.718281828` for `std::f64::consts::E` written out and
     // refuses it; the program means the number it wrote.

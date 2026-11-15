@@ -335,6 +335,15 @@ impl Lower<'_> {
             },
             Stmt::While(cond, body) => match self.decided(cond)? {
                 Some(false) => {}
+                // A loop that never runs twice is an `if`, and the
+                // compiler's lints refuse it as a loop.
+                truth if let Some(once) = once(body) => {
+                    let once = once.ok_or_else(|| never_twice(cond.at))?;
+                    match truth {
+                        Some(_) => self.inline(once, out)?,
+                        None => out.push(syn::Stmt::Expr(self.if_else(cond, once, &[])?, None)),
+                    }
+                }
                 Some(true) => {
                     let (body, label) = self.loop_body(body)?;
                     out.push(parse_quote!(#label loop #body));
@@ -346,6 +355,9 @@ impl Lower<'_> {
                 }
             },
             Stmt::DoWhile(body, cond) => {
+                if once(body).is_some() {
+                    return Err(never_twice(cond.at));
+                }
                 if continues(body) {
                     return unsupported("`continue` in a `do` loop: no rule yet", cond.at);
                 }
@@ -360,6 +372,10 @@ impl Lower<'_> {
                 step,
                 body,
             } => {
+                if once(body).is_some() {
+                    let at = cond.as_ref().or(step.as_ref()).map_or(0, |expr| expr.at);
+                    return Err(never_twice(at));
+                }
                 // R54: a counter that only its step moves, and upwards, is
                 // at least where it starts.
                 let counter = self.counter(init, cond.as_ref(), step.as_ref(), body);
@@ -1281,6 +1297,34 @@ fn leaves_loop(stmts: &[Stmt], breaks: bool) -> bool {
         Stmt::LetSome { otherwise, .. } => leaves_loop(otherwise, breaks),
         _ => false,
     })
+}
+
+/// Whether the body of a loop leaves the loop the first time round: a
+/// `break` or a `return` is one of its statements, and no `continue`
+/// before it goes round. Then the statements that run, without the
+/// `break`; or nothing where one of them leaves the loop as well, or the
+/// body has a label, which a jump may enter at.
+fn once(body: &[Stmt]) -> Option<Option<&[Stmt]>> {
+    let end = body
+        .iter()
+        .position(|stmt| matches!(stmt, Stmt::Break | Stmt::Return(_)))?;
+    let before = &body[..end];
+    if continues(before) {
+        return None;
+    }
+    let mut found = Vec::new();
+    labels(body, &mut found);
+    if leaves_loop(before, true) || !found.is_empty() {
+        return Some(None);
+    }
+    Some(Some(match body[end] {
+        Stmt::Break => before,
+        _ => &body[..=end],
+    }))
+}
+
+fn never_twice(at: u32) -> super::Unsupported {
+    super::Unsupported::new("a loop that never runs twice: no rule yet", at)
 }
 
 /// Whether the loop body has a `continue` for this loop.
