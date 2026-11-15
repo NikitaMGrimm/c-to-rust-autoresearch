@@ -78,6 +78,12 @@ impl Lower<'_> {
         match &expr.kind {
             ExprKind::Float(value) => Ok(float(*value, &expr.ty, typed)),
             ExprKind::Enumerator(index) => {
+                // An enumerator is a constant of type `i32` here, as it is
+                // an `int` in C; GNU C gives one that is too large
+                // another type.
+                if i32::try_from(self.program.enumerators[*index].value).is_err() {
+                    return unsupported("an enumerator beyond `int`: no rule yet", at);
+                }
                 self.enumerators.insert(*index);
                 Ok(rust::name(self.names.enumerator(*index)))
             }

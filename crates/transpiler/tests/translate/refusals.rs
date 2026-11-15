@@ -233,3 +233,27 @@ fn a_global_owner_used_after_it_was_moved_is_refused() {
         &["globals.pile = gone.as_deref_mut().unwrap().under.take();"],
     );
 }
+
+/// An enumerator is a constant of type `i32`, which one beyond `int` does
+/// not fit.
+#[test]
+fn an_enumerator_beyond_int_is_refused() {
+    let reason = "unsupported: an enumerator beyond `int`: no rule yet, at line 4";
+    for (name, value) in [
+        ("enum-unsigned", "3000000000U"),
+        ("enum-sum", "2147483647U + 1"),
+    ] {
+        let c = format!(
+            "#include <stdio.h>\nint main(void) {{\n    enum {{ NEAR = 1, FAR = {value} }} r;\n    r = FAR;\n    printf(\"%d\\n\", r == NEAR);\n    return 0;\n}}\n"
+        );
+        assert_eq!(translate(name, &c).unwrap_err(), reason);
+    }
+    // The greatest `int` is one.
+    let rust = crate::common::check(
+        "enum-greatest",
+        "#include <stdio.h>\nenum reach { NEAR = -2147483647 - 1, FAR = 2147483647 };\nint main(void) {\n    enum reach r = FAR;\n    printf(\"%d %d\\n\", r, NEAR);\n    return 0;\n}\n",
+        &[&[]],
+        "",
+    );
+    crate::common::assert_lines(&rust, &["const FAR: i32 = 2147483647;"]);
+}

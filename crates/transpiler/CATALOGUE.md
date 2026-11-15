@@ -58,7 +58,9 @@ Entry format, newest last:
   for its value is a block that ends in the value, and is refused when its
   target does more than name a place, since Rust would do that twice; a
   literal takes its suffix only where Rust cannot tell its type; `let`, with `mut` only when the variable
-  changes, and zero for a missing initialiser
+  changes, and zero for a missing initialiser. An enumerator is a
+  constant of type `i32`; one whose value is beyond `int`, which GNU C
+  allows, is refused
 - Needs: `Facts::mutated`
 - Motivation: skeleton
 - Changes: none
