@@ -521,6 +521,32 @@ int main(void) {
 }
 
 #[test]
+fn a_constant_as_a_test_is_decided() {
+    // `0 != 0` is an error of Clippy's `eq_op`.
+    let rust = check(
+        "constant-tests",
+        r#"#include <stdio.h>
+enum { SHUT, OPEN };
+int main(int argc, char **argv) {
+    int n = 0;
+    if (0 ? 5 : 0) n += 1;
+    if (1 ? 6 : 0) n += 2;
+    if (3 - 3) n += 4;
+    if (OPEN) n += 8;
+    if (SHUT) n += 16;
+    if (argc > 1 ? 1 : 0) n += 32;
+    printf("%d\n", n);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(&rust, &["n += 2;", "n += 8;", "n += 32;"]);
+    assert!(!rust.contains("n += 1;") && !rust.contains("n += 4;") && !rust.contains("n += 16;"));
+}
+
+#[test]
 fn the_same_test_twice_is_one_test() {
     // Clippy's `eq_op` is an error for `a || a`.
     let rust = check(

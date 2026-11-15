@@ -73,7 +73,8 @@ Entry format, newest last:
   a bound that its body cannot change, `_` for a counter the body does not read, and otherwise the
   initialiser and a `while` ending in the step; `match` with `|` for cases
   that share statements. A test that the facts decide is left out with the
-  branch that cannot run. A `while` whose body leaves it the first time
+  branch that cannot run: also a constant that is no literal, `if (2 -
+  2)`, and `c ? a : b` with a constant `c` and a constant on that side. A `while` whose body leaves it the first time
   round, with a `break` or a `return` as one of its statements and no
   `continue` before it, is an `if`, since the compiler's lints refuse a
   loop that never runs twice; refused as such a loop are a `do` and a

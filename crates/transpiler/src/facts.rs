@@ -240,6 +240,10 @@ impl Facts {
                 self.null(program, inner).map(|null| !null)
             }
             _ if cond.ty.is_pointer() => self.null(program, cond).map(|null| !null),
+            ExprKind::Cond(test, then, other) => match truth(test)? {
+                true => truth(then),
+                false => truth(other),
+            },
             // A comparison of two constants, which Rust's lints refuse
             // where the two are equal.
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
@@ -256,6 +260,9 @@ impl Facts {
                 };
                 Expr::limited(op, value.range()?, constant)?.ok()
             }
+            // Any other constant, as `if (2 - 2)`: tested against zero, the
+            // lints refuse it where it is zero.
+            _ if cond.ty.is_integer() => cond.constant(program).map(|value| value != 0),
             _ => None,
         }
     }
