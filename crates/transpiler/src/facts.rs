@@ -1456,7 +1456,12 @@ impl InUse<'_> {
                     self.parts(target, state);
                     self.stored(var, state);
                 }
-                _ => self.expr(target, state),
+                _ => {
+                    self.expr(target, state);
+                    if let Some(pointer) = through(target) {
+                        self.stored(pointer, state);
+                    }
+                }
             },
             ExprKind::Var(var) => self.read(*var, expr.at, state),
             _ => {
@@ -1564,6 +1569,12 @@ impl InUse<'_> {
             && !fact(var).is_some_and(|copy| copy.owned)
         {
             targets.insert(from);
+        }
+        // A copy of a pointer borrows what that pointer borrows.
+        if let ExprKind::Var(from) = value.uncast().kind
+            && let Some((borrowed, _)) = borrows.get(&from)
+        {
+            targets.extend(borrowed.iter().copied());
         }
         if targets.is_empty() {
             borrows.remove(&var);

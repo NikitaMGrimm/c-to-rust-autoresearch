@@ -354,6 +354,13 @@ fn a_copy_of_a_pointer_that_is_read_after_the_pointer_went_on_is_refused() {
         translate("walk-copy", c).unwrap_err(),
         "unsupported: a variable that is used while a pointer to it is in use, at line 8"
     );
+    // A copy of the copy borrows the pointer too, and `++` stores through
+    // it as `=` does.
+    let c = "#include <stdio.h>\n#include <stdlib.h>\nint main(void) {\n    int *count = malloc(sizeof *count);\n    *count = 1;\n    int *seen = count;\n    int *again = seen;\n    (*count)++;\n    printf(\"%d\\n\", *again);\n    free(count);\n    return 0;\n}\n";
+    assert_eq!(
+        translate("copy-copy", c).unwrap_err(),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 9"
+    );
 }
 
 #[test]
