@@ -43,3 +43,37 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn the_zero_of_a_record_that_never_changes_is_written_out() {
+    // A `static` may call no function, so `Shelf::default()` would not
+    // compile there.
+    let rust = check(
+        "fixed-records",
+        r#"#include <stdio.h>
+struct slot { int row; double share; };
+struct shelf { int width; struct slot first; char label[3]; };
+struct shelf empty;
+struct shelf begun = { 9 };
+struct slot slots[2];
+struct shelf moved;
+int main(void) {
+    moved.first.row = 5;
+    printf("%d %d %.1f %d\n", empty.width, empty.first.row, empty.first.share, empty.label[1]);
+    printf("%d %d %d %.1f %d\n", begun.width, begun.first.row, slots[1].row, slots[0].share, moved.first.row);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "static EMPTY: Shelf = Shelf {",
+            "first: Slot { row: 0, share: 0.0 },",
+            "static SLOTS: [Slot; 2] = [Slot { row: 0, share: 0.0 }; 2];",
+        ],
+    );
+    assert!(rust.contains("moved: Shelf::default()"));
+}

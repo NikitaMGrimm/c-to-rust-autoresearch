@@ -952,6 +952,9 @@ struct Lower<'a> {
     quotients: std::cell::RefCell<BTreeSet<usize>>,
     /// The records whose zero is being written, the outermost first.
     zeroing: std::cell::RefCell<Vec<usize>>,
+    /// Whether the value being written is that of a `static`, which may
+    /// call no function.
+    fixed: std::cell::Cell<bool>,
     /// Where a listing collects the refusals, which then do not end the
     /// translation.
     listing: Option<&'a mut Listing>,
@@ -977,6 +980,7 @@ impl<'a> Lower<'a> {
             entered: None,
             quotients: Default::default(),
             zeroing: Default::default(),
+            fixed: Default::default(),
             listing,
         }
     }
@@ -1199,10 +1203,16 @@ impl Lower<'_> {
             let var = &program.vars[global];
             let name = rust::ident(self.names.var(global));
             let slot = var.ty.is_pointer().then_some(Slot::Var(global));
+            // What never changes and is no number is a `static`.
+            let fixed =
+                !self.facts.mutated(global) && matches!(var.ty, Type::Array(..) | Type::Record(_));
+            self.fixed.set(fixed);
             let value = match &var.init {
-                Some(init) => self.init(&var.ty, slot, init)?,
-                None => self.zero_of(&var.ty, slot, var.at)?,
+                Some(init) => self.init(&var.ty, slot, init),
+                None => self.zero_of(&var.ty, slot, var.at),
             };
+            self.fixed.set(false);
+            let value = value?;
             if self.facts.mutated(global) {
                 let ty = self.field_type(Slot::Var(global), &var.ty)?;
                 fields.push(

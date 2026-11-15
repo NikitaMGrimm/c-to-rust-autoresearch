@@ -100,6 +100,7 @@ impl Lower<'_> {
                 let (zero, length) = (self.zero(element, at)?, rust::int((*length).into(), ""));
                 match self.is_copy(element) {
                     true => parse_quote!([#zero; #length]),
+                    false if self.fixed.get() => return self.unfixed(at),
                     false => parse_quote!(std::array::from_fn(|_| #zero)),
                 }
             }
@@ -124,14 +125,32 @@ impl Lower<'_> {
                     })
                     .collect();
                 self.zeroing.borrow_mut().pop();
-                zeros?;
-                parse_quote!(#name::default())
+                let zeros = zeros?;
+                // A `static` may call no function, so its zero is written
+                // out.
+                if self.fixed.get() {
+                    let names = (0..zeros.len()).map(|index| self.names.field(*id, index));
+                    let values = names
+                        .zip(zeros)
+                        .map(|(name, zero)| rust::field_value(name, zero));
+                    parse_quote!(#name { #(#values),* })
+                } else {
+                    parse_quote!(#name::default())
+                }
             }
             Type::Pointer(_) if ty.function().is_some() => {
                 return unsupported("a pointer to a function that starts at NULL", at);
             }
             _ => return unsupported("a variable of this type without a value", at),
         })
+    }
+
+    /// A zero that only a function gives, in a global that never changes.
+    fn unfixed(&self, at: u32) -> R<syn::Expr> {
+        unsupported(
+            "a global that never changes and whose zero is no constant",
+            at,
+        )
     }
 
     /// The zero of a place that may hold a pointer, whose slot is `slot`.
@@ -155,6 +174,9 @@ impl Lower<'_> {
             (false, true, false) => {
                 if let Some(element) = ty.element() {
                     self.zero(element, at)?;
+                }
+                if self.fixed.get() {
+                    return self.unfixed(at);
                 }
                 parse_quote!(Box::default())
             }

@@ -173,7 +173,11 @@ Entry format, newest last:
   program never changes the variable; otherwise a field of `struct Globals`,
   which `main` creates and every function that uses a global, itself or
   through a call, takes as its first parameter: `globals: &Globals`, or
-  `&mut Globals` when it changes one
+  `&mut Globals` when it changes one. A `static` may call no function,
+  so the zero of a record in one is written out, `Pair { left: 0, right:
+  0 }`; a global that never changes and whose zero only a function gives
+  (an array of records that are not `Copy`, a field that owns one value)
+  is refused
 - Needs: `Facts::mutated`, `Facts::access`
 - Motivation: skeleton
 - Changes: none
