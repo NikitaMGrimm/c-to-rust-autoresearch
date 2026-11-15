@@ -1230,14 +1230,10 @@ impl Lower<'_> {
             ExprKind::Assert { cond, message } => match self.decided(cond)? {
                 Some(true) => Vec::new(),
                 _ => {
-                    let failed = rust::unary("!", self.cond(cond)?);
-                    let message = rust::string(&message.replace('{', "{{").replace('}', "}}"));
-                    vec![parse_quote! {
-                        if #failed {
-                            eprintln!(#message);
-                            std::process::abort();
-                        }
-                    }]
+                    let holds = self.cond(cond)?;
+                    let message = rust::string(message);
+                    self.helper(super::Helper::AssertHolds);
+                    statement(rust::call("assert_holds", [holds, message]))
                 }
             },
             // R35: a statement expression as a statement is a block.

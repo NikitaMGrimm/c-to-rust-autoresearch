@@ -18,7 +18,12 @@ int main(int argc, char **argv) {
     );
     assert_lines(
         &rust,
-        &["if !(args.len() as i32 > 0) {", "std::process::abort();"],
+        &[
+            "assert_holds(",
+            "args.len() as i32 > 0,",
+            "fn assert_holds(holds: bool, message: &str) {",
+            "std::process::abort();",
+        ],
     );
 }
 
@@ -45,7 +50,7 @@ int main(int argc, char **argv) {
     );
     assert!(
         rust.contains(
-            r#"program.c:6: int half(int): Assertion `n % 2 == 0 && \"{{even}}\"' failed.","#
+            r#"program.c:6: int half(int): Assertion `n % 2 == 0 && \"{even}\"' failed.","#
         ),
         "{rust}"
     );

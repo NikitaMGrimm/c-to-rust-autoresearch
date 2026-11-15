@@ -73,6 +73,7 @@ enum Helper {
     RfindByte,
     FindBytes,
     FindAny,
+    AssertHolds,
 }
 
 impl Helper {
@@ -96,6 +97,7 @@ impl Helper {
             | Helper::FindAny
             | Helper::PeekByte
             | Helper::ScanError
+            | Helper::AssertHolds
             | Helper::UntilNul => &[],
             Helper::RandomNumbers => &[],
             Helper::Random => &[Helper::RandomNumbers],
@@ -678,6 +680,16 @@ impl Helper {
                     let items = read_items(&mut buffer[..room], size);
                     assert!(room == wanted || peek_byte().is_none(), "fread stores beyond its buffer");
                     items
+                }
+            },
+            Helper::AssertHolds => parse_quote! {
+                /// Ends the program as C's `assert` does where `holds` is false:
+                /// with `message` on standard error and `abort`.
+                fn assert_holds(holds: bool, message: &str) {
+                    if !holds {
+                        eprintln!("{message}");
+                        std::process::abort();
+                    }
                 }
             },
             Helper::UntilNul => parse_quote! {

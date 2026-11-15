@@ -439,9 +439,9 @@ writes its macro with one, and that expansion is a construct of its own,
 
 | Shape | Rust, or the refusal |
 | --- | --- |
-| `assert(e);` as glibc expands it, `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e) ; else __assert_fail(…); }))` | `if !(e) { eprintln!("FILE:LINE: FUNCTION: Assertion `E' failed."); std::process::abort(); }`, with the texts and the line that the expansion holds, in one literal. `assert!` would end the program with another exit code than C's `abort` |
+| `assert(e);` as glibc expands it, `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e) ; else __assert_fail(…); }))` | `assert_holds(e, "FILE:LINE: FUNCTION: Assertion `E' failed.");`, with the texts and the line that the expansion holds, in one literal. The helper `assert_holds` prints the message to standard error and calls `std::process::abort()` where `e` is false: `assert!` would end the program with another exit code than C's `abort` |
 | `assert(e)` with `NDEBUG`, `((void) (0))` | nothing: a statement without an effect |
-| the condition of an `assert`: a number, a comparison, a pointer, `&&` and `||`, a call, one with a side effect | the condition of an `if`, by the rule for conditions; C evaluates it once, since the operand of `sizeof` is not evaluated, and so does the translation |
+| the condition of an `assert`: a number, a comparison, a pointer, `&&` and `||`, a call, one with a side effect | the first argument, by the rule for conditions; C evaluates it once, since the operand of `sizeof` is not evaluated, and so does the translation |
 | an `assert` as the left side of a comma, `(assert(n > 0), n)` | the statement before the value, as for any comma |
 | an `assert` where a value is needed | refused: it has none |
 | a value: `int x = ({ int y = f(); y + 1; });` | `let x = { let y = f(); y + 1 };` |
@@ -639,10 +639,6 @@ What a third review found beside these, most frequent first:
 What a fifth review found beside these, in programs outside the
 development set too, most frequent first:
 
-- **An assertion written out.** `if !(f(6) == 8) { eprintln!(…);
-  std::process::abort(); }` at every `assert`. One helper that takes the
-  test and the message keeps C's message and its `abort`, which `assert!`
-  would not, and leaves one line. Needs no analysis.
 - **Names that give way to names of another kind.** A local renamed for a
   field of `Globals` or for a function that its scope never calls, and a
   constant that takes its record's name with an underscore, in lower
