@@ -156,11 +156,18 @@ refuses with the reason instead:
   the order of the statements, with each branch of an `if` from the state
   before it and the body of a loop following itself; a pointer that gets
   the address from another pointer, or through a narrowing, is not
-  followed;
+  followed. A copy of a local pointer that owns or is stored through
+  borrows that pointer in the same way: `q = p; p->n += 1; p = p->next;`
+  with a later read of `q` is refused;
 - an owner, a local or a global, that is read after its memory went to
   another owner, a field, a global, a local or a parameter, and before
   anything stored to it (`Facts::moved`), in the same order. A `free` is
   not followed, nor a read in another function.
+
+A function that returns an owner out of a record which it only borrows,
+as `struct node *after(struct node *p) { return p->next; }`, is refused
+too: the translation would take the owner out of the record, where C's
+record still points to it.
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
@@ -729,14 +736,6 @@ become a fact and a refusal:
 - A pointer that a function returns from its parameter is not known to
   point to the caller's local: `int *p = identity(&x); return p;` is
   translated and does not compile, where the result should be refused.
-- A second pointer that is set from a pointer which is stored through and
-  walks on afterwards, as `q = p; p->n += 1; p = p->next;` with a later
-  read of `q`, borrows `p` for as long as it is used: the program is
-  translated and does not compile, where it should be refused.
-- A function that returns a field of its parameter, as `struct node
-  *after(struct node *p) { return p->next; }`, takes the owner of the list
-  where the caller only walks it with `p = after(p)`: the program is
-  translated and does not compile.
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.

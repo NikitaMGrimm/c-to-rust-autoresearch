@@ -173,7 +173,9 @@ Entry format, newest last:
   not return NULL. Refused: an owner, a local or a global, that is read
   after it gave its memory to another owner (a field, a global, another
   local or a parameter) and before anything stored to it, since Rust moved
-  it there, or took it and left `None` in the global
+  it there, or took it and left `None` in the global; and a function
+  that the program names and that returns an owner out of a record it
+  only borrows, `return p->next;`, which would leave `None` in the record
 - Needs: `Facts::pointer` (`owned`, `many`); `Facts::truth`;
   `Facts::moved` for the first such read, in the order of the statements,
   where a loop's body follows itself

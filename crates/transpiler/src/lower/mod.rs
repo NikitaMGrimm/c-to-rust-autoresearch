@@ -1503,6 +1503,21 @@ impl Lower<'_> {
             _ if value.ty == Type::Found => self.init(&Type::Found, None, value),
             (Some(function), true) => {
                 let repr = self.repr(Slot::Return(function), value.at)?;
+                // An owner that is returned out of a record which the
+                // function only borrows would leave `None` in the record,
+                // where C's record still points to the memory.
+                if let ExprKind::Member {
+                    base, arrow: true, ..
+                } = &value.uncast().kind
+                    && let ExprKind::Var(holder) = base.uncast().kind
+                    && repr.owned
+                    && !self.repr(Slot::Var(holder), value.at)?.owned
+                {
+                    return unsupported(
+                        "a result that takes its memory out of a record that the function borrows: no rule yet",
+                        value.at,
+                    );
+                }
                 self.pointer(value, repr)
             }
             _ => self.typed(value),

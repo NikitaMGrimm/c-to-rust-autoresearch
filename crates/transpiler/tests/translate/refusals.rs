@@ -355,3 +355,14 @@ fn a_copy_of_a_pointer_that_is_read_after_the_pointer_went_on_is_refused() {
         "unsupported: a variable that is used while a pointer to it is in use, at line 8"
     );
 }
+
+#[test]
+fn a_result_taken_out_of_a_borrowed_record_is_refused() {
+    // `rest` would take the next knot out of the list, which C leaves
+    // linked.
+    let c = "#include <stdio.h>\n#include <stdlib.h>\nstruct knot { int load; struct knot *after; };\nstruct knot *rest(struct knot *at) { return at->after; }\nvoid raise(struct knot *at) {\n    while (at) {\n        at->load += 1;\n        at = rest(at);\n    }\n}\nint main(void) {\n    struct knot *head = malloc(sizeof(struct knot));\n    head->load = 1;\n    head->after = NULL;\n    raise(head);\n    printf(\"%d\\n\", head->load);\n    free(head);\n    return 0;\n}\n";
+    assert_eq!(
+        translate("walk-call", c).unwrap_err(),
+        "unsupported: a result that takes its memory out of a record that the function borrows: no rule yet, at line 4"
+    );
+}
