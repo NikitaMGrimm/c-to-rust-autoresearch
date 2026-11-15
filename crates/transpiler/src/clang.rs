@@ -610,6 +610,16 @@ impl Reader<'_> {
             None => unsupported(format!("Clang's `{}` without its parts", kind(node)), node),
         };
         let boxed = |reader: &mut Self, index: usize| Ok(Box::new(reader.expr(child(index)?)?));
+        if let Some((cond, message)) = assertion(node) {
+            return Ok(Expr {
+                ty: Type::Void,
+                kind: ExprKind::Assert {
+                    cond: Box::new(self.expr(cond)?),
+                    message,
+                },
+                at: at(node),
+            });
+        }
         let expr_kind = match kind(node) {
             "ParenExpr" | "ConstantExpr" => return self.expr(child(0)?),
             "ImplicitCastExpr" | "CStyleCastExpr" => match text(node, "castKind") {
@@ -942,6 +952,73 @@ impl Reader<'_> {
         }
         Ok(ty)
     }
+}
+
+/// The condition of `assert(cond)` as glibc's `assert.h` expands it, and
+/// what `__assert_fail` prints where it fails:
+/// `((void) sizeof ((cond) ? 1 : 0), __extension__ ({ if (cond) ; else
+/// __assert_fail("cond", "file", line, __extension__ __PRETTY_FUNCTION__); }))`.
+/// The operand of `sizeof` is not evaluated, so the condition is the one of
+/// the `if`.
+fn assertion(node: &Value) -> Option<(&Value, String)> {
+    fn only<'a>(node: &'a Value, of: &str) -> Option<&'a Value> {
+        match children(node) {
+            [child] if kind(node) == of => Some(child),
+            _ => None,
+        }
+    }
+    let [size, check] = children(node) else {
+        return None;
+    };
+    let size = only(size, "CStyleCastExpr").filter(|_| text(size, "castKind") == "ToVoid")?;
+    only(size, "UnaryExprOrTypeTraitExpr").filter(|_| text(size, "name") == "sizeof")?;
+    let check =
+        only(check, "UnaryOperator").filter(|_| text(check, "opcode") == "__extension__")?;
+    let test = only(only(check, "StmtExpr")?, "CompoundStmt")?;
+    let [cond, then, fail] = children(test) else {
+        return None;
+    };
+    let [callee, expression, file, line, function] = children(fail) else {
+        return None;
+    };
+    let named = |node: &Value| text(&node["referencedDecl"], "name") == "__assert_fail";
+    let callee = only(callee, "ImplicitCastExpr")?;
+    if kind(node) != "BinaryOperator"
+        || text(node, "opcode") != ","
+        || kind(test) != "IfStmt"
+        || kind(then) != "NullStmt"
+        || kind(fail) != "CallExpr"
+        || kind(callee) != "DeclRefExpr"
+        || !named(callee)
+    {
+        return None;
+    }
+    // The innermost node of a chain of nodes with one child each.
+    fn innermost(node: &Value) -> &Value {
+        match children(node) {
+            [child] => innermost(child),
+            _ => node,
+        }
+    }
+    let literal = |node: &Value| {
+        let node = innermost(node);
+        (kind(node) == "StringLiteral")
+            .then(|| unescape(text(node, "value")))
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    };
+    let line = innermost(line);
+    if kind(line) != "IntegerLiteral" {
+        return None;
+    }
+    let message = format!(
+        "{}:{}: {}: Assertion `{}' failed.",
+        literal(file)?,
+        text(line, "value"),
+        literal(function)?,
+        literal(expression)?
+    );
+    Some((cond, message))
 }
 
 fn collect_labels(node: &Value, labels: &mut HashMap<String, String>) {

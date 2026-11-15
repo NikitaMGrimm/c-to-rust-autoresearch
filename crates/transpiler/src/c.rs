@@ -306,6 +306,12 @@ pub enum ExprKind {
     /// The values of an array's elements or a record's fields in order.
     /// Elements beyond them are zero.
     InitList(Vec<Expr>),
+    /// `assert(cond)` as `assert.h` expands it: the program ends with
+    /// `abort` after printing `message` where `cond` does not hold.
+    Assert {
+        cond: Box<Expr>,
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -504,7 +510,8 @@ impl Expr {
             | ExprKind::Decay(inner)
             | ExprKind::Cast(inner)
             | ExprKind::Bits(inner)
-            | ExprKind::Member { base: inner, .. } => vec![inner],
+            | ExprKind::Member { base: inner, .. }
+            | ExprKind::Assert { cond: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)
             | ExprKind::Index(left, right)
@@ -535,12 +542,15 @@ impl Expr {
     }
 
     /// Whether evaluating the expression changes nothing: it has no
-    /// assignment and no call.
+    /// assignment, no call and no `assert`, which may end the program.
     pub fn is_pure(&self) -> bool {
         !self.any(&mut |expr| {
             matches!(
                 expr.kind,
-                ExprKind::Assign { .. } | ExprKind::IncDec { .. } | ExprKind::Call(..)
+                ExprKind::Assign { .. }
+                    | ExprKind::IncDec { .. }
+                    | ExprKind::Call(..)
+                    | ExprKind::Assert { .. }
             )
         })
     }
@@ -632,7 +642,8 @@ impl Expr {
             | ExprKind::Decay(inner)
             | ExprKind::Cast(inner)
             | ExprKind::Bits(inner)
-            | ExprKind::Member { base: inner, .. } => vec![inner],
+            | ExprKind::Member { base: inner, .. }
+            | ExprKind::Assert { cond: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)
             | ExprKind::Index(left, right)

@@ -153,6 +153,7 @@ impl Lower<'_> {
             ExprKind::SizeOf(ty) if ty.function().is_some() => {
                 unsupported("`sizeof` of a pointer to a function", at)
             }
+            ExprKind::Assert { .. } => unsupported("an `assert` where a value is needed", at),
             ExprKind::Function(name) => {
                 unsupported(format!("the function `{name}` as a value"), at)
             }
@@ -1094,6 +1095,21 @@ impl Lower<'_> {
                     (_, call) => statement(call),
                 }
             }
+            // R34: `abort` rather than `panic!`, which ends the program with
+            // another exit code.
+            ExprKind::Assert { cond, message } => match self.decided(cond)? {
+                Some(true) => Vec::new(),
+                _ => {
+                    let failed = rust::unary("!", self.cond(cond)?);
+                    let message = rust::string(&message.replace('{', "{{").replace('}', "}}"));
+                    vec![parse_quote! {
+                        if #failed {
+                            eprintln!(#message);
+                            std::process::abort();
+                        }
+                    }]
+                }
+            },
             // A value that is not used, as in `(void)argc;`.
             _ if expr.is_pure() => Vec::new(),
             _ => statement(self.expr(expr)?),
