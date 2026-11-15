@@ -411,6 +411,57 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn the_functions_of_one_type_take_the_globals_that_one_of_them_needs() {
+    let rust = check(
+        "fn_globals",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+static int total;
+static int base = 10;
+struct op { int (*run)(int); };
+static void set(int k) { base = k; }
+static int add(int x) { total += x; return total; }
+static int peek(int x) { return total + x; }
+static int pure(int x) { return x; }
+static int reads(long x) { return base + (int)x; }
+static long same(long x) { return x; }
+static int through(struct op o, int x) { return o.run(x) * 2; }
+int main(int argc, char **argv) {
+    int k = atoi(argv[1]);
+    set(k * 3);
+    struct op o = { k % 2 ? add : peek };
+    int (*g)(int) = k > 1 ? pure : peek;
+    int (*r)(long) = reads;
+    long (*s)(long) = same;
+    printf("%d %d %d\n", through(o, k), through(o, 1), g(2));
+    printf("%d %ld %d\n", r(k), s(k), total);
+    return 0;
+}
+"#,
+        RUNS,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn add(globals: &mut Globals, x: i32) -> i32 {",
+            "fn peek(globals: &mut Globals, x: i32) -> i32 {",
+            "fn pure(_globals: &mut Globals, x: i32) -> i32 {",
+            "fn reads(globals: &Globals, x: i64) -> i32 {",
+            "fn same(x: i64) -> i64 {",
+            "fn through(globals: &mut Globals, o: Op, x: i32) -> i32 {",
+            "(o.run)(globals, x) * 2",
+            "run: fn(&mut Globals, i32) -> i32,",
+            "let g: fn(&mut Globals, i32) -> i32 = if k > 1 { pure } else { peek };",
+            "let r: fn(&Globals, i64) -> i32 = reads;",
+            "let s: fn(i64) -> i64 = same;",
+            r#"println!("{} {} {}", r(globals, k as i64), s(k as i64), globals.total);"#,
+        ],
+    );
+}
+
+#[test]
 fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
     let refused = |name, main: &str| translate(name, &program(main)).unwrap_err();
     let cases = [
@@ -478,11 +529,6 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
             "fn_array_store_null",
             "int main(int argc, char **argv) { int (*ops[2])(int) = { twice, square }; ops[1] = 0; return ops[argc](1); }\n",
             "unsupported: NULL for a pointer to a function that holds no NULL, at line 7",
-        ),
-        (
-            "fn_globals",
-            "static int total;\nstatic int add(int x) { total += x; return total; }\nint main(void) { int (*f)(int) = add; return f(1); }\n",
-            "unsupported: a pointer to a function that uses globals: no rule yet, at line 9",
         ),
     ];
     for (name, main, refusal) in cases {

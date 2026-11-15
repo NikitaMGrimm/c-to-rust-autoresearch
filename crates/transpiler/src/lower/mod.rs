@@ -1216,10 +1216,16 @@ impl Lower<'_> {
                 (true, _) => (Some(parse_quote!('a)), Some(parse_quote!('a))),
             };
         let mut params: Vec<syn::FnArg> = Vec::new();
+        // A function that has the globals only for the other functions of
+        // its type does not use them.
+        let globals = rust::ident(match self.facts.idle(id) {
+            true => "_globals",
+            false => "globals",
+        });
         match access {
             Access::None => {}
-            Access::Read => params.push(parse_quote!(globals: & #shared Globals)),
-            Access::Write => params.push(parse_quote!(globals: & #shared mut Globals)),
+            Access::Read => params.push(parse_quote!(#globals: & #shared Globals)),
+            Access::Write => params.push(parse_quote!(#globals: & #shared mut Globals)),
         }
         for &param in &function.params {
             let var = &program.vars[param];

@@ -817,20 +817,27 @@ Entry format, newest last:
   that NULL may reach is `Option<fn(A) -> R>`, with `None`, `Some(f)`, and
   the tests and the narrowing of R10: `if let Some(f) = f`, `let Some(f) =
   f else { return; }`; a call where no test holds is `f.unwrap()(x)`, as
-  C's behaviour is undefined there
+  C's behaviour is undefined there. The functions whose address is taken
+  and that share a C function type take one `globals` parameter, the
+  strongest that one of them needs (`&mut Globals` over `&Globals`), as
+  `_globals` in one that has it only for the others; the `fn` type has
+  it first, `fn(&mut Globals, i32) -> i32`, and a call through such a
+  pointer passes `globals`, so that its caller takes them too
 - Needs: `Facts::pointer`, whose slots hold a pointer to a function as
   any other pointer but get no fact from it but `nullable`; a function
   is never NULL, and nor is an element of an array of them; the rewrite
-  `normalise::narrow`
+  `normalise::narrow`; `Facts::access`, which reaches its fixed point
+  with the classes of function types, `Facts::class_access` and
+  `Facts::idle`
 - Refused: a pointer to a function that takes or returns a pointer, a
   comparison of two functions, a cast to another function type, to
   `void *` or to an integer, a function without a prototype or with
   variable arguments, the address of a library function and one handed
   to the library, a pointer to a pointer to a function, `sizeof` of one,
-  an array of them that holds NULL, and a pointer to a function that
-  uses globals
+  and an array of them that holds NULL
 - Motivation: `g5_mathop` and `g5_charinbuf` call functions through
-  pointers, which were refused as `a call through a pointer`
+  pointers of a `typedef`; they are refused next for `time` and for the
+  result of `memchr`
 - Changes: R1, whose calls by name stay as they are; the front end reads
   a function used as a value as a pointer to it. R10 holds a pointer to a
-  function that may be NULL
+  function that may be NULL, and R9 passes the globals through one
