@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, join, ends, found -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, voids, join, ends, found -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, join, ends, found -> facts -> cur
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `cursors` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -373,6 +373,33 @@ a pointer to memory.
 | a pointer to a pointer to a function, and `sizeof` of one | refused |
 | callee and arguments with side effects, `ops[i++](i)` | C leaves their order open; Rust evaluates the callee first |
 | a function that reaches a pointer and is never called by name | still translated, and not reported as unused |
+### `void` pointers
+
+C writes `void *` where the type of the memory is not said. Rust always
+says it, so the translation finds it: the **one type** that a `void`
+pointer holds is the type of every pointer that is stored in it and of
+every pointer it is converted to, here and wherever it is handed on. The
+rewrite `normalise::voids` finds it before the analysis runs, gives the
+slot that type and drops the conversions; from there the pointer is one
+like any other and the pointer rules apply.
+
+| Shape | Rust, or the refusal |
+| --- | --- |
+| a parameter `void *p` that the function converts, `unsigned char *d = (unsigned char *)p;`, and that every caller gives bytes | `p: &[u8]`: the byte view of bytes is the bytes |
+| a `void *` local, parameter, result, field or global that always holds a `T *` and is always read as one (`void *ctx` that carries one record) | that place with the type `T *`, and its rule |
+| slots that hand the pointer on to each other (an argument, an assignment, a `return`) | one group with one type: they are found together |
+| a conversion with or without a cast, `int *q = p;`, `(struct s *)p`, `*(T *)p`, `((T *)p)->field` | the pointer itself |
+| `char`, `signed char` and `unsigned char` | different types here: a `char` read through `unsigned char *` has another value when it is widened. Refused as two types until casts between pointer types have a rule |
+| NULL in it, a test for NULL | as for any pointer (R10) |
+| the result of `malloc`, `calloc` kept in a `void *` before it is converted | the type it is converted to; the allocation is of that type |
+| nothing says a type: it is only handed on, compared or tested | refused: `a `void` pointer whose type nothing says` |
+| two types meet: bytes of an `int` or a record (`fwrite(&x, …)`, a hash of any memory), a value of one of several types with a tag beside it | refused: `a `void` pointer that holds a T and a U`. The bytes of a number would be `to_ne_bytes`, and one of several types an `enum` |
+| a function kept in it, `void *f = (void *)func;` | refused: `a function kept in a `void` pointer: no rule yet` |
+| arithmetic on it (`p + 1`, a GNU extension), `sizeof(void)`, `*p` | refused |
+| `void **`, and a `void *` in an array | refused: a pointer to a pointer, a pointer in an array |
+| a `void *` parameter of the library (`memcpy`, `memset`, `memcmp`, `free`) | the library's rules, which take the argument's own type |
+| `%p` | refused |
+| a size beside it in bytes, `(void *p, size_t len)` | stays the program's number: it counts elements only where the type is a byte, and no rule changes it |
 
 ## Not yet built
 

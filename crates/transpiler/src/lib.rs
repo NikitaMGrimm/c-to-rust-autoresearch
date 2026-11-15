@@ -111,6 +111,7 @@ pub fn read(ast: &serde_json::Value) -> Result<c::Program, Unsupported> {
 pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     let mut program = clang::program(ast)?;
     normalise::unions(&mut program)?;
+    normalise::voids(&mut program)?;
     normalise::join(&mut program);
     normalise::ends(&mut program);
     normalise::found(&mut program);
@@ -135,6 +136,9 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
     let stages = std::panic::AssertUnwindSafe(|| {
         let mut program = clang::listed(ast, &mut listing);
         if let Err(refusal) = normalise::unions(&mut program) {
+            listing.add("rewrite", "", refusal);
+        }
+        if let Err(refusal) = normalise::voids(&mut program) {
             listing.add("rewrite", "", refusal);
         }
         normalise::join(&mut program);

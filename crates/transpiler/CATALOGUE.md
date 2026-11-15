@@ -844,3 +844,27 @@ Entry format, newest last:
 - Changes: R1, whose calls by name stay as they are; the front end reads
   a function used as a value as a pointer to it. R10 holds a pointer to a
   function that may be NULL, and R9 passes the globals through one
+## R43: `void` pointers that hold one type
+
+- C: `void *` locals, parameters, results, fields and globals that hand the
+  pointer on to each other through assignments, initialisers, arguments,
+  `return` and conditional expressions, and that every pointer stored into
+  them and every conversion of them, with or without a cast, gives one
+  type: `unsigned char *d = (unsigned char *)p;`, `int *q = p;`,
+  `*(T *)p`, `((T *)p)->field`; NULL in them; `malloc` and `calloc` kept in
+  one before the conversion
+- Rust: the slots with that type and its rules (R7, R8, R10), without the
+  conversions: `p: &[u8]` for bytes, `ctx: &mut Acc` for one record,
+  `Box<i32>` for an allocation. The arguments of the library's `void *`
+  parameters keep their own types
+- Needs: the rewrite `normalise::voids`, which runs after `unions` and
+  before every other stage
+- Refused: a group whose type nothing says; a group that holds two types,
+  naming them, where `char`, `signed char` and `unsigned char` are three;
+  a function kept in a `void` pointer; arithmetic on one, `sizeof(void)`
+  and a read through one; `void **` and a `void *` in an array
+- Motivation: `g5_siphash` hashes the bytes of an array through a `void *`
+  parameter and is refused next for a `case` that falls through;
+  `g5_aabb` and `g5_agglom` hold one of several records, and
+  `g5_call_predict` and `g5_get_predict_func` keep functions
+- Changes: extends R7, R8 and R10

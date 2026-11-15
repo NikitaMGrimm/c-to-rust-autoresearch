@@ -7,6 +7,10 @@
 //! of its size. It runs first, so that no other stage sees the union; it is
 //! in a file of its own.
 //!
+//! `voids`, R43, gives a `void` pointer the one type that it holds. It
+//! runs after `unions`, so that no later stage sees a `void` pointer; it
+//! is in a file of its own.
+//!
 //! `join` gives a local its first value where it is declared: C89 declares
 //! at the top of a block and assigns later, and Rust declares where the
 //! value is known. It needs no facts and runs before the first analysis.
@@ -32,11 +36,13 @@ mod ends;
 mod errno;
 mod found;
 mod unions;
+mod voids;
 
 pub use cursors::cursors;
 pub use ends::ends;
 pub use found::{SEARCHES, found, is_search};
 pub use unions::unions;
+pub use voids::voids;
 
 use crate::c::{
     BinOp, Expr, ExprKind, Program, Stmt, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,
