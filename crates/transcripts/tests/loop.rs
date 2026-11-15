@@ -1823,6 +1823,7 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
     let gate = format!("--bin gate -- {} {main} {kept} --usage", private.display());
     assert!(calls.contains(&gate), "{calls}");
     assert!(calls.contains("--strict --run r1"), "{calls}");
+    assert!(!calls.contains("--steady-rules"), "{calls}");
     assert!(calls.contains("--bin usage -- --since"), "{calls}");
 
     // A rejected commit stays on the work branch only. The driver judges by
@@ -1863,6 +1864,16 @@ fn a_driver_works_in_its_own_worktree_and_the_gate_judges_its_commits() {
     };
     assert_eq!(first[..3], ["--since", first[1], "--until"]);
     assert_eq!(second[..2], ["--since", first[3]]);
+    // Only the owner's file in the run's state lets a rule stay that raises
+    // no score.
+    std::fs::write(repo.join("local/runs/r1/steady-rules"), "").unwrap();
+    assert_eq!(script("judge", 0, &["r1"]), Some(0));
+    let calls = fixture.calls();
+    assert!(
+        calls.contains("--strict --run r1 --steady-rules"),
+        "{calls}"
+    );
+    assert_eq!(git(repo, &["rev-parse", "run/r1"]), rejected);
 
     // A worktree named from where the script is called, not from the main
     // checkout, which must stay clean for the gate.

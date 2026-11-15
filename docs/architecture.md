@@ -115,7 +115,7 @@ bench/README.md. Tools that read private programs print names and counts only.
 
 ## The gate
 
-`cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev-only] [--strict] [--run ID]`
+`cargo run -p eval --bin gate -- PRIVATE_DIR BASE CANDIDATE [--usage FILE] [--dev-only] [--strict] [--steady-rules] [--run ID]`
 decides whether a loop commit stays. It rejects a candidate that does not
 descend from `BASE`, changes anything outside `crates/transpiler/` and
 `Cargo.lock`, or changes rules without the
@@ -133,7 +133,10 @@ and the validation score does not drop. With
 `--dev-only`, as in the baseline runs, the development score alone decides
 and validation is only logged. With `--strict`, the scores of the keep rule
 count only strict passes, and the gate also prints the development set's
-strict score and its passes that are not strict. Every result goes to
+strict score and its passes that are not strict. With `--steady-rules`, a
+rule is kept as a fix is, when it lowers neither score: the development set
+then need not hold a program for every rule, and the log's `steady_rules`
+tells such judgings from the others. Every result goes to
 `PRIVATE_DIR/loop/log.jsonl`, or with `--run ID` to
 `PRIVATE_DIR/runs/ID/log.jsonl`, with the scores of the private sets without [near-copies](../bench/README.md#near-copies),
 the passes that fail their fuzzed inputs and the passes that are not strict. The gate prints only the
@@ -197,7 +200,8 @@ follows. It is not in a sandbox itself, so three things stand in for one:
 `loop/judge RUN`, which the driver calls as `local/judge`, runs the gate with
 `--strict --run RUN` on the commit of the driver's worktree against
 `run/RUN`, with the driver's model usage since the last round, and moves
-`run/RUN` on keep. For a worktree that `loop/drive` took, it makes `run/RUN`
+`run/RUN` on keep. It adds `--steady-rules` when the owner has put a file
+`steady-rules` into `local/runs/RUN/`; no script writes it. For a worktree that `loop/drive` took, it makes `run/RUN`
 when the first commit is judged. It adds the commit
 and what the gate printed to the worktree's `local/rounds.md`, and takes the
 lock that a round takes. A rejected commit stays in the worktree for the

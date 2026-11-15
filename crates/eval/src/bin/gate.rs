@@ -13,11 +13,13 @@ use std::process::{Command, ExitCode};
 use eval::{FuzzFailures, LaxPasses, Results, Stage, git, git_in, run_id, untrusted};
 
 const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage FILE]\n\
-     \x20           [--dev-only] [--strict] [--run ID]\n\
+     \x20           [--dev-only] [--strict] [--steady-rules] [--run ID]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
      --usage adds a report of the transcripts usage tool to the private log.\n\
      --dev-only keeps CANDIDATE on the development score alone; validation is\n\
-     only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop.\n\
+     only logged. --strict counts only strict passes in both scores.\n\
+     --steady-rules keeps a rule as it keeps a fix: the development score need\n\
+     not rise. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop.\n\
      Run it from a clean checkout of main, not from the loop agent's checkout.";
 
 /// The only paths a loop change may touch; the evaluator and the benchmarks
@@ -42,6 +44,9 @@ struct Args {
     usage: Option<PathBuf>,
     dev_only: bool,
     strict: bool,
+    /// Whether a rule is kept as a fix is: when it lowers no score. The
+    /// development set then no longer has to hold a program for every rule.
+    steady_rules: bool,
     run: Option<String>,
 }
 
@@ -49,7 +54,7 @@ struct Args {
 fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
     let mut positional = Vec::new();
     let (mut jobs, mut usage, mut dev_only, mut run) = (2, None, false, None);
-    let mut strict = false;
+    let (mut strict, mut steady_rules) = (false, false);
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().filter(|value| !value.starts_with('-'));
@@ -58,6 +63,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
             "--usage" => usage = Some(value()?.into()),
             "--dev-only" => dev_only = true,
             "--strict" => strict = true,
+            "--steady-rules" => steady_rules = true,
             "--run" => run = Some(value().filter(|id| run_id(id))?),
             _ if arg.starts_with('-') => return None,
             _ => positional.push(arg),
@@ -72,6 +78,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
         usage,
         dev_only,
         strict,
+        steady_rules,
         run,
     })
 }
@@ -148,8 +155,10 @@ fn gate(args: &Args) -> Result<bool, String> {
             score(&after, &lax_after, set, args.strict),
         )
     };
-    let reason =
-        problem.or_else(|| rejection(scores("dev"), scores("validation"), steady, args.dev_only));
+    let reason = problem.or_else(|| {
+        let steady = steady || args.steady_rules;
+        rejection(scores("dev"), scores("validation"), steady, args.dev_only)
+    });
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -196,6 +205,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         "refactor": refactor,
         "dev_only": args.dev_only,
         "strict": args.strict,
+        "steady_rules": args.steady_rules,
         "decision": if reason.is_none() { "keep" } else { "reject" },
         "reason": reason,
         "sets": summary,
@@ -433,6 +443,10 @@ mod tests {
         assert_eq!(log_dir(&args), Path::new("private/runs/wp2-a.1_b"));
         let args = parsed(&["private", "base", "candidate", "--dev-only"]).unwrap();
         assert!(args.dev_only);
+        // A rule must raise the development score unless the run says otherwise.
+        assert!(!args.steady_rules);
+        let args = parsed(&["private", "base", "candidate", "--steady-rules"]).unwrap();
+        assert!(args.steady_rules && !args.dev_only && !args.strict);
         assert_eq!(log_dir(&args), Path::new("private/loop"));
     }
 
