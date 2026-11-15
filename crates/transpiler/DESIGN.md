@@ -480,6 +480,9 @@ become a fact and a refusal:
   where C's behaviour is undefined, and a NaN prints differently.
 - `parse_float` reads decimal numbers only: `strtod` also reads
   hexadecimal ones (`0x1p3`), of which this reads the `0`.
+- `parse_float_checked` takes every subnormal result for a range error;
+  glibc reports one only where it is inexact, which a decimal text of a
+  subnormal number is unless it has hundreds of digits.
 - `read_line` takes an error of the read for the end of the input: after
   some bytes it returns them, where `fgets` returns NULL.
 - `&args[i]` stops the program where `i` is `argc`, and C reads NULL

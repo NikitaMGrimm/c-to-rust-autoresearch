@@ -617,6 +617,11 @@ int main(int argc, char **argv) {
             "unsupported: the number in `errno`, which is the platform's, at line 9".to_owned(),
         ),
         (
+            "errno-case",
+            "    long n = 0;\n    switch (argc) {\n    case 2: errno = 0; n = strtol(argv[1], &end, 10); printf(\"%d\\n\", *end); break;\n    case 3: if (errno == ERANGE) puts(\"range\"); break;\n    }\n    printf(\"%ld\\n\", n);",
+            format!("{read} 10"),
+        ),
+        (
             "errno-store",
             "    errno = EINVAL;\n    long n = strtol(argv[1], &end, 10);\n    if (errno) printf(\"%ld\\n\", n);",
             "unsupported: a store to `errno` other than 0 before a call, at line 7".to_owned(),

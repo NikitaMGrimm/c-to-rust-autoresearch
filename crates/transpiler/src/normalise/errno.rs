@@ -146,6 +146,10 @@ impl Errno<'_> {
                 reach = Reach::Cleared;
                 continue;
             }
+            if matches!(stmts[index], Stmt::Case(_) | Stmt::Default) {
+                // A `switch` may start here, after no call at all.
+                reach = Reach::None;
+            }
             if matches!(reach, Reach::Cleared)
                 && self.read_after(&stmts[index + 1..])
                 && let Some(error) = self.call(&mut stmts[index])
