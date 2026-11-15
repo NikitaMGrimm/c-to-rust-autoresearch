@@ -14,13 +14,38 @@ use super::ends::{PARSERS, declared};
 
 /// The library functions that leave `errno` as it is, on which a read may
 /// follow its call across them.
-const LEAVE_ERRNO: [&str; 24] = [
-    "printf", "fprintf", "puts", "putchar", "fputs", "fputc", "putc", "strlen", "strcmp",
-    "strncmp", "memcmp", "memcpy", "memmove", "memset", "strcpy", "strncpy", "strcat", "strncat",
-    "abs", "labs", "llabs", "fabs", "floor", "ceil",
+const LEAVE_ERRNO: [&str; 27] = [
+    "__builtin_isnan",
+    "__builtin_isinf",
+    "__builtin_isfinite",
+    "printf",
+    "fprintf",
+    "puts",
+    "putchar",
+    "fputs",
+    "fputc",
+    "putc",
+    "strlen",
+    "strcmp",
+    "strncmp",
+    "memcmp",
+    "memcpy",
+    "memmove",
+    "memset",
+    "strcpy",
+    "strncpy",
+    "strcat",
+    "strncat",
+    "abs",
+    "labs",
+    "llabs",
+    "fabs",
+    "floor",
+    "ceil",
 ];
 
 const ERANGE: i128 = 34;
+const EDOM: i128 = 33;
 
 pub fn errno(program: &mut Program) {
     for function in 0..program.functions.len() {
@@ -33,10 +58,20 @@ pub fn errno(program: &mut Program) {
             .map(|&var| program.vars[var].name.clone())
             .collect();
         let own = program.functions.iter().map(|f| f.name.clone()).collect();
+        let mut addressed = Vec::new();
+        any_expr(&body, &program.vars, &mut |expr| {
+            if let ExprKind::AddrOf(place) = &expr.kind
+                && let Some(var) = place.root_var()
+            {
+                addressed.push(var);
+            }
+            false
+        });
         let mut pass = Errno {
             vars: &mut program.vars,
             taken,
             own,
+            addressed,
         };
         pass.block(&mut body, Reach::None);
         program.functions[function].body = body;
@@ -60,6 +95,26 @@ enum Error {
     /// A parser of numbers, and the variable that is true where the
     /// number was beyond its type.
     Range(VarId),
+    /// A function of `math.h`, R38: the variable that holds its result
+    /// and its arguments, variables or constants, from which the error
+    /// follows.
+    Math {
+        function: &'static str,
+        result: VarId,
+        args: Vec<Expr>,
+    },
+}
+
+impl Error {
+    /// The variables whose store ends what the error can be told from.
+    fn vars(&self) -> Vec<VarId> {
+        match self {
+            Error::Range(_) => Vec::new(),
+            Error::Math { result, args, .. } => std::iter::once(*result)
+                .chain(args.iter().filter_map(|arg| arg.uncast().root_var()))
+                .collect(),
+        }
+    }
 }
 
 struct Errno<'a> {
@@ -68,6 +123,8 @@ struct Errno<'a> {
     taken: Vec<String>,
     /// The program's own functions.
     own: Vec<String>,
+    /// The variables whose address the function takes.
+    addressed: Vec<VarId>,
 }
 
 /// `errno = 0;`
@@ -105,6 +162,9 @@ impl Errno<'_> {
     /// Gives the call of the statement a result for its error, if it is one
     /// whose error has a rule.
     fn call(&mut self, stmt: &mut Stmt) -> Option<Error> {
+        if let Some(error) = self.math(stmt) {
+            return Some(error);
+        }
         let Stmt::Parse { error, call, .. } = stmt else {
             return None;
         };
@@ -121,6 +181,53 @@ impl Errno<'_> {
         let var = self.local("range", call.at);
         *error = Some(var);
         Some(Error::Range(var))
+    }
+
+    /// `r = pow(x, y);` or `double r = sqrt(x);`, for a `double` `r` and
+    /// arguments that are `double` variables or constants, none of them
+    /// with its address taken: each read becomes a test of their values.
+    fn math(&self, stmt: &Stmt) -> Option<Error> {
+        let (result, value) = match stmt {
+            Stmt::Decl(var) => (*var, self.vars[*var].init.as_ref()?),
+            Stmt::Expr(Expr {
+                kind:
+                    ExprKind::Assign {
+                        op: None,
+                        target,
+                        value,
+                    },
+                ..
+            }) => match target.kind {
+                ExprKind::Var(var) => (var, &**value),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let ExprKind::Call(callee, args) = &value.kind else {
+            return None;
+        };
+        let function = match callee.function()? {
+            "pow" => "pow",
+            "sqrt" => "sqrt",
+            _ => return None,
+        };
+        let double = Type::Float { bits: 64 };
+        let plain = |arg: &Expr| match &arg.kind {
+            ExprKind::Var(var) => {
+                arg.ty == double && *var != result && !self.addressed.contains(var)
+            }
+            _ => constant_of(arg).is_some(),
+        };
+        let fits = self.vars[result].ty == double
+            && value.ty == double
+            && !self.own.iter().any(|own| own == function)
+            && !self.addressed.contains(&result)
+            && args.iter().all(plain);
+        fits.then(|| Error::Math {
+            function,
+            result,
+            args: args.clone(),
+        })
     }
 
     fn local(&mut self, name: &str, at: u32) -> VarId {
@@ -181,7 +288,18 @@ impl Errno<'_> {
     /// Rewrites the reads of one statement, and returns what reaches the
     /// statement after it.
     fn stmt(&mut self, stmt: &mut Stmt, reach: Reach) -> Reach {
-        let sets = self.sets(std::slice::from_ref(stmt));
+        let vars = match &reach {
+            Reach::Error(error) => error.vars(),
+            _ => Vec::new(),
+        };
+        let ends = |pass: &Self, expr: &Expr| {
+            pass.sets_expr(expr)
+                || matches!(&expr.kind, ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. }
+                    if target.root_var().is_some_and(|var| vars.contains(&var)))
+        };
+        let sets = any_expr(std::slice::from_ref(stmt), self.vars, &mut |expr| {
+            ends(self, expr)
+        });
         let after = if sets { Reach::None } else { reach.clone() };
         // The value of a `switch` is a number, not a test.
         let switch = matches!(stmt, Stmt::Switch(..));
@@ -195,7 +313,7 @@ impl Errno<'_> {
             }
             Stmt::If(cond, then, other) => {
                 // The branches start after the test.
-                let start = match cond.any(&mut |expr| self.sets_expr(expr)) {
+                let start = match cond.any(&mut |expr| ends(self, expr)) {
                     true => Reach::None,
                     false => {
                         if let Some(error) = &error {
@@ -344,6 +462,46 @@ impl Errno<'_> {
                 kind: ExprKind::Var(*var),
                 at: 0,
             }),
+            Error::Math {
+                function,
+                result,
+                args,
+            } => {
+                let result = Expr {
+                    ty: Type::Float { bits: 64 },
+                    kind: ExprKind::Var(*result),
+                    at: 0,
+                };
+                let x = &args[0];
+                // What glibc reports.
+                let (domain, range) = match *function {
+                    "pow" => {
+                        let y = &args[1];
+                        let finite = and(test("isfinite", x), test("isfinite", y));
+                        (
+                            and(
+                                test("isnan", &result),
+                                and(not(test("isnan", x)), not(test("isnan", y))),
+                            ),
+                            or(
+                                and(test("isinf", &result), finite.clone()),
+                                and(
+                                    and(compare(BinOp::Eq, &result), finite),
+                                    compare(BinOp::Ne, x),
+                                ),
+                            ),
+                        )
+                    }
+                    _ => (compare(BinOp::Lt, x), constant(false, x)),
+                };
+                let test = match code {
+                    None => or(domain, range),
+                    Some(EDOM) => domain,
+                    Some(ERANGE) => range,
+                    Some(_) => return None,
+                };
+                (truth(&test) != Some(false)).then_some(test)
+            }
         }
     }
 }
@@ -394,6 +552,101 @@ fn fold(expr: &Expr) -> Option<Expr> {
             at: expr.at,
         },
     })
+}
+
+/// The value of a constant argument.
+fn constant_of(arg: &Expr) -> Option<f64> {
+    match arg.uncast().kind {
+        ExprKind::Float(value) => Some(value),
+        ExprKind::Int(value) => Some(value as f64),
+        _ => None,
+    }
+}
+
+/// `isnan(value)`, `isinf` or `isfinite` as a `bool`, or its truth for a
+/// constant.
+fn test(name: &str, value: &Expr) -> Expr {
+    if let Some(number) = constant_of(value) {
+        let truth = match name {
+            "isnan" => number.is_nan(),
+            "isinf" => number.is_infinite(),
+            _ => number.is_finite(),
+        };
+        return constant(truth, value);
+    }
+    let double = Type::Float { bits: 64 };
+    Expr {
+        ty: Type::Bool,
+        kind: ExprKind::Call(
+            Box::new(Expr {
+                ty: Type::Function {
+                    ret: Box::new(Type::Bool),
+                    params: vec![double],
+                    variadic: false,
+                },
+                kind: ExprKind::Function(format!("__builtin_{name}")),
+                at: value.at,
+            }),
+            vec![value.clone()],
+        ),
+        at: value.at,
+    }
+}
+
+/// `value op 0`.
+fn compare(op: BinOp, value: &Expr) -> Expr {
+    if let Some(number) = constant_of(value) {
+        let truth = match op {
+            BinOp::Eq => number == 0.0,
+            BinOp::Ne => number != 0.0,
+            _ => number < 0.0,
+        };
+        return constant(truth, value);
+    }
+    let zero = Expr {
+        ty: value.ty.clone(),
+        kind: ExprKind::Float(0.0),
+        at: value.at,
+    };
+    Expr {
+        ty: Type::Bool,
+        kind: ExprKind::Binary(op, Box::new(value.clone()), Box::new(zero)),
+        at: value.at,
+    }
+}
+
+fn and(left: Expr, right: Expr) -> Expr {
+    logical(BinOp::And, left, right)
+}
+
+fn or(left: Expr, right: Expr) -> Expr {
+    logical(BinOp::Or, left, right)
+}
+
+/// Both sides are without an effect, so a constant one goes.
+fn logical(op: BinOp, left: Expr, right: Expr) -> Expr {
+    let decides = op == BinOp::Or;
+    match (truth(&left), truth(&right)) {
+        (Some(value), _) | (_, Some(value)) if value == decides => constant(decides, &left),
+        (Some(_), _) => right,
+        (_, Some(_)) => left,
+        _ => Expr {
+            ty: Type::Bool,
+            at: left.at,
+            kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+        },
+    }
+}
+
+fn not(value: Expr) -> Expr {
+    match truth(&value) {
+        Some(truth) => constant(!truth, &value),
+        None => Expr {
+            ty: Type::Bool,
+            at: value.at,
+            kind: ExprKind::Unary(UnOp::Not, Box::new(value)),
+        },
+    }
 }
 
 fn constant(value: bool, at: &Expr) -> Expr {

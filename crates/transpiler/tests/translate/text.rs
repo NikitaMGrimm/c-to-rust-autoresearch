@@ -625,3 +625,100 @@ int main(int argc, char **argv) {
         assert_eq!(refused(name, &program(lines)), message, "{name}");
     }
 }
+
+#[test]
+fn errno_after_pow_and_sqrt_is_a_test_of_their_values() {
+    // The edges where glibc reports a domain or a range error, and where
+    // it does not.
+    let rust = check(
+        "errno-math",
+        r#"
+#include <errno.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    if (argc != 3) return 2;
+    double x = strtod(argv[1], NULL);
+    double y = strtod(argv[2], NULL);
+    errno = 0;
+    double r = pow(x, y);
+    if (errno == EDOM) puts("domain");
+    else if (errno == ERANGE) puts("range");
+    errno = 0;
+    double s = sqrt(x);
+    printf("%g %g %d %d\n", r, s, errno == EDOM, !errno);
+    return 0;
+}
+"#,
+        &[
+            &["2", "3"],
+            &["0", "-1"],
+            &["-0", "-1"],
+            &["-2", "0.5"],
+            &["2", "-1074"],
+            &["2", "-1075"],
+            &["10", "-320"],
+            &["0", "-inf"],
+            &["inf", "-1"],
+            &["nan", "0"],
+            &["1", "nan"],
+            &["-10", "401"],
+            &["-0.5", "2001"],
+            &["2", "1024"],
+            &["-inf", "1"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let r: f64 = x.powf(y);",
+            "if r.is_nan() && (!x.is_nan() && !y.is_nan()) {",
+            "let s: f64 = x.sqrt();",
+        ],
+    );
+    // A constant argument is decided, and a constant base has a type.
+    let rust = check(
+        "errno-math-constant",
+        r#"
+#include <errno.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    double x = strtod(argv[1], NULL);
+    errno = 0;
+    double r = pow(10, x);
+    printf("%g %d\n", r, errno == ERANGE);
+    printf("%g\n", sqrt(2.0));
+    return 0;
+}
+"#,
+        &[&["2"], &["400"], &["-400"], &["inf"], &["-inf"], &["nan"]],
+        "",
+    );
+    assert_lines(&rust, &["let r: f64 = 10.0f64.powf(x);"]);
+    let refused = |name, c: &str| translate(name, c).unwrap_err();
+    let program = |lines: &str| {
+        format!(
+            "#include <errno.h>\n#include <math.h>\n#include <stdio.h>\nint main(void) {{\n    double x = 2, y = 3;\n    errno = 0;\n{lines}\n    if (errno == ERANGE) puts(\"range\");\n    return 0;\n}}\n"
+        )
+    };
+    for (name, line, lines) in [
+        (
+            "pow-stored-between",
+            9,
+            "    double r = pow(x, y);\n    x = r;",
+        ),
+        ("pow-of-an-expression", 8, "    double r = pow(x + 1, y);"),
+        ("pow-narrowed", 8, "    float r = pow(x, y);"),
+    ] {
+        assert_eq!(
+            refused(name, &program(lines)),
+            format!("unsupported: a read of `errno` that is not one call's error, at line {line}"),
+            "{name}"
+        );
+    }
+}

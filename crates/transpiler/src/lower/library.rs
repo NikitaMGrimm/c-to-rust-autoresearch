@@ -110,10 +110,21 @@ impl Lower<'_> {
                     "fabs" => "abs",
                     name => name,
                 };
+                Ok(rust::method(self.receiver(value)?, method, []))
+            }
+            // R38 writes these to test what a function of `math.h` reports.
+            ("__builtin_isnan" | "__builtin_isinf" | "__builtin_isfinite", [value])
+                if call.ty == Type::Bool =>
+            {
+                let method = match name {
+                    "__builtin_isnan" => "is_nan",
+                    "__builtin_isinf" => "is_infinite",
+                    _ => "is_finite",
+                };
                 Ok(rust::method(self.expr(value)?, method, []))
             }
             ("pow", [base, exponent]) => {
-                let (base, exponent) = (self.expr(base)?, self.typed(exponent)?);
+                let (base, exponent) = (self.receiver(base)?, self.typed(exponent)?);
                 Ok(rust::method(base, "powf", [exponent]))
             }
             // R21 covers an end pointer where `normalise::ends` made the
@@ -152,6 +163,24 @@ impl Lower<'_> {
                 format!("this call of the library's `{name}`: no rule yet"),
                 at,
             ),
+        }
+    }
+
+    /// A number whose method is called: a constant needs its type, which
+    /// Rust does not infer for `10.0.powf(x)`.
+    fn receiver(&mut self, value: &Expr) -> R<syn::Expr> {
+        let suffix = match value.ty {
+            Type::Float { bits: 32 } => "f32",
+            _ => "f64",
+        };
+        match value.uncast().kind {
+            ExprKind::Float(number) if value.uncast().ty == value.ty => {
+                Ok(rust::float(number, suffix))
+            }
+            ExprKind::Int(number) if value.ty.int().is_none() => {
+                Ok(rust::float(number as f64, suffix))
+            }
+            _ => self.expr(value),
         }
     }
 

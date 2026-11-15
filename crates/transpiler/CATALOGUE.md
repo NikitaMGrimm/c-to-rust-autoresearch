@@ -711,3 +711,24 @@ Entry format, newest last:
 - Motivation: `g3_envy` tests whether text from the environment holds a
   character
 - Changes: none
+
+## R38: what a function of `math.h` reports through `errno`
+
+- C: `errno = 0; r = pow(x, y);` or `double r = sqrt(x);`, then reads of
+  `errno` as R37 takes them, for a `double` `r` and arguments that are
+  `double` variables or constants, none of whose address the function
+  takes; a store to `r`, `x` or `y` ends what the reads may follow
+- Rust: the call as before, `x.powf(y)`, and each read a test of the
+  values as glibc reports: for `pow`, `EDOM` where `r` is NaN and neither
+  argument is, `ERANGE` where `r` is infinite and both are finite, or `r`
+  is zero and `x` is finite and not zero and `y` finite; for `sqrt`, `EDOM`
+  where `x` is below zero. `r.is_nan() && (!x.is_nan() && !y.is_nan())`;
+  a test of a constant is decided. Refused, as R37 refuses a read: a
+  result that is converted, an argument that is an expression, a read
+  after a store to one of them; `log`, `exp` and the other functions of
+  `math.h` have no rule of their own yet
+- Needs: `normalise::errno`, which writes the tests with `isnan`, `isinf`
+  and `isfinite` as `bool` calls of `__builtin_isnan` and its like
+- Motivation: `g1_007_errno_pow` tests `errno` after `pow`
+- Changes: extends R37; a constant on which `pow`, `sqrt` and their like
+  call a method has its type, `10.0f64.powf(x)`, which Rust does not infer
