@@ -884,7 +884,7 @@ impl Lower<'_> {
             return None;
         }
         // The least value an index takes.
-        let least = |index: &Expr| match index.uncast().kind {
+        let least = |index: &Expr| match counted(index).kind {
             ExprKind::Var(var) => self
                 .counters
                 .iter()
@@ -1126,6 +1126,19 @@ fn pointed(pointer: &Expr) -> Option<Vec<Part>> {
             Some(parts)
         }
         _ => None,
+    }
+}
+
+/// The expression under conversions that keep every value of an `int`: to
+/// an index or to 64 bits.
+fn counted(index: &Expr) -> &Expr {
+    match &index.kind {
+        ExprKind::Cast(inner)
+            if index.ty == Type::Index || matches!(index.ty.int(), Some((64, _))) =>
+        {
+            counted(inner)
+        }
+        _ => index,
     }
 }
 

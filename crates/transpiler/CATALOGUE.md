@@ -841,8 +841,9 @@ Entry format, newest last:
   below `j` on every run: both are constants, or one is a constant and
   the other the counter of a `for` loop that starts above it, `for (int i
   = 1; …; i++) copy(&a[0], &a[i]);`, with a step that adds to it and a
-  body that leaves it alone; the counter is an `int` or wider and signed,
-  so that it may not wrap back to the constant
+  body and a condition that leave it alone; the counter is an `int` or
+  wider and signed, so that it may not wrap back to the constant, and it
+  is the index itself, not cut to a narrower type
 - Rust: the array is split before the later element, so that each
   argument borrows a part of its own: `let (lower, upper) =
   a.split_at_mut(i as usize); copy(&lower[0], &mut upper[0]);`, in a

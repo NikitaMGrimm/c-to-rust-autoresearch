@@ -333,6 +333,16 @@ int main(int argc, char *argv[]) {
             "apart_moved",
             "    for (int i = 1; i < 4; i++) { copy(&items[0], &items[i]); if (argc > 5) i--; }",
         ),
+        // The condition moves the counter down to the other element.
+        (
+            "apart_condition",
+            "    for (int i = 1; --i >= 0 && i < 3; i += 2) copy(&items[0], &items[i]);",
+        ),
+        // The index is the counter cut to a byte.
+        (
+            "apart_cut",
+            "    for (int i = 256; i < 259; i++) copy(&items[0], &items[(unsigned char)i]);",
+        ),
         // An unsigned counter wraps to the other element.
         (
             "apart_unsigned",

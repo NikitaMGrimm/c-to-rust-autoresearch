@@ -362,7 +362,7 @@ impl Lower<'_> {
             } => {
                 // R54: a counter that only its step moves, and upwards, is
                 // at least where it starts.
-                let counter = self.counter(init, step.as_ref(), body);
+                let counter = self.counter(init, cond.as_ref(), step.as_ref(), body);
                 self.counters.extend(counter);
                 let lowered = self.for_loop(init, cond.as_ref(), step.as_ref(), body, out);
                 if counter.is_some() {
@@ -827,7 +827,13 @@ impl Lower<'_> {
 
     /// The variable of `for (int i = start; …; i++)` and its constant start,
     /// if the step adds to it and the body leaves it alone.
-    fn counter(&self, init: &[Stmt], step: Option<&Expr>, body: &[Stmt]) -> Option<(VarId, i128)> {
+    fn counter(
+        &self,
+        init: &[Stmt],
+        cond: Option<&Expr>,
+        step: Option<&Expr>,
+        body: &[Stmt],
+    ) -> Option<(VarId, i128)> {
         let program: &Program = self.program;
         let [Stmt::Decl(var)] = init else {
             return None;
@@ -852,11 +858,14 @@ impl Lower<'_> {
             } => is_var(target) && value.constant(program).is_some_and(|by| by > 0),
             _ => false,
         };
-        let moved = any_expr(body, &program.vars, &mut |part| match &part.kind {
+        let mut moves = |part: &Expr| match &part.kind {
             ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => is_var(target),
             ExprKind::AddrOf(inner) => is_var(inner),
             _ => false,
-        });
+        };
+        // The condition may move it as the body may.
+        let moved = any_expr(body, &program.vars, &mut moves)
+            || cond.is_some_and(|cond| cond.any(&mut moves));
         (steps && !moved).then_some((var, start))
     }
 
