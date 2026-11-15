@@ -856,6 +856,33 @@ Entry format, newest last:
 - Motivation: `g4_memcpy_fun_buffers` copies its first buffer to each of
   the others
 - Changes: R7 no longer refuses these calls
+## R52: a loop that searches on from what it found
+
+- C: a local pointer that starts at an array and that the condition of a
+  `for` or `while` loop stores the next find in: `for (s = text; (s =
+  strchr(s, c)); s++)`, `while ((s = strstr(s + 1, part)) != NULL)`, with
+  `strchr`, `strrchr`, `strstr` or `strpbrk`; the step and the body move
+  it by statements of their own, `s++;`, `s += n;`, and use it as a place,
+  `*s`, `s[i]`, `s - text`, `s` handed on
+- Rust: the pointer is an index beside the array that starts at 0, and the
+  loop is `while let Some(at) = find_byte(until_nul(&text[s..]), c) { s +=
+  at; … }`, the search of R40 in the rest of the array; with `s + 1` the
+  rest is `&text[s + 1..]` and the index moves by `1 + at`. The body's uses
+  are those of R47, the step comes last in the body
+- Needs: `normalise::found` rewrites the loop to one without a condition
+  whose body starts with `Stmt::LetSome` of the search and `break`; the
+  rule for `for` writes that start as `while let`. The array is an array
+  or a pointer that the function does not store to. The pointer is declared
+  in the `for`, or just before the `while` and not named after the loop,
+  where it is NULL
+- Refused, as before, with `a place that a search found, used as a
+  pointer`: a pointer that is read after the loop, that starts at an
+  offset, that another pointer is stored in, or whose step has a value
+  that is read (`*s++`); a search that reads the pointer twice
+  (`memchr(s, c, n - (s - text))`). `continue` with a step is refused by
+  R3
+- Motivation: `g2_028_strchr` counts the finds of a character
+- Changes: extends R40 and R47
 ## R42: pointers to functions
 
 - C: a pointer to a function, `R (*)(A, B)`, also through a `typedef` of

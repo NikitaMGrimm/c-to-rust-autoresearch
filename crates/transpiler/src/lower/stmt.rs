@@ -352,7 +352,12 @@ impl Lower<'_> {
         let name = rust::ident(self.names.var(var));
         // R47: a place that a search found is the index where it is one.
         if source.ty == Type::Found {
-            return Ok((parse_quote!(Some(#name)), parse_quote!(#name)));
+            let value = match source.kind {
+                // R52: the search itself, where a loop goes on from it.
+                ExprKind::Call(..) => self.search(source)?,
+                _ => parse_quote!(#name),
+            };
+            return Ok((parse_quote!(Some(#name)), value));
         }
         let mutability: Option<syn::Token![mut]> = self.needs_mut(var).then(Default::default);
         let repr = self.repr(Slot::Var(var), source.at)?;
@@ -532,13 +537,33 @@ impl Lower<'_> {
             );
         }
         let mut stmts = self.stmts(init)?;
+        // R52: a loop that goes on while a search finds something.
+        let (found, body) = match (cond, body) {
+            (
+                None,
+                [
+                    Stmt::LetSome {
+                        var,
+                        source,
+                        otherwise,
+                    },
+                    rest @ ..,
+                ],
+            ) if source.ty == Type::Found && matches!(otherwise.as_slice(), [Stmt::Break]) => {
+                (Some(self.some(*var, source)?), rest)
+            }
+            _ => (None, body),
+        };
         let mut body = self.loop_body(body)?;
         if let Some(step) = step {
             body.stmts.extend(self.effect(step)?);
         }
         stmts.push(match cond.map(|cond| self.cond(cond)).transpose()? {
             Some(cond) => parse_quote!(while #cond #body),
-            None => parse_quote!(loop #body),
+            None => match found {
+                Some((pattern, value)) => parse_quote!(while let #pattern = #value #body),
+                None => parse_quote!(loop #body),
+            },
         });
         // The loop's own variables end with it.
         if init.iter().any(|stmt| matches!(stmt, Stmt::Decl(_))) {

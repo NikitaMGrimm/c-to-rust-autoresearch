@@ -699,7 +699,9 @@ impl<'a> Walk<'a> {
                 source,
                 otherwise,
             } => {
-                self.flow_of(source, Slot::Var(*var), true);
+                if source.ty != Type::Found {
+                    self.flow_of(source, Slot::Var(*var), true);
+                }
                 self.expr(source);
                 self.stmts(otherwise);
             }

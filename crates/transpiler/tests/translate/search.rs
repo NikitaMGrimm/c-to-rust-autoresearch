@@ -370,3 +370,101 @@ int main(int argc, char *argv[]) {
         );
     }
 }
+
+#[test]
+fn a_loop_that_searches_on_from_what_it_found_counts_an_index() {
+    let rust = check(
+        "search_onward",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static int count(const char *in, char c) {
+    int res = 0;
+    for (const char *s = in; s = strchr(s, c); s++) {
+        res++;
+    }
+    return res;
+}
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    char c = (char)atoi(argv[1]);
+    char in[32] = "";
+    strcpy(in, "abracadabra, a banana");
+    printf("%d\n", count(in, c));
+    const char *from = in;
+    while ((from = strchr(from + 1, c)) != NULL) {
+        printf("%d ", (int)(from - in));
+    }
+    char part[3] = "a";
+    part[0] = c;
+    for (const char *s = in; (s = strstr(s, part)) != NULL; s += strlen(part)) {
+        printf("[%s]", s);
+    }
+    char *s = in;
+    while ((s = strchr(s, c))) {
+        if (s[1] == 'd') break;
+        *s = '_';
+        s += 1;
+    }
+    puts(in);
+    return 0;
+}
+"#,
+        &[&["97"], &["98"], &["110"], &["122"], &["44"], &["32"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut s: usize = 0;",
+            "while let Some(at) = find_byte(until_nul(&in_[s..]), c) {",
+            "s += at;",
+            "s += 1;",
+            "while let Some(at) = find_byte(until_nul(&in_[from + 1..]), c) {",
+            "while let Some(at) = find_bytes(until_nul(&in_[s..]), until_nul(&part)) {",
+            "s += until_nul(&part).len();",
+            "from += 1 + at;",
+            "print!(\"{} \", from as i64 as i32);",
+            "in_[s] = b'_';",
+        ],
+    );
+    let refused = |name: &str, body: &str| {
+        let c = format!(
+            "#include <stdio.h>\n#include <string.h>\nint main(int argc, char *argv[]) {{\n    char buf[8] = \"a,b,c\";\n    int n = 0;\n{body}\n    return n + argc;\n}}\n"
+        );
+        translate(name, &c).unwrap_err()
+    };
+    for (name, body) in [
+        // NULL is read after the loop.
+        (
+            "onward_after",
+            "    char *p = buf;\n    while ((p = strchr(p, ','))) p++;\n    n = p == NULL;",
+        ),
+        // The value of a step is read.
+        (
+            "onward_value",
+            "    for (char *p = buf; (p = strchr(p, ','));) *p++ = '.';",
+        ),
+        // Another pointer is stored in it.
+        (
+            "onward_stored",
+            "    for (char *p = buf; (p = strchr(p, ',')); p++) if (n++ == 0) p = buf + 3;",
+        ),
+        // It does not start at the array.
+        (
+            "onward_offset",
+            "    for (char *p = buf + 1; (p = strchr(p, ',')); p++) n++;",
+        ),
+        // The search reads the pointer twice.
+        (
+            "onward_length",
+            "    for (char *p = buf; (p = memchr(p, ',', 5 - (p - buf))); p++) n++;",
+        ),
+    ] {
+        assert_eq!(
+            refused(name, body),
+            "unsupported: the pointer `p`: a place that a search found, used as a pointer: no rule yet, at line 6",
+            "{name}"
+        );
+    }
+}

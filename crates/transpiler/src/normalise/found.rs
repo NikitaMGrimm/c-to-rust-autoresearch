@@ -4,7 +4,7 @@
 //! `Option<usize>` in Rust. A local that is used in any other way stays a
 //! pointer, and the analysis refuses the library's pointer in it.
 
-use super::cursors::{address, as_index, element};
+use super::cursors::{address, as_index, element, index_literal};
 use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind};
 
 /// The library functions that return a place in their first argument, or
@@ -201,6 +201,17 @@ fn run(program: &mut Program) {
     }
     for function in 0..program.functions.len() {
         let mut body = std::mem::take(&mut program.functions[function].body);
+        let stored = stored(&body, &program.vars);
+        // A name for what a search found that no variable has where the
+        // function's loops are.
+        let mut locals = program.functions[function].params.clone();
+        declared(&body, &mut locals);
+        locals.extend(&program.globals);
+        let mut name = String::from("at");
+        while locals.iter().any(|var| program.vars[*var].name == name) {
+            name.push('_');
+        }
+        onward(&mut body, program, &stored, &name);
         let mut locals = Vec::new();
         declared(&body, &mut locals);
         for var in locals {
@@ -619,6 +630,23 @@ fn place(stmts: &mut [Stmt], program: &mut Program, var: VarId, base: &Expr) {
     };
     let mut change = |expr: &mut Expr| {
         let at = expr.at;
+        // R52: a step of the place is a step of its index.
+        match &mut expr.kind {
+            ExprKind::IncDec { target, .. } if is_var(target) => {
+                target.ty = Type::Index;
+                return;
+            }
+            ExprKind::Assign {
+                op: Some((_, ty)),
+                target,
+                value,
+            } if is_var(target) => {
+                (target.ty, *ty) = (Type::Index, Type::Index);
+                **value = as_index(value, records);
+                return;
+            }
+            _ => {}
+        }
         let changed = match &expr.kind {
             ExprKind::Deref(inner) if is_var(inner) => {
                 Some(element(base.clone(), index(at), false, at).kind)
@@ -649,4 +677,261 @@ fn place(stmts: &mut [Stmt], program: &mut Program, var: VarId, base: &Expr) {
     let mut vars = program.vars.clone();
     crate::c::each_expr_mut(stmts, &mut vars, &mut change);
     program.vars = vars;
+}
+
+/// The variables that the statements store to or take the address of.
+fn stored(stmts: &[Stmt], vars: &[Var]) -> Vec<VarId> {
+    let mut stored = Vec::new();
+    crate::c::any_expr(stmts, vars, &mut |expr| {
+        if let ExprKind::Assign { target, .. }
+        | ExprKind::IncDec { target, .. }
+        | ExprKind::AddrOf(target) = &expr.kind
+            && let ExprKind::Var(var) = target.kind
+        {
+            stored.push(var);
+        }
+        false
+    });
+    stored
+}
+
+/// R52: a loop whose condition searches on from what it found,
+/// `for (s = text; (s = strchr(s, c)); s++)`, counts the place in an index
+/// beside the array: the loop goes on while the rest of the array from the
+/// index holds what is searched for, and the index moves to it.
+fn onward(stmts: &mut [Stmt], program: &mut Program, stored: &[VarId], name: &str) {
+    for index in 0..stmts.len() {
+        match &mut stmts[index] {
+            Stmt::Block(body) | Stmt::DoWhile(body, _) | Stmt::Switch(_, body) => {
+                onward(body, program, stored, name)
+            }
+            Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => {
+                onward(then, program, stored, name);
+                onward(other, program, stored, name);
+            }
+            Stmt::LetSome { otherwise, .. } => onward(otherwise, program, stored, name),
+            Stmt::While(_, body) | Stmt::For { body, .. } => onward(body, program, stored, name),
+            _ => {}
+        }
+        let (before, rest) = stmts.split_at_mut(index);
+        let (stmt, after) = rest.split_first_mut().unwrap();
+        let var = match (&*stmt, before.last()) {
+            (Stmt::For { init, .. }, _) if matches!(init.as_slice(), [Stmt::Decl(_)]) => {
+                match init[0] {
+                    Stmt::Decl(var) => var,
+                    _ => continue,
+                }
+            }
+            // The pointer is NULL after the loop, and nothing may read it.
+            (Stmt::While(..), Some(Stmt::Decl(var)))
+                if !after
+                    .iter()
+                    .any(|stmt| super::names(stmt, &program.vars, *var)) =>
+            {
+                *var
+            }
+            _ => continue,
+        };
+        let (cond, step, body) = match stmt {
+            Stmt::For {
+                cond: Some(cond),
+                step,
+                body,
+                ..
+            } => (cond, step.take(), body),
+            Stmt::While(cond, body) => (cond, None, body),
+            _ => continue,
+        };
+        let mut moved: Vec<Stmt> = step.iter().cloned().map(Stmt::Expr).collect();
+        let Some((base, search, skip)) = goes_on(program, var, cond, &moved, body, stored) else {
+            if let Stmt::For { step: place, .. } = stmt {
+                *place = step;
+            }
+            continue;
+        };
+        let at = cond.at;
+        let found = program.vars.len();
+        program.vars.push(Var {
+            name: name.to_string(),
+            ty: Type::Index,
+            init: None,
+            len: None,
+            kind: VarKind::Local,
+            at,
+        });
+        let index = |var: VarId| Expr {
+            ty: Type::Index,
+            kind: ExprKind::Var(var),
+            at,
+        };
+        let mut body = std::mem::take(body);
+        body.insert(
+            0,
+            Stmt::LetSome {
+                var: found,
+                source: Expr {
+                    ty: Type::Found,
+                    ..search
+                },
+                otherwise: vec![Stmt::Break],
+            },
+        );
+        // The uses of the pointer are places in the array, as in R47.
+        let mut retype = |expr: &mut Expr| {
+            if matches!(expr.kind, ExprKind::Var(named) if named == var) {
+                expr.ty = Type::Found;
+            }
+        };
+        crate::c::each_expr_mut(&mut body, &mut program.vars, &mut retype);
+        crate::c::each_expr_mut(&mut moved, &mut program.vars, &mut retype);
+        place(&mut body, program, var, &base);
+        place(&mut moved, program, var, &base);
+        let by = match skip {
+            Some(skip) => Expr {
+                ty: Type::Index,
+                kind: ExprKind::Binary(
+                    BinOp::Add,
+                    Box::new(as_index(&skip, program)),
+                    Box::new(index(found)),
+                ),
+                at,
+            },
+            None => index(found),
+        };
+        body.insert(
+            1,
+            Stmt::Expr(Expr {
+                ty: Type::Index,
+                kind: ExprKind::Assign {
+                    op: Some((BinOp::Add, Type::Index)),
+                    target: Box::new(index(var)),
+                    value: Box::new(by),
+                },
+                at,
+            }),
+        );
+        program.vars[var].ty = Type::Index;
+        program.vars[var].init = Some(index_literal(0, at));
+        let step = moved.pop().map(|stmt| match stmt {
+            Stmt::Expr(step) => step,
+            _ => unreachable!("the step is an expression"),
+        });
+        let init = match stmt {
+            Stmt::For { init, .. } => std::mem::take(init),
+            _ => Vec::new(),
+        };
+        *stmt = Stmt::For {
+            init,
+            cond: None,
+            step,
+            body,
+        };
+    }
+}
+
+/// The array that the loop's variable walks, the search in its condition
+/// and what the search skips of the array before it, if the loop is one
+/// of R52: the variable starts at the array, the condition stores in it
+/// what a search of the library from the variable finds, and the step and
+/// the body move it only by whole statements.
+fn goes_on(
+    program: &Program,
+    var: VarId,
+    cond: &Expr,
+    step: &[Stmt],
+    body: &[Stmt],
+    stored: &[VarId],
+) -> Option<(Expr, Expr, Option<Expr>)> {
+    let declared = &program.vars[var];
+    let is_var = |expr: &Expr| matches!(expr.uncast().kind, ExprKind::Var(named) if named == var);
+    let mentions = |expr: &Expr| expr.any(&mut |part| is_var(part));
+    if declared.kind != VarKind::Local || !declared.ty.is_pointer() {
+        return None;
+    }
+    // Where it starts: an array, or a pointer that the function leaves
+    // as it is.
+    let base = declared.init.as_ref()?.uncast();
+    let fixed = match &base.kind {
+        ExprKind::Decay(array) => matches!(array.kind, ExprKind::Var(_)),
+        ExprKind::Var(pointer) => {
+            !program.vars[*pointer].kind.is_global() && !stored.contains(pointer)
+        }
+        _ => false,
+    };
+    if !fixed || !base.ty.is_pointer() {
+        return None;
+    }
+    // `s = search(s, …)`, also as `(s = …) != NULL`.
+    let mut cond = cond;
+    loop {
+        cond = match &cond.kind {
+            ExprKind::Cast(inner) => inner,
+            ExprKind::Binary(BinOp::Ne, left, right)
+                if matches!(right.uncast().kind, ExprKind::Null) =>
+            {
+                left
+            }
+            _ => break,
+        };
+    }
+    let ExprKind::Assign {
+        op: None,
+        target,
+        value,
+    } = &cond.kind
+    else {
+        return None;
+    };
+    let search = value.uncast();
+    let ExprKind::Call(callee, args) = &search.kind else {
+        return None;
+    };
+    let library = callee
+        .function()
+        .is_some_and(|name| SEARCHES.contains(&name) && program.function(name).is_none());
+    let (from, others) = args.split_first()?;
+    let skip = match &from.uncast().kind {
+        _ if is_var(from) => None,
+        ExprKind::Binary(BinOp::Add, left, right)
+            if is_var(left) && right.ty.is_integer() && right.is_pure() && !mentions(right) =>
+        {
+            Some((**right).clone())
+        }
+        _ => return None,
+    };
+    if !is_var(target) || !library || others.iter().any(mentions) {
+        return None;
+    }
+    // The pointer moves by a statement of its own, `s++;` or `s += n;`,
+    // whose value nothing reads.
+    let moves = |expr: &Expr| match &expr.kind {
+        ExprKind::IncDec { target, .. } => is_var(target),
+        ExprKind::Assign {
+            op: Some((BinOp::Add | BinOp::Sub, _)),
+            target,
+            value,
+        } => is_var(target) && value.ty.is_integer() && !mentions(value),
+        _ => false,
+    };
+    let touched = |stmts: &[Stmt]| {
+        let mut count = 0;
+        crate::c::any_expr(stmts, &program.vars, &mut |expr| {
+            count += usize::from(match &expr.kind {
+                ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => is_var(target),
+                ExprKind::AddrOf(inner) => is_var(inner),
+                _ => false,
+            });
+            false
+        });
+        count
+    };
+    let mut whole = 0;
+    each_stmt(body, &mut |stmt| {
+        whole += usize::from(matches!(stmt, Stmt::Expr(expr) if moves(expr)));
+    });
+    whole += step
+        .iter()
+        .filter(|stmt| matches!(stmt, Stmt::Expr(expr) if moves(expr)))
+        .count();
+    (touched(body) + touched(step) == whole).then(|| (base.clone(), search.clone(), skip))
 }

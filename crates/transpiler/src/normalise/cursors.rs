@@ -995,7 +995,7 @@ pub(super) fn element(base: Expr, index: Expr, text: bool, at: u32) -> Expr {
     Expr { ty, kind, at }
 }
 
-fn index_literal(value: i128, at: u32) -> Expr {
+pub(super) fn index_literal(value: i128, at: u32) -> Expr {
     Expr {
         ty: Type::Index,
         kind: ExprKind::Int(value),
