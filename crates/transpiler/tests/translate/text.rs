@@ -727,3 +727,56 @@ int main(int argc, char **argv) {
         );
     }
 }
+
+/// glibc keeps the number of `nan(number)` in the NaN's lowest bits, where
+/// a program that reads the bits finds it.
+#[test]
+fn the_number_in_a_nan_is_kept_in_its_bits() {
+    let rust = check(
+        "nan_payload",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    char *end;
+    union { double f; unsigned long u; } wide;
+    union { float f; unsigned u; } narrow;
+    double d = strtod(argv[1], &end);
+    wide.f = d;
+    printf("%lx %d ", wide.u, *end);
+    float f = strtof(argv[1], &end);
+    narrow.f = f;
+    printf("%x %d\n", narrow.u, *end);
+    return 0;
+}
+"#,
+        &[
+            &["nan"],
+            &["nan()"],
+            &["nan(0)"],
+            &["nan(1)"],
+            &["NAN(2)"],
+            &["-nan(1)"],
+            &["-nan"],
+            &["nan(0x10)"],
+            &["nan(010)"],
+            &["nan(08)"],
+            &["nan(0x)"],
+            &["nan(abc)"],
+            &["nan(1a)"],
+            &["nan(_1)"],
+            &["nan(0xffffffffffffffff)"],
+            &["nan(18446744073709551616)"],
+            &["nan(0x8000000000000)"],
+            &["nan(0x400000)"],
+            &["nan(0x3fffff)"],
+            &["nan(1"],
+            &["nan(-1)"],
+            &["nan( 1)"],
+            &["1.5"],
+            &["inf"],
+        ],
+        "",
+    );
+    assert_lines(&rust, &["value = T::nan(bytes[0] == b'-', payload);"]);
+}

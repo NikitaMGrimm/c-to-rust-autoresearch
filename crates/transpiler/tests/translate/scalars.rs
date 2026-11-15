@@ -262,7 +262,7 @@ int main(int argc, char *argv[]) {
         &[
             "let wide: f64 = parse_float::<f64>(&args[1]);",
             "let narrow: f32 = parse_float::<f32>(&args[1]);",
-            "fn parse_float<T: std::str::FromStr + Default>(text: &str) -> T {",
+            "fn parse_float<T: std::str::FromStr + Default + Nan>(text: &str) -> T {",
         ],
     );
 }

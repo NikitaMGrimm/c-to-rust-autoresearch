@@ -62,6 +62,7 @@ const RESERVED: &[&str] = &[
     "scan_int",
     "scan_int_or_end",
     "ScanError",
+    "Nan",
     "Result",
     "Ok",
     "Err",

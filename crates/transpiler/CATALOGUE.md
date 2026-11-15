@@ -625,8 +625,9 @@ Entry format, newest last:
 - Rust: `let (n, end) = parse_uint_prefix(&args[1]);` and
   `let (d, end) = parse_float_prefix::<f64>(&args[1]);`, helpers that also
   return the index where the number ends, 0 when the text starts with
-  none; `parse_float_prefix` reads `nan(chars)` to its `)`, and
-  `parse_float` is its first result. The store of the first value is
+  none; `parse_float_prefix` reads `nan(chars)` to its `)` and keeps a
+  number among the chars in the NaN's lowest bits, as glibc does (`Nan`,
+  a trait of `f32` and `f64`), and `parse_float` is its first result. The store of the first value is
   dropped. Refused: a read of the end before the first call or after such
   a store, a store of it inside a larger expression, another base
 - Needs: `normalise::ends`, which takes these calls as it takes `strtol`

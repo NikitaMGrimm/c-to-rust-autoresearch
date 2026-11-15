@@ -35,6 +35,9 @@ enum Helper {
     ParseUintPrefix,
     ParseFloat,
     ParseFloatPrefix,
+    Nan,
+    NanF32,
+    NanF64,
     ParseIntChecked,
     ParseUintChecked,
     ParseFloatChecked,
@@ -71,7 +74,7 @@ impl Helper {
         match self {
             Helper::ParseInt
             | Helper::ParseUint
-            | Helper::ParseFloatPrefix
+            | Helper::Nan
             | Helper::FormatE
             | Helper::CopyText
             | Helper::StoreText
@@ -92,6 +95,8 @@ impl Helper {
             Helper::ReadLineWithin => &[Helper::ReadLine, Helper::PeekByte],
             Helper::TextOf | Helper::CopyString | Helper::AppendAtMost => &[Helper::UntilNul],
             Helper::AppendString => &[Helper::UntilNul, Helper::CopyString],
+            Helper::NanF32 | Helper::NanF64 => &[Helper::Nan],
+            Helper::ParseFloatPrefix => &[Helper::NanF32, Helper::NanF64],
             Helper::ParseIntPrefix => &[Helper::ParseInt],
             Helper::ParseUintPrefix => &[Helper::ParseUint],
             Helper::ParseFloat => &[Helper::ParseFloatPrefix],
@@ -188,7 +193,7 @@ impl Helper {
             Helper::ParseFloat => parse_quote! {
                 /// The number at the start of `text` as C's `strtod` reads a
                 /// decimal number. It is 0 without a number.
-                fn parse_float<T: std::str::FromStr + Default>(text: &str) -> T {
+                fn parse_float<T: std::str::FromStr + Default + Nan>(text: &str) -> T {
                     parse_float_prefix(text).0
                 }
             },
@@ -197,7 +202,7 @@ impl Helper {
                 /// decimal number: white space, a sign, then digits with a
                 /// point and an exponent, or `inf` or `nan`, and the index in
                 /// `text` where it ends. It is 0 and 0 without a number.
-                fn parse_float_prefix<T: std::str::FromStr + Default>(text: &str) -> (T, usize) {
+                fn parse_float_prefix<T: std::str::FromStr + Default + Nan>(text: &str) -> (T, usize) {
                     let trimmed = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
                     let skipped = text.len() - trimmed.len();
                     let bytes = trimmed.as_bytes();
@@ -217,15 +222,29 @@ impl Helper {
                         .into_iter()
                         .find(|word| starts(end, word))
                     {
-                        let value = trimmed[..end + word.len()].parse().unwrap_or_default();
+                        let mut value = trimmed[..end + word.len()].parse().unwrap_or_default();
                         end += word.len();
-                        // `nan(chars)` is a NaN too.
+                        // `nan(chars)` is a NaN too, and glibc keeps a
+                        // number among the chars, read as `strtoull` reads
+                        // one in base 0, in the NaN's lowest bits.
                         if word == "nan" && bytes.get(end) == Some(&b'(') {
                             let chars = bytes[end + 1..]
                                 .iter()
                                 .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
                                 .count();
                             if bytes.get(end + 1 + chars) == Some(&b')') {
+                                let number = &trimmed[end + 1..end + 1 + chars];
+                                let payload = match number.as_bytes() {
+                                    [b'0', b'x' | b'X', _, ..] => u64::from_str_radix(&number[2..], 16),
+                                    [b'0', ..] => u64::from_str_radix(number, 8),
+                                    _ => number.parse(),
+                                };
+                                let payload = match payload {
+                                    Ok(payload) => payload,
+                                    Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => u64::MAX,
+                                    Err(_) => 0,
+                                };
+                                value = T::nan(bytes[0] == b'-', payload);
                                 end += chars + 2;
                             }
                         }
@@ -253,6 +272,29 @@ impl Helper {
                     (trimmed[..end].parse().unwrap_or_default(), skipped + end)
                 }
             },
+            Helper::Nan => parse_quote! {
+                /// A NaN with `payload` in its lowest bits, where glibc's
+                /// `strtod` keeps the number of `nan(number)`.
+                trait Nan {
+                    fn nan(negative: bool, payload: u64) -> Self;
+                }
+            },
+            Helper::NanF32 => parse_quote! {
+                impl Nan for f32 {
+                    fn nan(negative: bool, payload: u64) -> f32 {
+                        let bits = f32::NAN.to_bits() | payload as u32 & ((1 << 22) - 1);
+                        f32::from_bits(bits | u32::from(negative) << 31)
+                    }
+                }
+            },
+            Helper::NanF64 => parse_quote! {
+                impl Nan for f64 {
+                    fn nan(negative: bool, payload: u64) -> f64 {
+                        let bits = f64::NAN.to_bits() | payload & ((1 << 51) - 1);
+                        f64::from_bits(bits | u64::from(negative) << 63)
+                    }
+                }
+            },
             Helper::ParseIntChecked => parse_quote! {
                 /// As `parse_int_prefix`, and whether the number is beyond
                 /// `i64`, where C's `strtoll` sets `errno` to `ERANGE`.
@@ -277,7 +319,7 @@ impl Helper {
                 /// `errno` to `ERANGE`: a number that is infinite or, with a
                 /// digit that is not 0, below `smallest`, the least normal
                 /// number of `T`. The words `inf` and `nan` are no error.
-                fn parse_float_checked<T: std::str::FromStr + Default + Copy + Into<f64>>(
+                fn parse_float_checked<T: std::str::FromStr + Default + Nan + Copy + Into<f64>>(
                     text: &str,
                     smallest: f64,
                 ) -> (T, usize, bool) {
