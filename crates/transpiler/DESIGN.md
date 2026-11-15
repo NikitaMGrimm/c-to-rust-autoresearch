@@ -460,6 +460,48 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 - **Two ranges for one.** `b[1..][..2]` for a copy of a count from an
   offset (R29) is `b[1..3]` where both are constants.
 
+What a third review found beside these, most frequent first:
+
+- **Conversions that one conversion says.** `c as i8 as i32 as u32` is `c
+  as i8 as u32`, `len() as u64 as i32` is `len() as i32`, and a shift takes
+  its count in any integer type. These need only the two types, not the
+  range of a value, as `args.len() as i32 != 2` does.
+- **Types that a method or a literal fixes.** `let result: f64 =
+  base.powf(exponent)`, `let in_: u32 = flt.to_bits()`, `let data: &str =
+  "string"`, `let mut y: i32 = 2 * x`: the method's signature, the text or
+  a typed operand fixes the type as a record or a cast does. An annotation
+  that gives a literal its width or `into()` its target stays.
+- **The limits of a type.** `(-2147483647 - 1) as i64` is
+  `i64::from(i32::MIN)`, from the constant's value and type alone; an `f32`
+  constant is the shortest text that gives the same bits. Neither needs
+  Clang's text, which only the base of a literal does.
+- **A helper's fallback for what cannot happen.** `format_e` and `format_g`
+  read the exponent of Rust's own `{:e}` with `unwrap_or`; `expect` says
+  that the text always has one.
+- **A function's value as `return` in both branches of its last `if`**, or
+  as a local that the last statement only returns: the `if` and the
+  expression are the value.
+- **The checked parsers scan a number three times**, for its end, its
+  value and its range. One scan can keep all three, also whether a
+  significand had a digit that is not zero.
+- **A result and a flag.** `fn parse_val(text: &[u8], val: &mut i32) ->
+  bool` that stores once where it returns true is `-> Option<i32>`. Needs
+  every caller: the output is not read where the call fails.
+- **A reborrow that the parameter's type makes.** `print_house(&*house)`
+  and `copy_string(&mut *dest, src)` for an argument that is a `&mut`: the
+  call reborrows by itself. `as_deref_mut()` on an `Option` that nothing
+  reads again could take it.
+- **A vector of zeros that a loop fills.** `vec![0; n]` and then `ones[i] =
+  1` for every `i` is `vec![1; n]`, when the loop stores each element once
+  and nothing reads the vector before.
+- **A number that is only a truth.** A field that only ever gets 0 or 1 and
+  is only tested is a `bool`. Needs every store and read of it.
+- **A test before a loop with the same test.** `if s[at] != 0 { while s[at]
+  != 0 { … } }` where nothing is between them and the test has no effect.
+- **A test that is written twice in what `errno` after `pow` becomes**:
+  `base.is_finite() && exponent.is_finite()` belongs before the two cases
+  it holds for.
+
 ## Known weak spots
 
 Places where a rule assumes more than the analysis proves. Each should
