@@ -11,6 +11,11 @@
 //! runs after `unions`, so that no later stage sees a `void` pointer; it
 //! is in a file of its own.
 //!
+//! `places`, R62, reads a global pointer that never changes and that
+//! holds the address of a global, or of a part of one at a constant place,
+//! as that address: every use is the initialiser, and the pointer goes.
+//! It runs before the first analysis, so that no fact sees the pointer.
+//!
 //! `join` gives a local its first value where it is declared: C89 declares
 //! at the top of a block and assigns later, and Rust declares where the
 //! value is known. It needs no facts and runs before the first analysis.
@@ -56,6 +61,122 @@ use crate::c::{
 };
 use crate::facts::{Facts, Slot};
 use std::collections::HashSet;
+
+/// R62: replaces every use of a global pointer that is never assigned and
+/// whose address is never taken by the place its initialiser names, and
+/// reads `*&x` as `x`, `(&s)->a` as `s.a` and `&x[i]` as `x[i]`'s address.
+pub fn places(program: &mut Program) {
+    let mut changed = HashSet::new();
+    let mut mark = |expr: &Expr| {
+        match &expr.kind {
+            ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => {
+                if let ExprKind::Var(var) = target.kind {
+                    changed.insert(var);
+                }
+            }
+            ExprKind::AddrOf(place) => {
+                if let Some(var) = place.root_var() {
+                    changed.insert(var);
+                }
+            }
+            _ => {}
+        }
+        false
+    };
+    for function in &program.functions {
+        any_expr(&function.body, &program.vars, &mut mark);
+    }
+    for &global in &program.globals {
+        if let Some(init) = &program.vars[global].init {
+            init.any(&mut mark);
+        }
+    }
+    let fixed: Vec<(VarId, Expr)> = program
+        .globals
+        .iter()
+        .filter_map(|&global| {
+            let var = &program.vars[global];
+            let init = var.init.as_ref()?;
+            let named = |part: &Expr| matches!(part.kind, ExprKind::Var(v) if v == global);
+            (var.ty.is_pointer()
+                && var.ty.function().is_none()
+                && !changed.contains(&global)
+                && init.ty == var.ty
+                && !init.any(&mut |part| named(part))
+                && names_place(init, program))
+            .then(|| (global, init.clone()))
+        })
+        .collect();
+    if fixed.is_empty() {
+        return;
+    }
+    let replace = |expr: &mut Expr| {
+        if let ExprKind::Var(var) = expr.kind
+            && let Some((_, init)) = fixed.iter().find(|(global, _)| *global == var)
+        {
+            *expr = init.clone();
+        }
+    };
+    let simplify = |expr: &mut Expr| match &mut expr.kind {
+        ExprKind::Deref(inner) if matches!(inner.kind, ExprKind::AddrOf(_)) => {
+            let ExprKind::AddrOf(place) = std::mem::replace(&mut inner.kind, ExprKind::Zero) else {
+                unreachable!()
+            };
+            *expr = *place;
+        }
+        ExprKind::Member { base, arrow, .. }
+            if *arrow && matches!(base.kind, ExprKind::AddrOf(_)) =>
+        {
+            let ExprKind::AddrOf(place) = std::mem::replace(&mut base.kind, ExprKind::Zero) else {
+                unreachable!()
+            };
+            **base = *place;
+            *arrow = false;
+        }
+        _ => {}
+    };
+    let mut both = |expr: &mut Expr| {
+        replace(expr);
+        // The children are visited after the node: simplify at each level.
+        simplify(expr);
+    };
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        each_expr_mut(&mut body, &mut program.vars, &mut both);
+        program.functions[function].body = body;
+    }
+    let globals = program.globals.clone();
+    for global in globals {
+        if let Some(init) = &mut program.vars[global].init {
+            init.each_mut(&mut both);
+        }
+    }
+    program
+        .globals
+        .retain(|global| !fixed.iter().any(|(var, _)| var == global));
+}
+
+/// Whether the initialiser is the address of a global, or of a field or an
+/// element at a constant index of one: a place that stays where it is.
+fn names_place(init: &Expr, program: &Program) -> bool {
+    fn place(expr: &Expr, program: &Program) -> bool {
+        match &expr.kind {
+            ExprKind::Var(var) => program.vars[*var].kind.is_global(),
+            ExprKind::Member {
+                base, arrow: false, ..
+            } => place(base, program),
+            ExprKind::Index(base, index) => {
+                index.constant(program).is_some()
+                    && matches!(&base.kind, ExprKind::Decay(array) if place(array, program))
+            }
+            _ => false,
+        }
+    }
+    match &init.kind {
+        ExprKind::AddrOf(inner) | ExprKind::Decay(inner) => place(inner, program),
+        _ => false,
+    }
+}
 
 pub fn join(program: &mut Program) {
     for function in 0..program.functions.len() {

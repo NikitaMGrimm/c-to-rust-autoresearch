@@ -456,10 +456,62 @@ impl Reader<'_> {
         if decl["init"].is_string()
             && let Some(init) = children(decl).last()
         {
-            let init = self.expr(init)?;
+            let init = match self.literal_global(init, id, storage)? {
+                Some(init) => init,
+                None => self.expr(init)?,
+            };
             self.program.vars[id].init = Some(init);
         }
         Ok(id)
+    }
+
+    /// R62: the address of a record's compound literal that initialises a
+    /// global pointer is the address of a global of its own, named after
+    /// the pointer, that holds the literal's value.
+    fn literal_global(
+        &mut self,
+        init: &Value,
+        pointer: VarId,
+        storage: VarKind,
+    ) -> R<Option<Expr>> {
+        let init = unparen(init);
+        let is_address = kind(init) == "UnaryOperator" && text(init, "opcode") == "&";
+        let literal = match children(init) {
+            [literal] if is_address => unparen(literal),
+            _ => return Ok(None),
+        };
+        if !storage.is_global() || kind(literal) != "CompoundLiteralExpr" {
+            return Ok(None);
+        }
+        let ty = self.ty(literal)?;
+        if !matches!(ty, Type::Record(_)) {
+            return Ok(None);
+        }
+        self.literal_read = true;
+        let value = self.compound_literal(literal);
+        self.literal_read = false;
+        let value = value?;
+        self.program.vars.push(Var {
+            name: self.program.vars[pointer].name.clone(),
+            ty: ty.clone(),
+            init: Some(value),
+            len: None,
+            kind: storage,
+            at: at(literal),
+        });
+        let global = self.program.vars.len() - 1;
+        let place = self.program.globals.len() - 1;
+        self.program.globals.insert(place, global);
+        let var = Expr {
+            ty,
+            kind: ExprKind::Var(global),
+            at: at(literal),
+        };
+        Ok(Some(Expr {
+            ty: self.ty(init)?,
+            kind: ExprKind::AddrOf(Box::new(var)),
+            at: at(init),
+        }))
     }
 
     /// Ends a block: its names no longer mean its variables.

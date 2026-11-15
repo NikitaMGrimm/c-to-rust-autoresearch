@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, voids, join, ends, found -> facts -> same -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, voids, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, join, ends, found -> facts
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `places` replaces a global pointer that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -165,6 +165,18 @@ refuses with the reason instead:
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
 without it.
+
+A global pointer, or a `static` one of a function, that nothing assigns and
+whose address is never taken, and whose initialiser is the address of a
+global, of a field of one or of an element at a constant index, or an
+array of a global, is that place: `normalise::places` replaces each use by
+the initialiser and drops the pointer, so that `*p` reads `x` and `p->a`
+reads `s.a` (R62). The front end makes the address of a record's compound
+literal that initialises such a pointer the address of a global of its
+own, which has the pointer's name. Other global pointers are refused: one
+that changes or whose address is taken, because a global pointer is an
+owner and the address of a variable is none, and one that is NULL or has
+no initialiser.
 
 A local pointer that is declared without a value and never assigned counts
 as NULL: reading it is undefined in C, and `None` is a value that Rust can
@@ -480,6 +492,12 @@ place:
   that return a pointer (`strchr`, `strstr`, `strtok`), a width in `%s`, and above all a `String`
   for a buffer that the program only fills and reads as a whole, which
   needs a fact that says so.
+- **Global pointers.** A global pointer that is NULL and never changes
+  waits for a rule that reads each use as NULL; one that changes needs a
+  slot for a borrow of a global. The address of a compound literal other
+  than as a global pointer's initialiser, and of an array's, as a local's
+  initialiser or an argument, is refused: such a literal needs a variable
+  of its own where it is written.
 - **Input.** `scanf`, `fgets` and `fread` read through helpers over
   `std::io::stdin().lock()` that take a byte at a time, so that every way
   of reading shares what is left, as in C (`lower/input.rs`, and

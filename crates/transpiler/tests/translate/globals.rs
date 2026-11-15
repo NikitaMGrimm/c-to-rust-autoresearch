@@ -110,3 +110,68 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn a_global_pointer_that_never_changes_is_the_place_it_names() {
+    let rust = check(
+        "fixed-pointers",
+        r#"#include <stdio.h>
+struct gauge { int low; int high; };
+struct gauge dial = { 2, 11 };
+int steps[4] = { 5, 6, 7, 8 };
+int level = 3;
+int *lp = &level;
+int *upper = &dial.high;
+struct gauge *dp = &dial;
+int *row = steps;
+int *last = &steps[3];
+void raise(int by) { static int *keep = &level; *keep += by; }
+int main(int argc, char *argv[]) {
+    raise(argc * 4);
+    int sum = 0;
+    for (int i = 0; i < 4; i++) sum += row[i];
+    printf("%d %d %d %d %d\n", *lp, *upper, dp->low, sum, *last);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "static DIAL: Gauge = Gauge { low: 2, high: 11 };",
+            "globals.level += by;",
+            "sum += STEPS[i as usize];",
+            "println!(\"{} {} {} {} {}\", globals.level, DIAL.high, DIAL.low, sum, STEPS[3]);",
+        ],
+    );
+}
+
+#[test]
+fn a_record_literal_that_a_global_pointer_holds_is_a_global() {
+    let rust = check(
+        "literal-globals",
+        r#"#include <stdio.h>
+struct inner { int u; int v; };
+struct outer { struct inner in; int w; };
+struct inner *fixed = &(struct inner){ 7, 1 };
+struct outer *kept = &(struct outer){ .w = 4, .in = { .v = 9 } };
+int main(void) {
+    kept->w *= 3;
+    printf("%d %d %d %d %d\n", fixed->u, fixed->v, kept->in.u, kept->in.v, kept->w);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "static FIXED: Inner = Inner { u: 7, v: 1 };",
+            "kept: Outer {",
+            "globals.kept.w *= 3;",
+        ],
+    );
+}

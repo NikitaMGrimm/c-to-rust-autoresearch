@@ -303,3 +303,44 @@ fn a_walk_by_more_than_one_field_is_refused() {
         assert_eq!(translate(name, &c).unwrap_err(), reason);
     }
 }
+
+/// A global pointer is the place it names only while nothing changes it.
+#[test]
+fn a_global_pointer_that_changes_or_has_no_place_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    assert_eq!(
+        refused(
+            "moved-pointer",
+            "int one = 1, two = 2;\nint *at = &one;\nint main(void) {\n    at = &two;\n    return *at;\n}\n"
+        ),
+        "unsupported: the pointer `at`: it owns memory and also points into a variable, at line 2"
+    );
+    assert_eq!(
+        refused(
+            "taken-pointer",
+            "int one = 1;\nint *at = &one;\nvoid set(int **to) { **to = 4; }\nint main(void) {\n    set(&at);\n    return one;\n}\n"
+        ),
+        "unsupported: the pointer `at`: it owns memory and also points into a variable, at line 2"
+    );
+    assert_eq!(
+        refused(
+            "null-pointer",
+            "int *none = 0;\nint main(void) {\n    return none == 0;\n}\n"
+        ),
+        "unsupported: the global pointer `none` that never changes"
+    );
+    assert_eq!(
+        refused(
+            "array-literal",
+            "int *row = (int[]){ 1, 2 };\nint main(void) {\n    return row[1];\n}\n"
+        ),
+        "unsupported: a compound literal that is an array: no rule yet, at line 1"
+    );
+    assert_eq!(
+        refused(
+            "local-literal",
+            "struct two { int a; int b; };\nint main(void) {\n    struct two *t = &(struct two){ 1, 2 };\n    return t->a;\n}\n"
+        ),
+        "unsupported: a pointer to a compound literal: no rule yet, at line 3"
+    );
+}

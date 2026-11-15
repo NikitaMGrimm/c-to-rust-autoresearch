@@ -1258,3 +1258,29 @@ Entry format, newest last:
 - Changes: the front end reads a compound literal that is only read as its
   initialiser list with the literal's type; a place may be the field of
   such a value
+
+## R62: a global pointer that never changes is the place it names
+
+- C: a pointer at file scope, or `static` in a function, that nothing
+  assigns, increments or takes the address of, and whose initialiser is the
+  address of a global, of a field of one (`&s.in`), of an element at a
+  constant index (`&a[2]`), or a global array used as a pointer
+  (`int *p = table;`); a record's compound literal as such an initialiser,
+  `struct s *p = &(struct s){ 1, 2 };`, with designators and nested records
+- Rust: no pointer: every use is the place, so that `*p` is `x`, `p->a` is
+  `s.a` and `p[i]` is `table[i]` by R9's constants and the fields of
+  `Globals`; the compound literal is a global of its own that holds its
+  value, under the pointer's name (or the fallback that the names stage
+  gives a global whose name is taken), a constant or a field of `Globals`
+  where the program stores through the pointer
+- Needs: `normalise::places`, before the first analysis
+- Refused: a global pointer that changes or whose address is taken, `` the
+  pointer `p`: it owns memory and also points into a variable ``; one that
+  is NULL or has no initialiser, `` the global pointer `p` that never
+  changes ``, as before; the address of an array's compound literal, `` a
+  compound literal that is an array: no rule yet ``, and of a compound
+  literal anywhere else, `` a pointer to a compound literal: no rule yet ``
+- Motivation: programs outside the development set name a global through a
+  pointer that never changes; no development program needs it
+- Changes: R9 no longer sees such a pointer; R60's refusal of a compound
+  literal's address no longer holds for a global pointer's initialiser
