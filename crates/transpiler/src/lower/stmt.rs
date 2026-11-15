@@ -774,6 +774,14 @@ impl Lower<'_> {
             // A `static` local is a field of `Globals`.
             return Ok(Vec::new());
         }
+        // C lets an initialiser name the variable it initialises, which has
+        // no value yet unless only its address is taken; Rust has no such
+        // name there.
+        if init.is_some_and(|init| {
+            init.any(&mut |expr| matches!(expr.kind, ExprKind::Var(var) if var == id))
+        }) {
+            return unsupported("a variable that its own initialiser names", var.at);
+        }
         let name = rust::ident(self.names.var(id));
         let mutability: Option<syn::Token![mut]> = self.needs_mut(id).then(Default::default);
         if var.ty.is_pointer() {

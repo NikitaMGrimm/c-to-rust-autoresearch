@@ -257,3 +257,27 @@ fn an_enumerator_beyond_int_is_refused() {
     );
     crate::common::assert_lines(&rust, &["const FAR: i32 = 2147483647;"]);
 }
+
+/// C lets an initialiser name its own variable; `sizeof` of it reads
+/// nothing and stays.
+#[test]
+fn a_variable_that_its_own_initialiser_names_is_refused() {
+    let reason = "unsupported: a variable that its own initialiser names, at line 9";
+    for (name, init) in [
+        ("self-call", "struct cell *first = link(first, 4);"),
+        ("self-address", "struct cell *first = link(&*first, 4);"),
+    ] {
+        let c = format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct cell {{ int weight; struct cell *rest; }};\nstruct cell *link(struct cell *rest, int weight) {{\n    (void)rest;\n    struct cell *made = malloc(sizeof *made);\n    made->weight = weight;\n    made->rest = NULL;\n    return made;\n}}\nint main(void) {{\n    {init}\n    printf(\"%d\\n\", first->weight);\n    free(first);\n    return 0;\n}}\n"
+        );
+        let refused = translate(name, &c).unwrap_err();
+        assert_eq!(refused.replace("line 12", "line 9"), reason);
+    }
+    let rust = crate::common::check(
+        "self-sizeof",
+        "#include <stdio.h>\n#include <stdlib.h>\nint main(void) {\n    long *slots = malloc(3 * sizeof *slots);\n    unsigned long width = sizeof width;\n    slots[2] = 7;\n    printf(\"%ld %lu\\n\", slots[2], width);\n    free(slots);\n    return 0;\n}\n",
+        &[&[]],
+        "",
+    );
+    crate::common::assert_lines(&rust, &["let width: u64 = 8;"]);
+}
