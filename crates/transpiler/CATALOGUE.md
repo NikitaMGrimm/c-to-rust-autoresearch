@@ -182,7 +182,10 @@ Entry format, newest last:
   so the zero of a record in one is written out, `Pair { left: 0, right:
   0 }`; a global that never changes and whose zero only a function gives
   (an array of records that are not `Copy`, a field that owns one value)
-  is refused
+  is refused. Refused: a call that hands such a
+  function a pointer into a global that changes, unless the function only
+  reads the globals and nothing is stored through the pointer, since the
+  call borrows `Globals` as a whole beside it
 - Needs: `Facts::mutated`, `Facts::access`
 - Motivation: skeleton
 - Changes: none

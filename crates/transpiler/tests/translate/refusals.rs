@@ -137,3 +137,46 @@ fn a_variable_used_while_a_pointer_to_it_is_in_use_is_refused() {
         "unsupported: a variable that is used while a pointer to it is in use, at line 6"
     );
 }
+
+/// A function that uses the globals borrows `Globals` as a whole, so a
+/// pointer into a global that changes fits beside it only as a shared
+/// borrow beside `&Globals`.
+#[test]
+fn a_pointer_to_a_global_handed_to_a_function_that_uses_the_globals_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    let reason =
+        "unsupported: a pointer to a global handed to a function that uses the globals, at line 6";
+    // The callee changes a global and the pointer is stored through.
+    assert_eq!(
+        refused(
+            "global_both_written",
+            "int stock[3], moves;\nvoid shift(int *from) { from[0] = from[1]; moves++; }\nint main(void) {\n    stock[1] = 4;\n    moves = 0;\n    shift(stock);\n    return stock[0] + moves - 4;\n}\n"
+        ),
+        reason
+    );
+    // The callee changes a global and the pointer is only read.
+    assert_eq!(
+        refused(
+            "global_read_beside_written",
+            "int stock[3], moves;\nint shift(const int *from) { moves++; return from[1]; }\nint main(void) {\n    stock[1] = 4;\n    moves = 0;\n    int got = shift(stock);\n    return got + moves - 5;\n}\n"
+        ),
+        reason
+    );
+    // The callee only reads the globals and the pointer is stored through.
+    assert_eq!(
+        refused(
+            "global_written_beside_read",
+            "int stock[3], moves;\nvoid shift(int *from) { from[0] = from[1] + moves; }\nint main(void) {\n    stock[1] = 4;\n    moves = 1;\n    shift(stock);\n    return stock[0] - 5;\n}\n"
+        ),
+        reason
+    );
+    // Two pointers into one global, of which one is stored through, keep
+    // their own reason.
+    assert_eq!(
+        refused(
+            "global_twice",
+            "int stock[3];\nvoid shift(int *to, const int *from) { to[0] = from[0]; }\nint main(void) {\n    stock[1] = 4;\n    shift(stock, stock + 1);\n    return stock[0] - 4;\n}\n"
+        ),
+        "unsupported: two arguments that point into the same memory, one of them to store through, at line 5"
+    );
+}

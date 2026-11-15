@@ -77,3 +77,36 @@ int main(void) {
     );
     assert!(rust.contains("moved: Shelf::default()"));
 }
+
+/// A pointer into a global goes to a function that takes no globals, or
+/// as a shared borrow to one that only reads them.
+#[test]
+fn a_pointer_to_a_global_is_handed_on_beside_the_globals_it_fits() {
+    let rust = check(
+        "global_pointers",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int heap[4], left[4], used;
+void put(int *into, int value) { into[0] = value; into[1] = value * 2; }
+int peek(const int *from) { return from[1] + used; }
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    used = n;
+    put(heap, n);
+    put(left, n + 1);
+    printf("%d %d %d\n", peek(heap), peek(left), heap[0] + left[0]);
+    return 0;
+}
+"#,
+        &[&["3"], &["8"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "put(&mut globals.heap, n);",
+            "peek(globals, &globals.heap),",
+        ],
+    );
+}

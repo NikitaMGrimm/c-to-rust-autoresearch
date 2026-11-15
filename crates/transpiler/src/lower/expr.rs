@@ -838,6 +838,24 @@ impl Lower<'_> {
             }
             lent.push((position, memory, stores));
         }
+        // A global that changes is a field of `Globals`, which the callee
+        // borrows as a whole: beside `&Globals` only a shared borrow of a
+        // field fits, and beside `&mut Globals` none.
+        let access = self.facts.access(id);
+        for (_, memory, stores) in &lent {
+            let global = match memory.first() {
+                Some(Part::Var(var)) if !memory.contains(&Part::Target) => {
+                    program.vars[*var].kind.is_global() && self.facts.mutated(*var)
+                }
+                _ => false,
+            };
+            if global && (access == Access::Write || access == Access::Read && *stores) {
+                return unsupported(
+                    "a pointer to a global handed to a function that uses the globals",
+                    call.at,
+                );
+            }
+        }
         let mut values = Vec::new();
         if self.facts.access(id) != Access::None {
             values.push(rust::name("globals"));

@@ -135,19 +135,24 @@ between owners, `&mut *b` or `as_deref_mut()` from an owner to a borrow, and
 so on. What the borrow checker then rejects is refused by `rustc`, which is
 the intended division of work: the analysis picks types, the compiler proves
 them. Where a rule can see that the compiler will reject its translation, it
-refuses with the reason instead: a result that points to a local, two
-arguments of one call that point into the same memory when the function
-stores through one of them, and a local pointer to a variable of its
-function that is used after the variable itself was stored to since the
-pointer got its address, or read where the pointer is stored through
-(`Facts::in_use`). "After" is the order of the statements, with each
-branch of an `if` from the state before it and the body of a loop
-following itself; a pointer that gets the address from another pointer,
-or through a narrowing, is not followed. Two elements of one array of which one is
-before the other on every run are no such case: the array is split between
-them (R54). Where the two arguments are the same pointer,
-`normalise::same` first gives the call a copy of the function in which
-their parameters are one, which they are while the function runs.
+refuses with the reason instead:
+
+- a result that points to a local;
+- two arguments of one call that point into the same memory when the
+  function stores through one of them. Two elements of one array of which
+  one is before the other on every run are no such case: the array is
+  split between them (R54). Where the two arguments are the same pointer,
+  `normalise::same` first gives the call a copy of the function in which
+  their parameters are one, which they are while the function runs;
+- a pointer into a global that changes, handed to a function that takes
+  `&mut Globals`, or that takes `&Globals` and stores through the pointer;
+- a local pointer to a variable of its function that is used after the
+  variable itself was stored to since the pointer got its address, or
+  read where the pointer is stored through (`Facts::in_use`). "After" is
+  the order of the statements, with each branch of an `if` from the state
+  before it and the body of a loop following itself; a pointer that gets
+  the address from another pointer, or through a narrowing, is not
+  followed.
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
