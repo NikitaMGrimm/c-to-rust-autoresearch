@@ -789,10 +789,12 @@ impl Lower<'_> {
         })
     }
 
-    /// The statements of a function, whose last `return` is its value.
+    /// The statements of a function, whose last `return` is its value or,
+    /// with no value, needs no code.
     fn body(&mut self, stmts: &[Stmt]) -> R<Vec<syn::Stmt>> {
         let (rest, last) = match stmts.split_last() {
             Some((Stmt::Return(Some(value)), rest)) => (rest, Some(value)),
+            Some((Stmt::Return(None), rest)) => (rest, None),
             _ => (stmts, None),
         };
         let mut body = self.stmts(rest)?;

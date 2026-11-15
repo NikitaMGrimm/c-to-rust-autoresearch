@@ -576,3 +576,34 @@ int main(int argc, char **argv) {
         "unsupported: `continue` in a `switch` with a `break` in the middle of a `case`: no rule yet, at line 5"
     );
 }
+
+#[test]
+fn a_function_that_returns_nothing_ends_without_return() {
+    let rust = check(
+        "last_return",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+void show(int n) {
+    if (n < 0) {
+        puts("negative");
+        return;
+    }
+    printf("%d\n", n);
+    return;
+}
+int main(int argc, char *argv[]) {
+    show(atoi(argv[1]));
+    return 0;
+}
+"#,
+        &[&["3"], &["-2"]],
+        "",
+    );
+    // Only the `return` in the branch is left.
+    assert_eq!(
+        rust.lines().filter(|line| line.trim() == "return;").count(),
+        1,
+        "{rust}"
+    );
+}
