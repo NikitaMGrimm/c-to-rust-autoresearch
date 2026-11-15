@@ -108,6 +108,9 @@ impl Lower<'_> {
                 }
             },
             ExprKind::Call(callee, args) => {
+                if let Some(reads) = self.scan(expr)? {
+                    return self.scan_count(&reads);
+                }
                 // The macros that print have no value.
                 if let Some(name) = callee.function()
                     && self.program.function(name).is_none()

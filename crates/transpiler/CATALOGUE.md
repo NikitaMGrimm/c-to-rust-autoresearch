@@ -191,8 +191,9 @@ Entry format, newest last:
 
 - C: `scanf`, and `fscanf` on `stdin`, with a literal format of white space
   and `%d`, `%u` with `hh` or `h`, `%ld`, `%lld` and `%c`, each into a
-  variable of the conversion's size; the call as a statement, or its result
-  compared with its number of conversions. A pointer whose expression
+  variable of the conversion's size; the call as a statement, its result
+  compared with its number of conversions, and its result as any other
+  value. A pointer whose expression
   assigns or calls is refused, and so is a pointer after the first with an
   index that is computed: C finds every pointer before it reads, and the
   translation each one when it stores
@@ -202,11 +203,17 @@ Entry format, newest last:
   `if (scanf(…) != 1)` that leaves the block; `read_byte()` for `%c` and
   `skip_space()` for white space in the format that no number follows. The
   helpers read `std::io::stdin().lock()` a byte at a time and leave what a
-  conversion does not take, as C does
+  conversion does not take, as C does. The result as another value is the
+  count: a `match` on `scan_int_or_end()`, whose `Err(ScanError::End)` is
+  -1 and `Err(ScanError::NoMatch)` is 0, or `read_byte()` with -1, for the
+  first conversion, and `if let Some(…) … else { k }` for each later one,
+  with the `k` conversions stored before it
 - Needs: nothing
 - Motivation: `g1_040_storage_class_auto`, `g1_010_integer_overflow` and
   `g3_024_struct_and_static` were refused for `scanf` or `fscanf`; seven more
-  development programs read their input this way
+  development programs read their input this way. No development program
+  needs the count as another value; it was refused, as in `int n =
+  scanf(…)` and `scanf(…) != EOF`
 - Changes: none
 
 ## R12: a pointer that is never assigned

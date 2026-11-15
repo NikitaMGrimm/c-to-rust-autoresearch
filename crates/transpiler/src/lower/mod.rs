@@ -44,6 +44,8 @@ enum Helper {
     ReadByte,
     SkipSpace,
     ScanInt,
+    ScanError,
+    ScanIntOrEnd,
     ReadLine,
     ReadLineWithin,
     UntilNul,
@@ -81,9 +83,11 @@ impl Helper {
             | Helper::FindBytes
             | Helper::FindAny
             | Helper::PeekByte
+            | Helper::ScanError
             | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
+            Helper::ScanIntOrEnd => &[Helper::ScanError, Helper::ScanInt],
             Helper::ReadLine => &[Helper::ReadByte],
             Helper::ReadLineWithin => &[Helper::ReadLine, Helper::PeekByte],
             Helper::TextOf | Helper::CopyString | Helper::AppendAtMost => &[Helper::UntilNul],
@@ -379,6 +383,26 @@ impl Helper {
                         });
                     }
                     value
+                }
+            },
+            Helper::ScanError => parse_quote! {
+                /// Why `scanf` stored nothing: the input ended before the
+                /// conversion, or what is there is no number.
+                enum ScanError {
+                    End,
+                    NoMatch,
+                }
+            },
+            Helper::ScanIntOrEnd => parse_quote! {
+                /// As `scan_int`, and tells the end of standard input after
+                /// the white space from text that is no number, as the result
+                /// of `scanf` does.
+                fn scan_int_or_end() -> Result<i64, ScanError> {
+                    skip_space();
+                    if peek_byte().is_none() {
+                        return Err(ScanError::End);
+                    }
+                    scan_int().ok_or(ScanError::NoMatch)
                 }
             },
             Helper::ReadLine => parse_quote! {

@@ -338,8 +338,8 @@ or -1 (`EOF`) where the input ended before the first of them:
 
 | C | Rust, or the refusal |
 | --- | --- |
-| `scanf(…) == N`, `!= N` for the format's `N` conversions | `if let Some(…)`, `let Some(…) = … else` (R11) |
-| any other use of the value: `int n = scanf(…);`, `scanf(…) == EOF`, `!= EOF`, `< 1`, `> 0`, `>= 1`, `== 0`, `while (scanf(…) == 1)`, a `switch` on it, `return scanf(…);` | the count as a value: a block that reads each conversion in turn and gives the number stored, or -1 when the first found the end of the input, `{ match scan_int() { Scan::Value(v) => { x = v as i32; 1 } Scan::NoMatch => 0, Scan::End => -1 } }`; the helpers tell the end of the input from text that is no number |
+| `scanf(…) == N`, `!= N`, `>= N`, `< N`, `> N-1`, `<= N-1` for the format's `N` conversions, so `< 1` and `> 0` with one | `if let Some(…)`, `let Some(…) = … else` (R11) |
+| any other use of the value: `int n = scanf(…);`, `scanf(…) == EOF`, `!= EOF`, `> 0` with two, `== 1` with two, `== 0`, `while (scanf(…) != EOF)`, a `switch` on it, `return scanf(…);`, an argument | the count as a value (R11): `match scan_int_or_end() { Ok(scanned) => { x = scanned as i32; … 1 } Err(ScanError::End) => -1_i32, Err(ScanError::NoMatch) => 0 }` for a first number, `if let Some(scanned) = read_byte() { … } else { -1_i32 }` for a first `%c`, and `if let Some(…) = … { … } else { k }` for each later conversion, where `k` were stored before it; `scan_int_or_end` tells the end of the input after the white space from text that is no number |
 | a comparison of that value with a constant that decides it for every count (`scanf("%d", &x) < 5`) | the same block; nothing is folded |
 | `%c` at the end of the input, white space in the format | as R11; white space stores nothing and counts nothing |
 | `%*d`, `%s`, `%[`, `%n`, `%f`, a width | refused: no rule yet |
@@ -364,8 +364,7 @@ place:
   `std::io::stdin().lock()` that take a byte at a time, so that every way
   of reading shares what is left, as in C (`lower/input.rs`, and
   `read_line` in `library.rs`). `getchar`, `fread`, `%s` and `%f` belong
-  there too. The result of `scanf` has a rule only where it is compared
-  with the number of conversions: it is also -1 at the end of the input.
+  there too. The result of `scanf` is its count wherever it is a value.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result. The end
   pointer of the `strtol` family is the one case built (R21, R36), as a

@@ -222,9 +222,7 @@ impl<'e> Lower<'_> {
 
     /// The call of `scanf` whose result the condition compares with its
     /// number of conversions, and whether the condition holds when all of
-    /// them found a value. No other use of the result has a rule: it is
-    /// also -1 at the end of the input, which the helpers do not tell from
-    /// a conversion that found nothing.
+    /// them found a value. Other uses of the result need its count.
     pub(super) fn scan_test(&self, cond: &'e Expr) -> R<Option<(Vec<Read<'e>>, bool)>> {
         let ExprKind::Binary(op, left, right) = &cond.kind else {
             return Ok(None);
@@ -252,14 +250,59 @@ impl<'e> Lower<'_> {
             (BinOp::Ne | BinOp::Lt, Some(count)) if count == all => false,
             (BinOp::Gt, Some(count)) if count == all - 1 => true,
             (BinOp::Le, Some(count)) if count == all - 1 => false,
-            _ => {
-                return unsupported(
-                    "the result of `scanf` other than compared with its number of conversions",
-                    cond.at,
-                );
-            }
+            _ => return Ok(None),
         };
         Ok(Some((reads, found)))
+    }
+
+    /// The result of `scanf` as a value: the number of conversions that
+    /// stored, or -1 where the input ends before the first of them. Only
+    /// the first needs to tell the end of the input from text that is no
+    /// number; after it, both leave the count as it is.
+    pub(super) fn scan_count(&mut self, reads: &[Read]) -> R<syn::Expr> {
+        let name = rust::ident(SCANNED);
+        let mut stored = reads
+            .iter()
+            .filter(|read| matches!(read, Read::Value { .. }))
+            .count() as i128;
+        let mut inner = vec![syn::Stmt::Expr(rust::int(stored, ""), None)];
+        for read in reads.iter().rev() {
+            match read {
+                Read::Space => {
+                    self.helper(Helper::SkipSpace);
+                    inner.insert(0, parse_quote!(skip_space();));
+                }
+                Read::Value { helper, target } => {
+                    stored -= 1;
+                    let (call, store) = self.scanned(*helper, target)?;
+                    let then: syn::Block = parse_quote!({ #store #(#inner)* });
+                    let count = rust::int(stored, "");
+                    // `-1` has C's `int` as its type, also where the count
+                    // is cast to an unsigned type.
+                    let test: syn::Expr = match (stored, helper) {
+                        (0, Helper::ScanInt) => {
+                            self.helper(Helper::ScanIntOrEnd);
+                            parse_quote! {
+                                match scan_int_or_end() {
+                                    Ok(#name) => #then
+                                    Err(ScanError::End) => -1_i32,
+                                    Err(ScanError::NoMatch) => 0,
+                                }
+                            }
+                        }
+                        // `%c` finds nothing only at the end of the input.
+                        (0, _) => parse_quote!(if let Some(#name) = #call #then else { -1_i32 }),
+                        _ => parse_quote!(if let Some(#name) = #call #then else { #count }),
+                    };
+                    inner = vec![syn::Stmt::Expr(test, None)];
+                }
+            }
+        }
+        Ok(match (inner.pop(), inner.is_empty()) {
+            (Some(syn::Stmt::Expr(count, None)), true) => count,
+            (Some(last), _) => parse_quote!({ #(#inner)* #last }),
+            (None, _) => return unsupported("`scanf` without a conversion: no rule yet", 0),
+        })
     }
 
     /// Whether every conversion found a value, or whether one did not, as
