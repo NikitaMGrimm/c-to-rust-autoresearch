@@ -270,6 +270,10 @@ impl Lower<'_> {
     /// pointer that a test found not to be NULL.
     fn some(&mut self, var: VarId, source: &Expr) -> R<(syn::Pat, syn::Expr)> {
         let name = rust::ident(self.names.var(var));
+        // R47: a place that a search found is the index where it is one.
+        if source.ty == Type::Found {
+            return Ok((parse_quote!(Some(#name)), parse_quote!(#name)));
+        }
         let mutability: Option<syn::Token![mut]> = self.needs_mut(var).then(Default::default);
         let repr = self.repr(Slot::Var(var), source.at)?;
         let value = self.pointer(

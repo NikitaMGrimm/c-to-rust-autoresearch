@@ -973,7 +973,7 @@ impl<'a> Rewrite<'a> {
 
 /// The pointer to the element of a base at an index: `&base[index]`, or
 /// `base + index` for text.
-fn address(base: Expr, index: Expr, text: bool, at: u32) -> ExprKind {
+pub(super) fn address(base: Expr, index: Expr, text: bool, at: u32) -> ExprKind {
     match text {
         true => ExprKind::Binary(BinOp::Add, Box::new(base), Box::new(index)),
         false => ExprKind::AddrOf(Box::new(element(base, index, false, at))),
@@ -982,7 +982,7 @@ fn address(base: Expr, index: Expr, text: bool, at: u32) -> ExprKind {
 
 /// The element of a base at an index: `base[index]`, or `*(base + index)`
 /// for text.
-fn element(base: Expr, index: Expr, text: bool, at: u32) -> Expr {
+pub(super) fn element(base: Expr, index: Expr, text: bool, at: u32) -> Expr {
     let ty = base.ty.element().cloned().unwrap_or(Type::Void);
     let kind = match text {
         true => ExprKind::Deref(Box::new(Expr {
@@ -1005,7 +1005,7 @@ fn index_literal(value: i128, at: u32) -> Expr {
 
 /// A number of the C program as an index. C widens an offset to 64 bits
 /// first, which the conversion to an index does as well.
-fn as_index(number: &Expr, program: &Program) -> Expr {
+pub(super) fn as_index(number: &Expr, program: &Program) -> Expr {
     if let Some(value @ 0..) = number.constant(program) {
         return index_literal(value, number.at);
     }

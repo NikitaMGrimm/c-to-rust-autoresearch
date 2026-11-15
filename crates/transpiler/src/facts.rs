@@ -620,7 +620,10 @@ impl<'a> Walk<'a> {
                 then,
                 other,
             } => {
-                self.flow_of(source, Slot::Var(*var), true);
+                // A place that a search found (R47) is an index, no pointer.
+                if source.ty != Type::Found {
+                    self.flow_of(source, Slot::Var(*var), true);
+                }
                 self.expr(source);
                 self.stmts(then);
                 self.stmts(other);

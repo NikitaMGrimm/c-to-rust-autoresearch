@@ -771,3 +771,27 @@ Entry format, newest last:
   `drand48`, as before
 - Motivation: `g1_016_switch_arith` was refused for `srand`
 - Changes: nothing
+
+## R47: a place that a search found, used where it was found
+
+- C: a local pointer that only holds what `strchr`, `strrchr`, `memchr`,
+  `strstr` or `strpbrk` found in one array, or NULL, and that is used as a
+  pointer only in the branch of `if (p)`, `if (p != NULL)`, or the `else`
+  of `if (!p)`, `if (p == NULL)`: `*p`, `p[i]`, `p - array`, `p + n`, and
+  `p` handed on or returned
+- Rust: the local is the `Option<usize>` of R40, the test
+  `if let Some(p) = p`, and in that branch `array[p]`, `array[p + i]`,
+  `p as i64` and `&array[p + n..]`: an index beside the array, as a cursor
+  is (R24), so that the array stays usable beside it
+- Needs: `normalise::found`, which writes the `if` as `Stmt::IfSome` and the
+  uses as places in the array. The array is a local array or a pointer
+  that nothing assigns after its declaration, so that it is the same memory
+  at every use
+- Refused, as before, with `a place that a search found, used as a
+  pointer`: a use outside such a branch or under a test with `&&` or `||`,
+  a store to the pointer or `p++` in the branch, searches of two arrays or
+  of an offset (`strchr(s + 2, c)`) in one pointer, a search of a program
+  argument, a search that goes on from the result in a loop
+- Motivation: `g3_envy` reads where a colon was found, `g5_findrep` stores
+  through what `memchr` found
+- Changes: extends R40

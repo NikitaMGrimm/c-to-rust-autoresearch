@@ -121,37 +121,13 @@ fn a_search_whose_place_is_used_is_refused() {
     );
 }
 
-/// A local that keeps what a search found and uses it as a pointer, or a
-/// search that goes on from it, has no rule yet.
+/// A search that goes on from what it found has no rule yet.
 #[test]
-fn a_place_that_a_search_found_and_that_is_used_is_refused() {
-    let refused = |name, body: &str| {
-        let c = format!(
-            "#include <stdio.h>\n#include <string.h>\nint main(void) {{\n    char buf[8] = \"a,b,c\";\n{body}\n    return 0;\n}}\n"
-        );
-        translate(name, &c).unwrap_err()
-    };
-    let used = "unsupported: the pointer `p`: a place that a search found, used as a pointer: no rule yet, at line 5";
+fn a_search_that_goes_on_from_its_result_is_refused() {
+    let c = "#include <stdio.h>\n#include <string.h>\nint main(void) {\n    char buf[8] = \"a,b,c\";\n    char *p = strchr(buf, ',');\n    while (p) p = strchr(p + 1, ',');\n    return 0;\n}\n";
     assert_eq!(
-        refused(
-            "search_cut",
-            "    char *p = strchr(buf, ',');\n    if (p) *p = 0;"
-        ),
-        used
-    );
-    assert_eq!(
-        refused(
-            "search_again",
-            "    char *p = strchr(buf, ',');\n    while (p) p = strchr(p + 1, ',');"
-        ),
-        used
-    );
-    assert_eq!(
-        refused(
-            "search_offset",
-            "    char *p = strrchr(buf, ',');\n    if (p) printf(\"%ld\\n\", p - buf);"
-        ),
-        used
+        translate("search_again", c).unwrap_err(),
+        "unsupported: the pointer `p`: a place that a search found, used as a pointer: no rule yet, at line 5"
     );
 }
 
@@ -165,4 +141,105 @@ fn a_pointer_that_only_holds_null_stays_a_pointer() {
         "",
     );
     assert_lines(&rust, &["let q: Option<&str> = None;"]);
+}
+
+/// R47: a place that a search found is an index into the array in the
+/// branch where the test found it.
+#[test]
+fn a_found_place_is_an_index_where_its_test_holds() {
+    let rust = check(
+        "search_place",
+        r#"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+static void mark(char *str, int c) {
+    char *found = (char *)memchr(str, c, strlen(str));
+    if (found) {
+        *found = 'X';
+    }
+}
+static const char *rest(const char *s, int c) {
+    const char *at = strchr(s, c);
+    if (at) return at + 1;
+    return s;
+}
+int main(int argc, char *argv[]) {
+    char buffer[40];
+    if (argc != 2) return 2;
+    int c = atoi(argv[1]);
+    strcpy(buffer, "a text: with p in it: end");
+    char *at = strchr(buffer, c);
+    int where = -1;
+    if (at != NULL) {
+        where = (int)(at - buffer);
+        printf("%ld %c %d %s\n", at - buffer, *at, at[1], at + 1);
+        char *next = strchr(at + 1, c);
+        if (next) puts("again");
+    } else {
+        puts("none");
+    }
+    char *last = strrchr(buffer, c);
+    if (last == NULL) {
+        puts("no last");
+    } else {
+        *last = '#';
+        last[1] = '!';
+    }
+    mark(buffer, 't');
+    printf("%d %s|%s\n", where, buffer, rest(buffer, ':'));
+    return 0;
+}
+"#,
+        &[&["112"], &["122"], &["58"], &["97"], &["100"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "if let Some(found) = found {",
+            "str[found] = b'X';",
+            "return &s[at + 1..];",
+            "if let Some(at) = at {",
+            "where_ = at as i64 as i32;",
+            "if let Some(last) = last {",
+            "buffer[last] = b'#';",
+            "buffer[last + 1] = b'!';",
+        ],
+    );
+    let refused = |name: &str, body: &str| {
+        let c = format!(
+            "#include <stdio.h>\n#include <string.h>\nint main(int argc, char *argv[]) {{\n    char buf[8] = \"a,b\";\n    char two[8] = \"c,d\";\n{body}\n    return argc;\n}}\n"
+        );
+        translate(name, &c).unwrap_err()
+    };
+    let place = |line: u32| {
+        format!(
+            "unsupported: the pointer `p`: a place that a search found, used as a pointer: no rule yet, at line {line}"
+        )
+    };
+    for (name, body) in [
+        (
+            "place_outside",
+            "    char *p = strchr(buf, ',');\n    if (p) puts(\"found\");\n    if (argc > 5) putchar(*p);",
+        ),
+        (
+            "place_and",
+            "    char *p = strchr(buf, ',');\n    if (p && p[1] == 'b') puts(\"found\");",
+        ),
+        (
+            "place_moved",
+            "    char *p = strchr(buf, ',');\n    if (p) { p++; puts(p); }",
+        ),
+        (
+            "place_two",
+            "    char *p = strchr(buf, ',');\n    if (!p) p = strchr(two, ',');\n    if (p) puts(p);",
+        ),
+        (
+            "place_offset",
+            "    char *p = strchr(buf + 1, ',');\n    if (p) printf(\"%ld\\n\", p - buf);",
+        ),
+    ] {
+        assert_eq!(refused(name, body), place(6), "{name}");
+    }
 }
