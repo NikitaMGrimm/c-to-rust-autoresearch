@@ -141,8 +141,8 @@ impl Lower<'_> {
         Ok(())
     }
 
-    /// R21: `strtol` with an end pointer gives the number and the index
-    /// in the text where it ends.
+    /// R21: `strtol` and its like with an end pointer give the number and
+    /// the index in the text where it ends.
     fn parse(
         &mut self,
         number: Option<VarId>,
@@ -151,12 +151,17 @@ impl Lower<'_> {
         start: Option<&(Expr, VarId)>,
     ) -> R<Vec<syn::Stmt>> {
         let at = call.at;
-        let (text, base) = match &call.kind {
-            ExprKind::Call(_, args) if args.len() == 3 => (&args[0], &args[2]),
-            _ => return unsupported("this call of the library's `strtol`: no rule yet", at),
+        let (name, text, base) = match &call.kind {
+            ExprKind::Call(callee, args) => {
+                (callee.function().unwrap_or_default(), &args[0], args.get(2))
+            }
+            _ => return unsupported("this call of the library: no rule yet", at),
         };
-        if base.constant(self.program) != Some(10) {
-            return unsupported("this call of the library's `strtol`: no rule yet", at);
+        if base.is_some_and(|base| base.constant(self.program) != Some(10)) {
+            return unsupported(
+                format!("this call of the library's `{name}`: no rule yet"),
+                at,
+            );
         }
         if self.program.vars[end].ty != Type::Index {
             return unsupported(
@@ -165,6 +170,21 @@ impl Lower<'_> {
             );
         }
         let text = self.text(text, true)?;
+        let parsed: syn::Expr = match name {
+            "strtoul" | "strtoull" => {
+                self.helper(Helper::ParseUintPrefix);
+                parse_quote!(parse_uint_prefix(#text))
+            }
+            "strtod" | "strtof" => {
+                let ty = self.ty(&call.ty, at)?;
+                self.helper(Helper::ParseFloatPrefix);
+                parse_quote!(parse_float_prefix::<#ty>(#text))
+            }
+            _ => {
+                self.helper(Helper::ParseIntPrefix);
+                parse_quote!(parse_int_prefix(#text))
+            }
+        };
         // A variable that nothing reads gets no name.
         let body = match self.function {
             Some(function) => self.program.functions[function].body.as_slice(),
@@ -190,15 +210,14 @@ impl Lower<'_> {
         };
         let number = pattern(self, number);
         let end = pattern(self, Some(end));
-        self.helper(Helper::ParseIntPrefix);
         Ok(match start {
-            None => vec![parse_quote!(let (#number, #end) = parse_int_prefix(#text);)],
+            None => vec![parse_quote!(let (#number, #end) = #parsed;)],
             // The helper counts from where it starts to read.
             Some((start, read)) => {
                 let read = rust::ident(self.names.var(*read));
                 let start = self.expr(start)?;
                 vec![
-                    parse_quote!(let (#number, #read) = parse_int_prefix(#text);),
+                    parse_quote!(let (#number, #read) = #parsed;),
                     parse_quote!(let #end: usize = #start + #read;),
                 ]
             }

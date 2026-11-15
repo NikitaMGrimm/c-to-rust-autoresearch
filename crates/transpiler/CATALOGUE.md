@@ -608,3 +608,22 @@ Entry format, newest last:
   and its bits through a union, as do `g5_memchra2` and `g5_agglom`, which
   are refused next for other constructs
 - Changes: nothing
+
+## R36: where `strtoul`'s and `strtod`'s numbers end
+
+- C: `strtoul` and `strtoull` in base 10, `strtod` and `strtof`, with
+  `&end` as R21 has it for `strtol`; a first value of the end without an
+  effect, `char *end = text;` or `end = NULL;` as a statement, that nothing
+  reads before the next call
+- Rust: `let (n, end) = parse_uint_prefix(&args[1]);` and
+  `let (d, end) = parse_float_prefix::<f64>(&args[1]);`, helpers that also
+  return the index where the number ends, 0 when the text starts with
+  none; `parse_float_prefix` reads `nan(chars)` to its `)`, and
+  `parse_float` is its first result. The store of the first value is
+  dropped. Refused: a read of the end before the first call or after such
+  a store, a store of it inside a larger expression, another base
+- Needs: `normalise::ends`, which takes these calls as it takes `strtol`
+- Motivation: `g1_007_errno_pow` and `g1_016_switch_arith` read where
+  `strtod` and `strtoul` stopped, and `g3_023_struct_and_errno` gives the end
+  the text as its first value
+- Changes: extends R17, R18 and R21

@@ -118,7 +118,10 @@ impl Lower<'_> {
             }
             // R21 covers an end pointer where `normalise::ends` made the
             // call a statement of its own.
-            ("strtol" | "strtoll", [_, end, _]) if !matches!(end.uncast().kind, ExprKind::Null) => {
+            ("strtol" | "strtoll" | "strtoul" | "strtoull", [_, end, _])
+            | ("strtod" | "strtof", [_, end])
+                if !matches!(end.uncast().kind, ExprKind::Null) =>
+            {
                 unsupported(
                     "an end pointer other than a local `char *` that one call sets before each read: no rule yet",
                     at,

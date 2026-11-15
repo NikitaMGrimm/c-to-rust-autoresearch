@@ -68,6 +68,8 @@ const RESERVED: &[&str] = &[
     "store_text_cut",
     "store_text_within",
     "parse_int_prefix",
+    "parse_uint_prefix",
+    "parse_float_prefix",
     "copy_string",
     "append_string",
     "append_at_most",

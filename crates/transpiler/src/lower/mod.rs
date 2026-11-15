@@ -31,7 +31,9 @@ enum Helper {
     ParseInt,
     ParseIntPrefix,
     ParseUint,
+    ParseUintPrefix,
     ParseFloat,
+    ParseFloatPrefix,
     FormatE,
     FormatG,
     PeekByte,
@@ -59,7 +61,7 @@ impl Helper {
         match self {
             Helper::ParseInt
             | Helper::ParseUint
-            | Helper::ParseFloat
+            | Helper::ParseFloatPrefix
             | Helper::FormatE
             | Helper::CopyText
             | Helper::StoreText
@@ -75,6 +77,8 @@ impl Helper {
             Helper::TextOf | Helper::CopyString | Helper::AppendAtMost => &[Helper::UntilNul],
             Helper::AppendString => &[Helper::UntilNul, Helper::CopyString],
             Helper::ParseIntPrefix => &[Helper::ParseInt],
+            Helper::ParseUintPrefix => &[Helper::ParseUint],
+            Helper::ParseFloat => &[Helper::ParseFloatPrefix],
             Helper::FormatG => &[Helper::FormatE],
             Helper::StoreTextWithin => &[Helper::StoreTextCut],
         }
@@ -148,14 +152,36 @@ impl Helper {
                     }
                 }
             },
+            Helper::ParseUintPrefix => parse_quote! {
+                /// As `parse_uint`, with the index in `text` where the number
+                /// ends, as C's `strtoull` sets its end pointer: 0 if the text
+                /// starts with no number.
+                fn parse_uint_prefix(text: &str) -> (u64, usize) {
+                    let trimmed = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
+                    let unsigned = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
+                    let digits = unsigned.bytes().take_while(u8::is_ascii_digit).count();
+                    match digits {
+                        0 => (0, 0),
+                        _ => (parse_uint(text), text.len() - unsigned.len() + digits),
+                    }
+                }
+            },
             Helper::ParseFloat => parse_quote! {
                 /// The number at the start of `text` as C's `strtod` reads a
-                /// decimal number: white space, a sign, then digits with a
-                /// point and an exponent, or `inf` or `nan`. It is 0 without a
-                /// number.
+                /// decimal number. It is 0 without a number.
                 fn parse_float<T: std::str::FromStr + Default>(text: &str) -> T {
-                    let text = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
-                    let bytes = text.as_bytes();
+                    parse_float_prefix(text).0
+                }
+            },
+            Helper::ParseFloatPrefix => parse_quote! {
+                /// The number at the start of `text` as C's `strtod` reads a
+                /// decimal number: white space, a sign, then digits with a
+                /// point and an exponent, or `inf` or `nan`, and the index in
+                /// `text` where it ends. It is 0 and 0 without a number.
+                fn parse_float_prefix<T: std::str::FromStr + Default>(text: &str) -> (T, usize) {
+                    let trimmed = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
+                    let skipped = text.len() - trimmed.len();
+                    let bytes = trimmed.as_bytes();
                     let digits = |from: usize| {
                         bytes[from..]
                             .iter()
@@ -172,7 +198,19 @@ impl Helper {
                         .into_iter()
                         .find(|word| starts(end, word))
                     {
-                        return text[..end + word.len()].parse().unwrap_or_default();
+                        let value = trimmed[..end + word.len()].parse().unwrap_or_default();
+                        end += word.len();
+                        // `nan(chars)` is a NaN too.
+                        if word == "nan" && bytes.get(end) == Some(&b'(') {
+                            let chars = bytes[end + 1..]
+                                .iter()
+                                .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+                                .count();
+                            if bytes.get(end + 1 + chars) == Some(&b')') {
+                                end += chars + 2;
+                            }
+                        }
+                        return (value, skipped + end);
                     }
                     let whole = digits(end);
                     end += whole;
@@ -181,7 +219,7 @@ impl Helper {
                         _ => 0,
                     };
                     if whole + fraction == 0 {
-                        return T::default();
+                        return (T::default(), 0);
                     }
                     if bytes.get(end) == Some(&b'.') {
                         end += 1 + fraction;
@@ -193,7 +231,7 @@ impl Helper {
                             end += 1 + sign + exponent;
                         }
                     }
-                    text[..end].parse().unwrap_or_default()
+                    (trimmed[..end].parse().unwrap_or_default(), skipped + end)
                 }
             },
             Helper::FormatE => parse_quote! {

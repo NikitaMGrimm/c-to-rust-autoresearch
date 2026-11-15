@@ -321,8 +321,8 @@ becomes `Stmt::Parse` with a variable for the error, and each read of
 
 | C | Rust, or the refusal |
 | --- | --- |
-| `strtoul`, `strtoull`, `strtod`, `strtof` with `&end` | `parse_uint_prefix`, `parse_float_prefix::<f64>`, as `strtol` |
-| `char *end = text;` or `end = NULL;` before the call, with nothing reading it between | the store is dropped: the call always stores the end |
+| `strtoul`, `strtoull`, `strtod`, `strtof` with `&end` | `parse_uint_prefix`, `parse_float_prefix::<f64>`, as `strtol` (R36) |
+| `char *end = text;` or `end = NULL;` before the call, with nothing reading it between | the store is dropped: the call always stores the end (R36) |
 | the end read before any call, or stored by anything else and then read | refused |
 | a base other than 10: a constant 0, 8 or 16, or a variable | refused: no rule yet |
 | an end in a field, a global or a parameter (`char **out`) | refused: a pointer to a pointer |
@@ -363,11 +363,10 @@ place:
   with the number of conversions: it is also -1 at the end of the input.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result. The end
-  pointer of `strtol` is the one case built (R21), as a second result of
-  the call (see Cursors above). `strtoul` and `strtod` wait for the same
-  rule, as do an end in `argv[i]` for an `i` that changes, which needs the
-  argument in a variable of its own, and `errno`, which should become a
-  result of the helper rather than a global.
+  pointer of the `strtol` family is the one case built (R21, R36), as a
+  second result of the call (see Cursors above). An end in `argv[i]` for an
+  `i` that changes waits for the same rule, which needs the argument in a
+  variable of its own.
 - **Cursors that may be NULL.** A cursor is an index (see Cursors above). One
   that NULL reaches, or that a library function returns (`strchr`,
   `memchr`, `strstr`), should be an `Option<usize>` from `position`; a

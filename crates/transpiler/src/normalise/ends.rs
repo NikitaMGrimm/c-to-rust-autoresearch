@@ -12,7 +12,18 @@
 use crate::c::{Expr, ExprKind, Program, Stmt, Type, Var, VarId, VarKind, any_expr, each_expr_mut};
 
 /// The library functions whose end pointer has a rule.
-const PARSERS: [&str; 2] = ["strtol", "strtoll"];
+pub const PARSERS: [&str; 6] = [
+    "strtol", "strtoll", "strtoul", "strtoull", "strtod", "strtof",
+];
+
+/// The number of arguments of a parser: the text, the end and, for the
+/// integers, the base.
+fn arity(name: &str) -> usize {
+    match name {
+        "strtod" | "strtof" => 2,
+        _ => 3,
+    }
+}
 
 pub fn ends(program: &mut Program) {
     for function in 0..program.functions.len() {
@@ -75,8 +86,7 @@ fn parser_call(expr: &Expr, end: VarId) -> bool {
         ExprKind::Call(callee, args) => {
             callee
                 .function()
-                .is_some_and(|name| PARSERS.contains(&name))
-                && args.len() == 3
+                .is_some_and(|name| PARSERS.contains(&name) && args.len() == arity(name))
                 && is_address(&args[1], end)
         }
         _ => false,
@@ -92,31 +102,56 @@ fn names(expr: &Expr, var: VarId) -> bool {
     expr.any(&mut |part| matches!(part.kind, ExprKind::Var(named) if named == var))
 }
 
-/// Whether the variable is a local `char *` that only such calls set.
+/// Whether the statement stores a value without an effect in the end, as
+/// `end = NULL;` or `end = text;` do before a call.
+fn is_dead_store(stmt: &Stmt, end: VarId) -> bool {
+    matches!(stmt, Stmt::Expr(Expr { kind: ExprKind::Assign { op: None, target, value }, .. })
+        if matches!(target.kind, ExprKind::Var(named) if named == end) && value.is_pure())
+}
+
+/// The number of such stores among the statements, at any depth.
+fn dead_stores(stmts: &[Stmt], end: VarId) -> usize {
+    stmts
+        .iter()
+        .map(|stmt| match stmt {
+            Stmt::Block(body)
+            | Stmt::While(_, body)
+            | Stmt::DoWhile(body, _)
+            | Stmt::Switch(_, body) => dead_stores(body, end),
+            Stmt::If(_, then, other) => dead_stores(then, end) + dead_stores(other, end),
+            Stmt::For { init, body, .. } => dead_stores(init, end) + dead_stores(body, end),
+            stmt => usize::from(is_dead_store(stmt, end)),
+        })
+        .sum()
+}
+
+/// Whether the variable is a local `char *` that only such calls set,
+/// apart from first values without an effect, which a read before the
+/// first call would see and which are dropped where nothing reads them.
 fn is_end(body: &[Stmt], vars: &[Var], end: VarId) -> bool {
     let var = &vars[end];
-    let unset = match &var.init {
-        None => true,
-        Some(init) => matches!(init.uncast().kind, ExprKind::Null),
-    };
+    let unset = var.init.as_ref().is_none_or(Expr::is_pure);
     if var.kind != VarKind::Local || var.ty != Type::Pointer(Box::new(Type::Char)) || !unset {
         return false;
     }
-    let (mut addresses, mut calls, mut assigned) = (0, 0, false);
+    let (mut addresses, mut calls, mut stores, mut stepped) = (0, 0, 0, false);
     any_expr(body, vars, &mut |expr| {
         match &expr.kind {
             ExprKind::AddrOf(place) if matches!(place.kind, ExprKind::Var(named) if named == end) => {
                 addresses += 1
             }
             ExprKind::Call(..) if parser_call(expr, end) => calls += 1,
-            ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } if matches!(target.kind, ExprKind::Var(named) if named == end) => {
-                assigned = true
+            ExprKind::Assign { target, .. } if matches!(target.kind, ExprKind::Var(named) if named == end) => {
+                stores += 1
+            }
+            ExprKind::IncDec { target, .. } if matches!(target.kind, ExprKind::Var(named) if named == end) => {
+                stepped = true
             }
             _ => {}
         }
         false
     });
-    calls > 0 && addresses == calls && !assigned
+    calls > 0 && addresses == calls && !stepped && stores == dead_stores(body, end)
 }
 
 struct Ends<'a> {
@@ -136,8 +171,13 @@ impl Ends<'_> {
         let end = self.end;
         let mut index = 0;
         while index < stmts.len() {
-            if matches!(stmts[index], Stmt::Decl(var) if var == end) {
+            if matches!(stmts[index], Stmt::Decl(var) if var == end)
+                || is_dead_store(&stmts[index], end)
+            {
+                // What the store left is read nowhere: a read before the
+                // next call finds no `current` and fails.
                 stmts.remove(index);
+                current = None;
                 continue;
             }
             if matches!(stmts[index], Stmt::Case(_) | Stmt::Default) {
@@ -225,6 +265,12 @@ impl Ends<'_> {
         let end = self.end;
         let mut failed = false;
         each_expr_mut(stmts, &mut self.vars, &mut |expr| {
+            // A store that is not a statement of its own.
+            if let ExprKind::Assign { target, .. } = &expr.kind
+                && matches!(target.kind, ExprKind::Var(named) if named == end)
+            {
+                failed = true;
+            }
             if matches!(expr.kind, ExprKind::Var(named) if named == end) {
                 match current {
                     Some(current) => expr.kind = ExprKind::Var(current),
@@ -273,7 +319,7 @@ impl Ends<'_> {
         let ExprKind::Call(_, args) = &mut under_casts(value).kind else {
             return false;
         };
-        let pure = args[0].is_pure() && !names(&args[2], end);
+        let pure = args[0].is_pure() && !args[2..].iter().any(|base| names(base, end));
         args[1].kind = ExprKind::Null;
         // The text may be the end of the call before, and is read before
         // this call sets its own.

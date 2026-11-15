@@ -99,7 +99,7 @@ pub struct Facts {
 
 /// Library functions that store through a pointer argument, with the first
 /// such argument and whether all later ones are stored through too.
-const STORES: [(&str, usize, bool); 16] = [
+const STORES: [(&str, usize, bool); 20] = [
     ("scanf", 1, true),
     ("sscanf", 2, true),
     ("fscanf", 2, true),
@@ -116,6 +116,10 @@ const STORES: [(&str, usize, bool); 16] = [
     ("fread", 0, false),
     ("strtol", 1, false),
     ("strtoll", 1, false),
+    ("strtoul", 1, false),
+    ("strtoull", 1, false),
+    ("strtod", 1, false),
+    ("strtof", 1, false),
 ];
 
 /// The library functions whose result is fresh memory that `free` takes.

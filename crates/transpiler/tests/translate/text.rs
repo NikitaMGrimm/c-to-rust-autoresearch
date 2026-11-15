@@ -453,3 +453,73 @@ int main(void) {
         ],
     );
 }
+
+#[test]
+fn strtoul_and_strtod_say_where_their_numbers_end() {
+    // A first value of the end that nothing reads is dropped.
+    let rust = check(
+        "strtoul-strtod-end",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    if (argc != 3) return 2;
+    char *end = argv[1];
+    unsigned long n = strtoul(argv[1], &end, 10);
+    printf("%lu [%s]\n", n, end);
+    end = NULL;
+    double d = strtod(argv[2], &end);
+    float f = strtof(end, &end);
+    if (end == argv[2]) puts("no number");
+    printf("%g %.9g [%s]\n", d, f, end);
+    return 0;
+}
+"#,
+        &[
+            &["12", "1.5 2.5"],
+            &["", "x"],
+            &["-1x", " -2e3inf"],
+            &["18446744073709551616", "1e400 1e-50"],
+            &["  7", "nan(12)z"],
+            &["+3", "1e 2."],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let (n, end) = parse_uint_prefix(&args[1]);",
+            "let (d, end) = parse_float_prefix::<f64>(&args[2]);",
+            "let (f, read) = parse_float_prefix::<f32>(&args[2][end..]);",
+            "let end: usize = end + read;",
+        ],
+    );
+    let refused = |name, c| translate(name, c).unwrap_err();
+    // The end read before the call, or after a store of its own.
+    for (name, line, c) in [
+        (
+            "end-read-first",
+            6,
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    char *end = argv[1];\n    puts(end);\n    double d = strtod(argv[1], &end);\n    printf(\"%g %s\\n\", d, end);\n    return 0;\n}\n",
+        ),
+        (
+            "end-read-after-store",
+            5,
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    char *end;\n    double d = strtod(argv[1], &end);\n    end = argv[1];\n    printf(\"%g %s\\n\", d, end);\n    return 0;\n}\n",
+        ),
+    ] {
+        assert_eq!(
+            refused(name, c),
+            format!(
+                "unsupported: an end pointer other than a local `char *` that one call sets before each read: no rule yet, at line {line}"
+            )
+        );
+    }
+    assert_eq!(
+        refused(
+            "strtoul-base",
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    char *end;\n    unsigned long n = strtoul(argv[1], &end, 16);\n    printf(\"%lu %s\\n\", n, end);\n    return 0;\n}\n"
+        ),
+        "unsupported: this call of the library's `strtoul`: no rule yet, at line 5"
+    );
+}
