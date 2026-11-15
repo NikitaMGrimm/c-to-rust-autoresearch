@@ -12,19 +12,35 @@ use std::process::Command;
 /// hidden too: the sockets of the user's systemd and D-Bus, Docker and WSL's
 /// interop there would each start a process outside the sandbox.
 pub(crate) fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) -> Command {
+    // TMPDIR may put the temporary directory elsewhere than /tmp.
+    let temp = std::env::temp_dir();
+    hiding(
+        &temp.canonicalize().unwrap_or(temp),
+        inner,
+        readable,
+        writable,
+    )
+}
+
+/// `sandboxed` for the temporary directory `temp`.
+fn hiding(temp: &Path, inner: &Command, readable: &[&Path], writable: &Path) -> Command {
     let mut command = Command::new("bwrap");
     command.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
     command.args(["--tmpfs", "/tmp", "--tmpfs", "/run"]);
     if let Some(home) = std::env::var_os("HOME") {
         command.arg("--tmpfs").arg(home);
     }
-    // TMPDIR may put the temporary directory elsewhere than /tmp.
-    let temp = std::env::temp_dir();
-    let temp = temp.canonicalize().unwrap_or(temp);
+    // A readable directory around the temporary directory comes first, or
+    // its bind would show the temporary directory again.
+    let around =
+        |path: &&&Path| temp.starts_with(path.canonicalize().unwrap_or(path.to_path_buf()));
+    for path in readable.iter().filter(around) {
+        command.arg("--ro-bind").arg(path).arg(path);
+    }
     if temp != Path::new("/tmp") {
         command.arg("--tmpfs").arg(temp);
     }
-    for path in readable {
+    for path in readable.iter().filter(|path| !around(path)) {
         command.arg("--ro-bind").arg(path).arg(path);
     }
     command.arg("--bind").arg(writable).arg(writable);
@@ -54,4 +70,30 @@ pub(crate) fn toolchain() -> Vec<PathBuf> {
         .chain([rustup_home])
         .filter(|path| path.exists())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_readable_directory_around_the_temporary_directory_does_not_show_it() {
+        let dir = crate::Scratch::new("test").unwrap();
+        let (temp, out) = (dir.join("tmp"), dir.join("out"));
+        for dir in [&temp, &out] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let (hidden, shown) = (temp.join("program.c"), dir.join("tool"));
+        for file in [&hidden, &shown] {
+            std::fs::write(file, "").unwrap();
+        }
+        let reads = |file: &Path| {
+            let mut cat = Command::new("cat");
+            cat.arg(file);
+            let status = hiding(&temp, &cat, &[&dir], &out).status().unwrap();
+            status.success()
+        };
+        assert!(reads(&shown));
+        assert!(!reads(&hidden));
+    }
 }
