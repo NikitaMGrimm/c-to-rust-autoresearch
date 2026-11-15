@@ -767,7 +767,10 @@ Entry format, newest last:
   `void *` or to an integer, a function without a prototype or with
   variable arguments, the address of a library function and one handed
   to the library, a pointer to a pointer to a function, `sizeof` of one,
-  and an array of them that holds NULL
+  an array of them into which a pointer that may be NULL is stored, and a
+  call through one whose class changes the globals with an argument that
+  uses them too, `f(f(x))`, since Rust lends `globals` to the outer call
+  while its arguments run
 - Motivation: `g5_mathop` and `g5_charinbuf` call functions through
   pointers of a `typedef`; they are refused next for `time` and for the
   result of `memchr`

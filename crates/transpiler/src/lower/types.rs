@@ -217,7 +217,7 @@ impl Lower<'_> {
                     let repr = self.repr(slot, init.at)?;
                     self.pointer(init, repr)
                 }
-                None if ty.function().is_some() => self.function_value(init, false),
+                None if ty.function().is_some() => self.element_value(init),
                 None => unsupported("a pointer in an array", init.at),
             },
             (Type::Record(id), ExprKind::InitList(items)) => {

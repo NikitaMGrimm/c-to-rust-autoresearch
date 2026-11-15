@@ -47,6 +47,18 @@ impl Lower<'_> {
         })
     }
 
+    /// A pointer to a function for an element of an array, which holds no
+    /// NULL.
+    pub(super) fn element_value(&mut self, value: &Expr) -> R<syn::Expr> {
+        if self.facts.truth(self.program, value) != Some(true) {
+            return unsupported(
+                "a pointer to a function that may be NULL in an array",
+                value.at,
+            );
+        }
+        self.function_value(value, false)
+    }
+
     /// A pointer to a function as the value of a place that holds one, in
     /// `Option` if NULL may reach the place.
     pub(super) fn function_value(&mut self, value: &Expr, nullable: bool) -> R<syn::Expr> {
@@ -134,7 +146,33 @@ impl Lower<'_> {
             .iter()
             .map(|arg| self.typed(arg))
             .collect::<R<Vec<_>>>()?;
-        if self.facts.class_access(function) != Access::None {
+        let access = self.facts.class_access(function);
+        if access != Access::None {
+            // Rust lends `globals` to the call while its arguments run.
+            let lends = |arg: &Expr| {
+                arg.any(&mut |expr| {
+                    let ExprKind::Call(callee, _) = &expr.kind else {
+                        return false;
+                    };
+                    let inner = match callee.function() {
+                        Some(name) => self
+                            .program
+                            .function(name)
+                            .map_or(Access::None, |id| self.facts.access(id)),
+                        None => callee
+                            .ty
+                            .function()
+                            .map_or(Access::None, |ty| self.facts.class_access(ty)),
+                    };
+                    inner != Access::None && access.max(inner) == Access::Write
+                })
+            };
+            if args.iter().any(lends) {
+                return unsupported(
+                    "a call through a pointer whose arguments use the globals that it changes",
+                    call.at,
+                );
+            }
             values.insert(0, rust::name("globals"));
         }
         Ok(rust::call_value(target, values))
