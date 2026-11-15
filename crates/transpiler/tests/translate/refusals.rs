@@ -203,3 +203,30 @@ fn an_owner_used_after_it_was_moved_is_refused() {
         reason
     );
 }
+
+/// A global owner that hands its memory to another owner is `None`
+/// afterwards, where C still reads the pointer.
+#[test]
+fn a_global_owner_used_after_it_was_moved_is_refused() {
+    let shelf = |take: &str| {
+        format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct plate {{ int size; struct plate *under; }};\nstruct plate *pile;\nstatic void put(int size) {{\n    struct plate *fresh = malloc(sizeof(struct plate));\n    fresh->size = size;\n    fresh->under = pile;\n    pile = fresh;\n}}\nstatic int take(void) {{\n    struct plate *gone = pile;\n{take}    free(gone);\n    return size;\n}}\nint main(void) {{\n    put(3); put(5); put(8);\n    printf(\"%d\\n\", take());\n    printf(\"%d\\n\", take());\n    free(pile);\n    return 0;\n}}\n"
+        )
+    };
+    assert_eq!(
+        translate(
+            "global-moved",
+            &shelf("    pile = pile->under;\n    int size = gone->size;\n")
+        )
+        .unwrap_err(),
+        "unsupported: a pointer that is used after its memory went to another owner, at line 13"
+    );
+    // The same through the local that now owns the memory is translated.
+    let rust = crate::common::check(
+        "global-moved-on",
+        &shelf("    int size = gone->size;\n    pile = gone->under;\n"),
+        &[&[]],
+        "",
+    );
+    crate::common::assert_lines(&rust, &["globals.pile = gone.as_deref_mut().unwrap().under.take();"]);
+}

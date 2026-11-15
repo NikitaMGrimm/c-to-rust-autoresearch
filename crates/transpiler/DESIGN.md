@@ -153,9 +153,10 @@ refuses with the reason instead:
   before it and the body of a loop following itself; a pointer that gets
   the address from another pointer, or through a narrowing, is not
   followed;
-- a local owner that is read after its memory went to another owner, a
-  field, a global, a local or a parameter, and before anything stored to
-  it (`Facts::moved`), in the same order. A `free` is not followed.
+- an owner, a local or a global, that is read after its memory went to
+  another owner, a field, a global, a local or a parameter, and before
+  anything stored to it (`Facts::moved`), in the same order. A `free` is
+  not followed, nor a read in another function.
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
@@ -636,7 +637,8 @@ become a fact and a refusal:
 
 - An owner moved out of a field or a global leaves `None` behind
   (`take()`); a C program that reads the field again before storing to it
-  would see NULL in Rust.
+  would see NULL in Rust. A global that its own function reads again is
+  refused; a field, and a global that another function reads, are not.
 - A pointer into the middle of an array that is no cursor is the rest of
   the array from there (`&a[1..]`), so an index or a step back before it
   (`p[-1]`) stops the program where C reads the element.

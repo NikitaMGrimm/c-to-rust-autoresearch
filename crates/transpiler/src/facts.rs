@@ -1464,8 +1464,8 @@ impl InUse<'_> {
         }
     }
 
-    /// A local owner that is the whole value of a slot that owns gives its
-    /// memory away.
+    /// An owner, a local or a global, that is the whole value of a slot
+    /// that owns gives its memory away.
     fn move_into(&mut self, value: &Expr, slot: Slot, state: &mut Borrows) {
         let owns = |slot| {
             self.pointers
@@ -1473,11 +1473,9 @@ impl InUse<'_> {
                 .is_some_and(|pointer| pointer.owned)
         };
         if let (ExprKind::Var(var), Some(order)) = (&value.uncast().kind, state.as_mut()) {
-            let local = matches!(
-                self.program.vars[*var].kind,
-                VarKind::Local | VarKind::Param
-            );
-            if local && Slot::Var(*var) != slot && owns(Slot::Var(*var)) && owns(slot) {
+            // A global gives its memory away too: it is `None` afterwards,
+            // where C still reads the pointer.
+            if Slot::Var(*var) != slot && owns(Slot::Var(*var)) && owns(slot) {
                 order.moved.insert(*var);
             }
         }
@@ -1532,12 +1530,14 @@ impl InUse<'_> {
     fn assigned(&mut self, var: VarId, value: &Expr, state: &mut Borrows) {
         let program = self.program;
         let pointer = &program.vars[var];
+        if let Some(order) = state {
+            order.moved.remove(&var);
+        }
         if !pointer.ty.is_pointer() || pointer.kind.is_global() {
             self.stored(var, state);
             return;
         }
         let Some(order) = state else { return };
-        order.moved.remove(&var);
         let borrows = &mut order.borrows;
         let mut targets = HashSet::new();
         addresses(program, value, &mut targets);
