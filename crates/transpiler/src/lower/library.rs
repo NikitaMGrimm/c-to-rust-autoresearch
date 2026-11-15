@@ -195,7 +195,7 @@ impl Lower<'_> {
 
     /// Whether the text is in bytes that end with a NUL, rather than in a
     /// `&str`.
-    fn reads_bytes(&self, text: &Expr) -> bool {
+    pub(super) fn reads_bytes(&self, text: &Expr) -> bool {
         literal_text(text).is_none() && !self.is_argument(text) && !self.is_text(text)
     }
 

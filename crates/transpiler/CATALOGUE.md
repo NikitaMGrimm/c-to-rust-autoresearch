@@ -657,3 +657,23 @@ Entry format, newest last:
   `errno` after `strtoul` and `strtol`, and `g1_007_errno_pow` after
   `strtod`
 - Changes: extends R21 and R36
+## R39: `getenv`
+
+- C: `getenv(name)` for a `name` that is text, bytes or a program argument;
+  its result kept in a pointer, tested for NULL, read as text by `atoi`,
+  `strlen`, `strcmp`, `printf`'s `%s` and the other readers of R13, its
+  first byte `*v`, and a string literal stored in the same pointer
+- Rust: `std::env::var(name).ok()`, an `Option<String>` that the slot owns,
+  with `&*text_of(&name)` for a name in bytes; a reader takes
+  `v.as_deref()` or `&v`, a literal stored beside it is
+  `String::from("…")`, and a call that is only tested is
+  `std::env::var(name).is_ok()` or `.is_err()`
+- Needs: `Source::Environment` and `Pointer::environment` in the analysis,
+  which a result takes on as it does `owned`; a borrow of a local's
+  `String` counts as a pointer into the local
+- Refused: a store through the text, a move of the pointer, `free` and a
+  byte read at an index, `v[i]`, which make it bytes; the text kept in a
+  field or a global; a borrow of it returned; a program argument stored in
+  the same pointer; `setenv`, `putenv` and `environ`
+- Motivation: `g3_envy` was refused for the pointer that `getenv` returns
+- Changes: extends R10 and R13

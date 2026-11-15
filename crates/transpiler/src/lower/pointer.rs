@@ -7,6 +7,11 @@ use crate::facts::{ALLOCATORS, Slot, is_argv, place_slot};
 use crate::rust;
 use syn::parse_quote;
 
+/// Whether the callee is the library's `getenv`.
+pub(super) fn is_getenv(program: &crate::c::Program, callee: &Expr) -> bool {
+    callee.function() == Some("getenv") && program.function("getenv").is_none()
+}
+
 /// How Rust holds what a slot's pointers point to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Repr {
@@ -69,8 +74,35 @@ impl Lower<'_> {
         }
         let text = !(pointer.bytes || pointer.written || pointer.owned)
             && self.slot_c_type(slot).element() == Some(&Type::Char);
+        // R39: a record or a global owns what its pointers hold, which
+        // makes them bytes.
+        let kept = match slot {
+            Slot::Var(var) => self.program.vars[var].kind.is_global(),
+            Slot::Field(..) => true,
+            Slot::Return(_) => false,
+        };
+        if pointer.environment && kept {
+            return unsupported(
+                format!(
+                    "{}: a variable of the environment kept in a record or a global: no rule yet",
+                    self.slot_name(slot)
+                ),
+                at,
+            );
+        }
+        // R39: the environment's text is not the program's to change, and
+        // a `String` has no bytes to walk.
+        if pointer.environment && !text {
+            return unsupported(
+                format!(
+                    "{}: a variable of the environment that is stored through, moved, freed or read byte by byte: no rule yet",
+                    self.slot_name(slot)
+                ),
+                at,
+            );
+        }
         Ok(Repr {
-            owned: pointer.owned,
+            owned: pointer.owned || pointer.environment,
             // A string literal is an array to the analysis; a `&str` is
             // one value.
             many: pointer.many && !text,
@@ -93,6 +125,7 @@ impl Lower<'_> {
     pub(super) fn is_text(&self, pointer: &Expr) -> bool {
         match &pointer.kind {
             ExprKind::Cast(inner) if inner.ty.is_pointer() => self.is_text(inner),
+            ExprKind::Call(callee, _) if is_getenv(self.program, callee) => true,
             ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Call(..) => self
                 .slot_of(pointer)
                 .and_then(|slot| self.repr(slot, pointer.at))
@@ -133,6 +166,7 @@ impl Lower<'_> {
         };
         let mutability: Option<syn::Token![mut]> = repr.mutable.then(Default::default);
         let ty: syn::Type = match (repr.owned, repr.many) {
+            _ if repr.text && repr.owned => parse_quote!(String),
             _ if repr.text => parse_quote!(& #lifetime str),
             (true, false) => parse_quote!(Box<#element>),
             (true, true) => parse_quote!(Vec<#element>),
@@ -219,6 +253,15 @@ impl Lower<'_> {
                     Ok(parse_quote!(if #cond { #then } else { #other }))
                 }
             },
+            ExprKind::Call(callee, args) if is_getenv(self.program, callee) => {
+                let from = Repr {
+                    owned: true,
+                    nullable: true,
+                    ..Repr::TEXT
+                };
+                let value = rust::method(self.environment(args, at)?, "ok", []);
+                self.adapt(value, from, to, true, at)
+            }
             ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Call(..) => {
                 let from = self.repr(self.slot_of(pointer)?, at)?;
                 let value = self.slot_value(pointer, to.mutable || to.owned)?;
@@ -230,6 +273,9 @@ impl Lower<'_> {
                 self.adapt(value, from, to, result, at)
             }
             ExprKind::Index(..) if self.is_argument(pointer) => {
+                if to.owned {
+                    return unsupported("a program argument for a pointer that owns", at);
+                }
                 if !to.text {
                     return unsupported("a program argument read byte by byte: no rule yet", at);
                 }
@@ -266,7 +312,7 @@ impl Lower<'_> {
                 }))
             }
             ExprKind::Decay(array) => {
-                if to.owned {
+                if to.owned && !(to.text && matches!(array.kind, ExprKind::Str(_))) {
                     return unsupported("an array for a pointer that owns", at);
                 }
                 if let ExprKind::Str(bytes) = &array.kind {
@@ -287,6 +333,11 @@ impl Lower<'_> {
                     // in C finds.
                     let text = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
                     return match std::str::from_utf8(text) {
+                        // R39: a slot that also holds the environment's
+                        // text owns it.
+                        Ok(text) if to.owned => {
+                            Ok(wrap(rust::call("String::from", [rust::string(text)])))
+                        }
                         Ok(text) => Ok(wrap(rust::string(text))),
                         Err(_) => unsupported("a string literal that is not UTF-8", at),
                     };
@@ -321,6 +372,22 @@ impl Lower<'_> {
                 Ok(wrap(rust::borrow(to.mutable, slice)))
             }
             _ => unsupported("a pointer expression with no rule", at),
+        }
+    }
+
+    /// R39: `getenv(name)` as `std::env::var(name)`, whose error stands
+    /// for NULL.
+    pub(super) fn environment(&mut self, args: &[Expr], at: u32) -> R<syn::Expr> {
+        match args {
+            [name] => {
+                // `text_of` gives a `Cow<str>`, which `var` takes as a `str`.
+                let name = match self.reads_bytes(name) {
+                    true => rust::borrow(false, rust::unary("*", self.text(name, false)?)),
+                    false => self.text(name, true)?,
+                };
+                Ok(rust::call("std::env::var", [name]))
+            }
+            _ => unsupported("`getenv` with other than one argument", at),
         }
     }
 
@@ -447,11 +514,17 @@ impl Lower<'_> {
                 self.pointee(inner, write, field)
             }
             ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Call(..) => {
-                let repr = self.repr(self.slot_of(pointer)?, pointer.at)?;
+                let repr = match &pointer.kind {
+                    ExprKind::Call(callee, _) if is_getenv(self.program, callee) => Repr::TEXT,
+                    _ => self.repr(self.slot_of(pointer)?, pointer.at)?,
+                };
                 if repr.many {
                     return Ok(rust::index(self.slice(pointer, write)?, rust::int(0, "")));
                 }
                 if repr.text {
+                    if write {
+                        return unsupported("a store into text", pointer.at);
+                    }
                     // The first byte of the text, or the NUL that ends it
                     // in C.
                     let text = self.pointer(pointer, Repr::TEXT)?;

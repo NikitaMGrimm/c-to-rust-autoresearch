@@ -462,6 +462,13 @@ impl Lower<'_> {
                 false => rust::unary("!", read),
             });
         }
+        // R39: `getenv` that is only tested.
+        if let ExprKind::Call(callee, args) = &pointer.uncast().kind
+            && super::pointer::is_getenv(self.program, callee)
+        {
+            let test = if set { "is_ok" } else { "is_err" };
+            return Ok(rust::method(self.environment(args, pointer.at)?, test, []));
+        }
         let test = if set { "is_some" } else { "is_none" };
         Ok(rust::method(self.optional(pointer)?, test, []))
     }

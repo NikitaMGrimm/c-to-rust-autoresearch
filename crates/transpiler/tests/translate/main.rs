@@ -5,6 +5,7 @@ mod common;
 mod compare;
 mod copies;
 mod cursors;
+mod environment;
 mod globals;
 mod heap;
 mod input;

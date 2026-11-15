@@ -108,7 +108,7 @@ Keep to these:
 ### Pointers
 
 A *slot* is a place that holds a pointer: a variable, a field or a function's
-result. The analysis gives each slot eight facts, and they decide its type:
+result. The analysis gives each slot nine facts, and they decide its type:
 
 | Fact | Set when | Effect |
 | --- | --- | --- |
@@ -118,6 +118,7 @@ result. The analysis gives each slot eight facts, and they decide its type:
 | `nullable` | NULL may reach it | Wrapped in `Option` |
 | `bytes` | It points to `char` that is read or written one by one, or to another type | A `char` pointer without it is `&str` |
 | `argument` | `argv[i]` may reach it as the program found it, which is NULL at `argv[argc]` | A test of it for NULL is not decided; it is refused unless the slot is `nullable` |
+| `environment` | It holds what `getenv` returned, or gets that from an owner | An owned `String` for text |
 | `local` | It may point into a local or a parameter of the function that holds it | A result that it reaches is refused: the variable ends where the function returns |
 | `conflict` | No single type fits, with the reason | The program is refused |
 
@@ -494,6 +495,9 @@ become a fact and a refusal:
 - A pointer that a function returns from its parameter is not known to
   point to the caller's local: `int *p = identity(&x); return p;` is
   translated and does not compile, where the result should be refused.
+- `getenv` reads the environment with `std::env::var`, which gives no
+  value for a variable that is not UTF-8, and stops the program for a
+  name with `=` or a NUL, where C finds the bytes or NULL.
 - A local pointer to an array is a borrow of it, and the analysis does
   not know which array a local points into. A call that takes the pointer
   to store through and the array itself, as `char *p = s; memmove(p + 1,

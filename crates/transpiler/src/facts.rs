@@ -40,6 +40,8 @@ pub struct Pointer {
     /// It may point into a variable of the function that holds it, which
     /// ends when the function returns.
     pub local: bool,
+    /// It owns text that `getenv` read from the environment, a `String`.
+    pub environment: bool,
     /// Why no rule can give it one Rust type, if so.
     pub conflict: Option<&'static str>,
 }
@@ -73,6 +75,9 @@ pub enum Source {
     /// One of `main`'s arguments, `argv[i]`: text that the program may
     /// read and not change.
     Argument,
+    /// A variable of the environment, from `getenv`: fresh text that the
+    /// slot owns, or NULL.
+    Environment,
     /// Anything the analysis has no model for, and what it is.
     Unknown(&'static str),
 }
@@ -127,9 +132,9 @@ pub const ALLOCATORS: [&str; 2] = ["malloc", "calloc"];
 
 /// The library functions that read the text their `char` pointers point to
 /// as a whole and keep none of them, so that the text can be a `&str`.
-const TEXT_READERS: [&str; 17] = [
+const TEXT_READERS: [&str; 18] = [
     "printf", "fprintf", "puts", "fputs", "strlen", "atoi", "atol", "atoll", "atof", "strtol",
-    "strtoll", "strtoul", "strtoull", "strtod", "strtof", "strcmp", "strncmp",
+    "strtoll", "strtoul", "strtoull", "strtod", "strtof", "strcmp", "strncmp", "getenv",
 ];
 
 impl Facts {
@@ -231,7 +236,7 @@ impl Facts {
             }
             Source::Fresh { .. } | Source::Place { .. } | Source::Literal => true,
             // `argv[argc]` is NULL, and the analysis does not know `argc`.
-            Source::Null | Source::Argument | Source::Unknown(_) => false,
+            Source::Null | Source::Argument | Source::Environment | Source::Unknown(_) => false,
         });
         never.then_some(false)
     }
@@ -253,6 +258,7 @@ impl Facts {
                     None if ALLOCATORS.contains(&name) => vec![Source::Fresh {
                         many: !allocates_one(program, name, args, None),
                     }],
+                    None if name == "getenv" => vec![Source::Environment],
                     None => vec![Source::Unknown("a pointer from a library function")],
                 },
                 None => vec![Source::Unknown("a pointer from a call through a pointer")],
@@ -1003,8 +1009,15 @@ impl<'a> Walk<'a> {
                         from.owned |= to.owned;
                         // A result has no other owner, and what a record,
                         // a result or a global holds outlives a local.
-                        to.owned |= from.owned
-                            && (matches!(slot, Slot::Return(_)) || self.outlives_locals(flow.to));
+                        let keeps =
+                            matches!(slot, Slot::Return(_)) || self.outlives_locals(flow.to);
+                        to.owned |= from.owned && keeps;
+                        to.environment |= from.environment && keeps;
+                        // A borrow of the `String` that a local owns ends
+                        // with the function, as a borrow of the local does.
+                        if from.environment && !keeps {
+                            self.reaches_local(flow.to, &mut to);
+                        }
                         to.nullable |= from.nullable && !flow.set;
                         to.argument |= from.argument && !flow.set;
                         if from.local {
@@ -1045,6 +1058,10 @@ impl<'a> Walk<'a> {
                             to.conflict =
                                 Some("it points to a program argument that is written or freed");
                         }
+                    }
+                    Source::Environment => {
+                        to.environment = true;
+                        to.nullable |= !flow.set;
                     }
                     Source::Unknown(what) => to.conflict = Some(what),
                 }
