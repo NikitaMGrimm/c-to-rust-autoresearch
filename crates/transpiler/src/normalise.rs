@@ -52,6 +52,7 @@ pub use voids::voids;
 
 use crate::c::{
     BinOp, Expr, ExprKind, Program, Stmt, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,
+    holds_statements,
 };
 use crate::facts::{Facts, Slot};
 use std::collections::HashSet;
@@ -167,6 +168,9 @@ pub fn narrow(program: &mut Program, facts: &Facts) {
         });
     }
     for function in 0..program.functions.len() {
+        if holds_statements(&program.functions[function].body, &program.vars) {
+            continue;
+        }
         let body = std::mem::take(&mut program.functions[function].body);
         let mut narrow = Narrow {
             vars: &mut program.vars,

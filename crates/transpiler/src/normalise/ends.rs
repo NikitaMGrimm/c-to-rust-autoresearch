@@ -9,7 +9,10 @@
 //! follow the call in its own block, up to the next call there. A function
 //! that reads `end` anywhere else is left as it is, and refused.
 
-use crate::c::{Expr, ExprKind, Program, Stmt, Type, Var, VarId, VarKind, any_expr, each_expr_mut};
+use crate::c::{
+    Expr, ExprKind, Program, Stmt, Type, Var, VarId, VarKind, any_expr, each_expr_mut,
+    holds_statements,
+};
 
 /// The library functions whose end pointer has a rule.
 pub const PARSERS: [&str; 6] = [
@@ -27,6 +30,9 @@ fn arity(name: &str) -> usize {
 
 pub fn ends(program: &mut Program) {
     for function in 0..program.functions.len() {
+        if holds_statements(&program.functions[function].body, &program.vars) {
+            continue;
+        }
         let mut body = std::mem::take(&mut program.functions[function].body);
         let mut taken = program.functions[function].params.clone();
         taken.extend(&program.globals);

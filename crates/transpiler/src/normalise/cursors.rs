@@ -8,12 +8,17 @@
 //! without one stays as it is, and the rules refuse what they have no
 //! translation for.
 
-use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind};
+use crate::c::{
+    BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind, holds_statements,
+};
 use crate::facts::{Facts, Slot, is_argv};
 use std::collections::{HashMap, HashSet};
 
 pub fn cursors(program: &mut Program, facts: &Facts) {
     for function in 0..program.functions.len() {
+        if holds_statements(&program.functions[function].body, &program.vars) {
+            continue;
+        }
         let mut body = std::mem::take(&mut program.functions[function].body);
         let params = program.functions[function].params.clone();
         let scan = Scan::of(program, facts, &params, &body);

@@ -18,9 +18,22 @@ impl Lower<'_> {
             return Ok(labelled);
         }
         let mut out = Vec::new();
-        for stmt in stmts {
+        let mut stmts = stmts.iter().peekable();
+        while let Some(stmt) = stmts.next() {
             let nesting = self.nesting.len();
-            let lowered = self.stmt(stmt, &mut out);
+            // R35: a declaration in a statement expression, with its first
+            // value.
+            let lowered = if let Stmt::Decl(var) = stmt
+                && let Some(Stmt::Expr(init)) = stmts.peek()
+                && let ExprKind::Init { var: of, value } = &init.kind
+                && of == var
+            {
+                stmts.next();
+                self.decl_with(*var, Some(value))
+                    .map(|declared| out.extend(declared))
+            } else {
+                self.stmt(stmt, &mut out)
+            };
             if lowered.is_err() {
                 self.nesting.truncate(nesting);
             }
@@ -703,6 +716,10 @@ impl Lower<'_> {
     /// starts at zero, apart from a pointer that is never NULL, which Rust
     /// lets start without a value.
     fn decl(&mut self, id: VarId) -> R<Vec<syn::Stmt>> {
+        self.decl_with(id, self.program.vars[id].init.as_ref())
+    }
+
+    fn decl_with(&mut self, id: VarId, init: Option<&Expr>) -> R<Vec<syn::Stmt>> {
         let var = &self.program.vars[id];
         if var.kind != VarKind::Local {
             // A `static` local is a field of `Globals`.
@@ -714,7 +731,7 @@ impl Lower<'_> {
             let slot = Slot::Var(id);
             let repr = self.repr(slot, var.at)?;
             let ty = self.slot_type(slot, &var.ty, None, var.at)?;
-            return Ok(vec![match &var.init {
+            return Ok(vec![match init {
                 // A string literal is a `&str` whatever the text's
                 // borrows are.
                 Some(init) => match self.pointer(init, repr)? {
@@ -737,7 +754,7 @@ impl Lower<'_> {
             ]);
         }
         let ty = self.ty(&var.ty, var.at)?;
-        let value = match &var.init {
+        let value = match init {
             Some(init) => self.init(&var.ty, None, init)?,
             None => self.zero(&var.ty, var.at)?,
         };

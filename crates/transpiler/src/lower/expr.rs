@@ -143,6 +143,19 @@ impl Lower<'_> {
                 unsupported("`sizeof` of a pointer to a function", at)
             }
             ExprKind::Assert { .. } => unsupported("an `assert` where a value is needed", at),
+            // R35: a statement expression as a block.
+            ExprKind::Block { stmts, value } => {
+                let Some(value) = value else {
+                    return unsupported("a statement expression without a value", at);
+                };
+                if stmts.is_empty() {
+                    return self.value(value, typed);
+                }
+                let stmts = self.stmts(stmts)?;
+                let value = self.value(value, typed)?;
+                Ok(parse_quote!({ #(#stmts)* #value }))
+            }
+            ExprKind::Init { .. } => unsupported("a first value without its declaration", at),
             ExprKind::Function(name) => {
                 unsupported(format!("the function `{name}` as a value"), at)
             }
@@ -1127,6 +1140,23 @@ impl Lower<'_> {
                     }]
                 }
             },
+            // R35: a statement expression as a statement is a block.
+            ExprKind::Block { stmts, value } => {
+                let mut body = self.stmts(stmts)?;
+                if let Some(value) = value {
+                    body.extend(self.effect(value)?);
+                }
+                match body.is_empty() {
+                    true => Vec::new(),
+                    false => {
+                        let body = rust::block(body);
+                        vec![parse_quote!(#body)]
+                    }
+                }
+            }
+            ExprKind::Init { .. } => {
+                return unsupported("a first value without its declaration", expr.at);
+            }
             // A value that is not used, as in `(void)argc;`.
             _ if expr.is_pure() => Vec::new(),
             _ => statement(self.expr(expr)?),

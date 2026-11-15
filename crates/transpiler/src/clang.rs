@@ -76,6 +76,8 @@ struct Reader<'a> {
     /// The union without a tag that was read last and that no type names
     /// yet.
     unnamed: Option<RecordId>,
+    /// How many statement expressions the reader is in.
+    in_block: usize,
 }
 
 /// Whether an attribute of this kind changes where a record's members lie.
@@ -499,7 +501,11 @@ impl Reader<'_> {
                                 "extern" => return unsupported("an `extern` local", decl),
                                 _ => VarKind::Local,
                             };
-                            out.push(Stmt::Decl(self.var(decl, storage)?));
+                            let var = self.var(decl, storage)?;
+                            out.push(Stmt::Decl(var));
+                            if self.in_block > 0 {
+                                self.first_value(var, decl, out)?;
+                            }
                         }
                         "RecordDecl" => self.record(decl, true)?,
                         "TypedefDecl" => self.typedef(decl)?,
@@ -790,6 +796,17 @@ impl Reader<'_> {
             }
             "ImplicitValueInitExpr" => ExprKind::Zero,
             "AddrLabelExpr" => return unsupported("a computed `goto`: no rule yet", node),
+            "StmtExpr" => {
+                let ty = self.ty(node)?;
+                let (stmts, value) = self.statement_expr(child(0)?, &ty)?;
+                if let Some(jump) = leaves(&stmts, false, false) {
+                    return unsupported(
+                        format!("a jump out of a statement expression, {jump}"),
+                        node,
+                    );
+                }
+                ExprKind::Block { stmts, value }
+            }
             other => return unsupported(format!("Clang's `{other}`"), node),
         };
         Ok(Expr {
@@ -797,6 +814,76 @@ impl Reader<'_> {
             kind: expr_kind,
             at: at(node),
         })
+    }
+
+    /// The statements of `({ stmts; value; })` and its value, if it has
+    /// one: the last statement, where it is an expression and the type is
+    /// not `void`.
+    fn statement_expr(&mut self, block: &Value, ty: &Type) -> R<(Vec<Stmt>, Option<Box<Expr>>)> {
+        let what = match ty {
+            Type::Pointer(_) => Some("a pointer"),
+            Type::Record(_) => Some("a record"),
+            Type::Array(..) => Some("an array"),
+            Type::Function { .. } => Some("a function"),
+            _ => None,
+        };
+        if let Some(what) = what {
+            // The analysis has no flow out of a block.
+            return unsupported(format!("a statement expression that gives {what}"), block);
+        }
+        if kind(block) != "CompoundStmt" {
+            return unsupported("a statement expression without its block", block);
+        }
+        let items = children(block);
+        let (rest, last) = match items.split_last() {
+            Some((last, rest)) if *ty != Type::Void && last.get("type").is_some() => {
+                (rest, Some(last))
+            }
+            _ => (items, None),
+        };
+        self.in_block += 1;
+        self.scopes.push(Vec::new());
+        let mut stmts = Vec::new();
+        let read = rest
+            .iter()
+            .try_for_each(|item| self.stmt(item, &mut stmts))
+            .and_then(|()| last.map(|last| self.expr(last)).transpose());
+        self.close_scope();
+        self.in_block -= 1;
+        Ok((stmts, read?.map(Box::new)))
+    }
+
+    /// Moves the first value of a variable that a statement expression
+    /// declares to an `Init` after its declaration.
+    fn first_value(&mut self, id: VarId, decl: &Value, out: &mut Vec<Stmt>) -> R<()> {
+        let var = &mut self.program.vars[id];
+        if var.kind != VarKind::Local {
+            return unsupported("a `static` local in a statement expression", decl);
+        }
+        if var.len.is_some() {
+            return unsupported(
+                "an array of variable length in a statement expression",
+                decl,
+            );
+        }
+        match var.init.take() {
+            Some(value) => out.push(Stmt::Expr(Expr {
+                ty: var.ty.clone(),
+                kind: ExprKind::Init {
+                    var: id,
+                    value: Box::new(value),
+                },
+                at: var.at,
+            })),
+            None if var.ty.is_pointer() => {
+                return unsupported(
+                    "a pointer without a first value in a statement expression",
+                    decl,
+                );
+            }
+            None => {}
+        }
+        Ok(())
     }
 
     /// The type of a declaration or an expression.
@@ -952,6 +1039,30 @@ impl Reader<'_> {
         }
         Ok(ty)
     }
+}
+
+/// The jump in the statements that leaves them, if one does: `return`,
+/// `goto`, a label, and a `break`, `continue`, `case` or `default` that
+/// belongs to no loop or `switch` among them.
+fn leaves(stmts: &[Stmt], in_loop: bool, in_switch: bool) -> Option<&'static str> {
+    stmts.iter().find_map(|stmt| match stmt {
+        Stmt::Return(_) => Some("a `return`"),
+        Stmt::Goto(_) => Some("a `goto`"),
+        Stmt::Label(_) => Some("a label"),
+        Stmt::Break if !in_loop && !in_switch => Some("a `break`"),
+        Stmt::Continue if !in_loop => Some("a `continue`"),
+        Stmt::Case(_) | Stmt::Default if !in_switch => Some("a `case`"),
+        Stmt::Block(body) => leaves(body, in_loop, in_switch),
+        Stmt::If(_, then, other) => {
+            leaves(then, in_loop, in_switch).or_else(|| leaves(other, in_loop, in_switch))
+        }
+        Stmt::While(_, body) | Stmt::DoWhile(body, _) => leaves(body, true, in_switch),
+        Stmt::For { init, body, .. } => {
+            leaves(init, in_loop, in_switch).or_else(|| leaves(body, true, in_switch))
+        }
+        Stmt::Switch(_, body) => leaves(body, in_loop, true),
+        _ => None,
+    })
 }
 
 /// The condition of `assert(cond)` as glibc's `assert.h` expands it, and
