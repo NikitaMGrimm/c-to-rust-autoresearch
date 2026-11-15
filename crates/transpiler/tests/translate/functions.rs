@@ -528,7 +528,27 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
         (
             "fn_array_store_null",
             "int main(int argc, char **argv) { int (*ops[2])(int) = { twice, square }; ops[1] = 0; return ops[argc](1); }\n",
-            "unsupported: NULL for a pointer to a function that holds no NULL, at line 7",
+            "unsupported: a pointer to a function that may be NULL in an array, at line 7",
+        ),
+        (
+            "fn_array_store_nullable",
+            "static int (*find(int k))(int) { return k ? twice : 0; }\nint main(int argc, char **argv) { int (*ops[2])(int) = { twice, square }; ops[1] = find(argc - 1); return ops[1] ? ops[1](1) : 0; }\n",
+            "unsupported: a pointer to a function that may be NULL in an array, at line 8",
+        ),
+        (
+            "fn_array_init_nullable",
+            "int main(int argc, char **argv) { int (*p)(int) = argc > 1 ? negate : 0; int (*ops[2])(int) = { twice, p }; return ops[1] ? ops[1](1) : 0; }\n",
+            "unsupported: a pointer to a function that may be NULL in an array, at line 7",
+        ),
+        (
+            "fn_percent_p",
+            "int main(int argc, char **argv) { int (*f)(int) = twice; printf(\"%p\\n\", (void *)f); return 0; }\n",
+            "unsupported: the `printf` conversion `%p`: no rule yet, at line 7",
+        ),
+        (
+            "fn_globals_nested",
+            "static int total;\nstatic int add(int x) { total += x; return total; }\nint main(int argc, char **argv) { int (*f)(int) = add; return f(f(argc)); }\n",
+            "unsupported: a call through a pointer whose arguments use the globals that it changes, at line 9",
         ),
     ];
     for (name, main, refusal) in cases {

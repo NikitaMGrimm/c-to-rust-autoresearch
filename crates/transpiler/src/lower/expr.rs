@@ -767,12 +767,13 @@ impl Lower<'_> {
             return unsupported("a store to `errno` other than 0 before a call", expr.at);
         }
         if target.ty.function().is_some() && op.is_none() {
-            // An element of an array of pointers to functions holds no NULL.
-            let nullable = match place_slot(target) {
-                Some(slot) => self.repr(slot, expr.at)?.nullable,
-                None => false,
+            let value = match place_slot(target) {
+                Some(slot) => {
+                    let nullable = self.repr(slot, expr.at)?.nullable;
+                    self.function_value(value, nullable)?
+                }
+                None => self.element_value(value)?,
             };
-            let value = self.function_value(value, nullable)?;
             return Ok(rust::assign(self.place(target, true)?, value));
         }
         if target.ty.is_pointer() {

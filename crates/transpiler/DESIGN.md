@@ -43,7 +43,8 @@ Clang's JSON -> clang -> c::Program -> unions, join, ends, found -> facts -> cur
 
 The rules are split by subject: `lower/mod.rs` (the program, records, globals,
 functions, `main`), `types.rs`, `expr.rs`, `stmt.rs`, `pointer.rs`,
-`library.rs` (the C library) and `input.rs` (standard input).
+`function.rs` (pointers to functions), `library.rs` (the C library) and
+`input.rs` (standard input).
 
 ## Where a change goes
 
