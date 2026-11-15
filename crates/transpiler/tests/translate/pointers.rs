@@ -219,3 +219,40 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+/// Rust reaches the element through the record, which must be writable.
+#[test]
+fn a_store_to_an_element_behind_a_record_s_pointer_needs_the_record_writable() {
+    let rust = check(
+        "element_behind_field",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+typedef struct { int n; } item;
+typedef struct { item *items; int count; } shelf;
+static void bump(item *one, int by) { one->n += by; }
+static void bump_all(shelf *b, int by) {
+    for (int i = 0; i < b->count; i++) bump(&b->items[i], by);
+}
+int main(int argc, char *argv[]) {
+    shelf b;
+    b.count = 3;
+    b.items = malloc(sizeof(item) * 3);
+    if (!b.items) return 1;
+    for (int i = 0; i < 3; i++) b.items[i].n = i;
+    bump_all(&b, argc);
+    printf("%d %d %d\n", b.items[0].n, b.items[1].n, b.items[2].n);
+    free(b.items);
+    return 0;
+}
+"#,
+        &[&[], &["a", "b"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn bump_all(b: &mut Shelf, by: i32) {",
+            "bump(&mut b.items[i as usize], by);",
+        ],
+    );
+}

@@ -969,6 +969,12 @@ impl<'a> Walk<'a> {
         let holder = match held.kind {
             ExprKind::Member { .. } => Some(self.known.root(self.program, held)),
             ExprKind::Var(var) if self.program.vars[var].kind.is_global() => Some(Root::Var(var)),
+            // `&s->items[i]`: the element is reached through the record
+            // that holds the pointer to it.
+            ExprKind::AddrOf(ref place) => dereferenced(place)
+                .map(Expr::uncast)
+                .filter(|pointer| matches!(pointer.kind, ExprKind::Member { .. }))
+                .map(|pointer| self.known.root(self.program, pointer)),
             _ => None,
         };
         for from in self.sources(pointer) {
@@ -1128,6 +1134,9 @@ impl<'a> Walk<'a> {
                         }
                         if to.written {
                             self.write_root(root, flow.function);
+                            if let Some(holder) = &flow.holder {
+                                self.write_root(holder, flow.function);
+                            }
                         }
                         if to.owned {
                             to.conflict = Some("it owns memory and also points into a variable");

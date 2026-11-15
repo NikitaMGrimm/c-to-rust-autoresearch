@@ -138,7 +138,9 @@ Entry format, newest last:
   lends memory once to whoever stores there
 - Needs: `Facts::pointer` for each slot, with `local` for a pointer into a
   variable of its function; `Facts::stored_through` for `mut` on the
-  binding of an owner or an `Option`
+  binding of an owner or an `Option`. A store through `&s->items[i]`, an
+  element behind a pointer that a record holds, is a store through the
+  pointer to the record as well, which Rust reaches the element through
 - Motivation: skeleton
 - Changes: none
 
