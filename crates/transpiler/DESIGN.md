@@ -312,9 +312,9 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 - **Stores that nothing reads.** A first value that the next statement
   overwrites, and a result that is never read. Needs liveness; the
   expression stays where it can stop the program or read input.
-- **Promotions with no effect.** `args.len() as i32 != 2`, `foo.x as i32 as
-  u32` for a `u32`, `!!(b != 0)`. Only where the widths make the casts an
-  identity: a `char`'s sign extension and a narrowing stay.
+- **Promotions with no effect.** `args.len() as i32 != 2`, where `argc`
+  could be compared as the `usize` it is. Needs the range of the other
+  side; a `char`'s sign extension and a narrowing stay.
 - **A step inside an index.** `*dst++ = *src++` is `dst[{ let before =
   dst_at; dst_at += 1; before }] = …`; the steps belong after the
   statement, `dst[dst_at] = src[src_at]; dst_at += 1; src_at += 1;`, where

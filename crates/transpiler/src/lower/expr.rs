@@ -218,6 +218,9 @@ impl Lower<'_> {
                 return Ok(rust::float(*value, float_suffix(to, typed)));
             }
         }
+        if let Some(original) = round_trip(inner, to) {
+            return self.value(original, typed);
+        }
         let value = self.expr(inner)?;
         let target = self.ty(to, expr.at)?;
         let same = |left: &Type, right: &Type| {
@@ -379,6 +382,12 @@ impl Lower<'_> {
         }
         if let Some((reads, found)) = self.scan_test(cond)? {
             return self.scan_cond(&reads, found);
+        }
+        // `!!x` tests what `x` tests.
+        if let ExprKind::Unary(UnOp::Not, inner) = &cond.kind
+            && let ExprKind::Unary(UnOp::Not, twice) = &inner.kind
+        {
+            return self.cond(twice);
         }
         // R30: `strcmp(a, b)` as a test, and `!strcmp(a, b)`.
         let sign = match &cond.kind {
@@ -962,6 +971,19 @@ fn same_value(left: &Expr, right: &Expr) -> bool {
             }
             _ => false,
         }
+}
+
+/// The integer that `value` converted, where converting `value` to `to`
+/// gives that integer back whatever it is: `value` is at least as wide.
+pub(super) fn round_trip<'e>(value: &'e Expr, to: &Type) -> Option<&'e Expr> {
+    match (&value.kind, to, &value.ty) {
+        (ExprKind::Cast(original), Type::Int { bits, .. }, Type::Int { bits: middle, .. })
+            if original.ty == *to && middle >= bits =>
+        {
+            Some(original)
+        }
+        _ => None,
+    }
 }
 
 fn float_suffix(ty: &Type, typed: bool) -> &'static str {

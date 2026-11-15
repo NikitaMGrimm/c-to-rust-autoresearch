@@ -647,3 +647,38 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn a_conversion_and_back_is_the_value_itself() {
+    let rust = check(
+        "round_trip",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+struct flags { unsigned level : 3; };
+void show(bool on, int n) { printf("%d %d\n", on, n); }
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct flags f = {0};
+    f.level = n;
+    unsigned u = n;
+    char c = n;
+    printf("%x %u %u %d\n", (unsigned)(int)u, (unsigned)(long)u, (unsigned)(short)u, (char)(int)c);
+    printf("%u\n", f.level);
+    show(!!n, !!n);
+    return 0;
+}
+"#,
+        &[&["3"], &["-70000"], &["200"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "println!(\"{:x} {} {} {}\", u, u, u as i16 as u32, c as i8 as i32 as u8 as i8 as i32);",
+            "println!(\"{}\", f.level);",
+            "show(n != 0, i32::from(n != 0));",
+        ],
+    );
+}

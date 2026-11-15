@@ -2,7 +2,7 @@
 //! standard library where that behaves the same, and to a `Helper`
 //! otherwise.
 
-use super::expr::symbol;
+use super::expr::{round_trip, symbol};
 use super::pointer::Repr;
 use super::{Helper, Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type};
@@ -946,9 +946,10 @@ impl Lower<'_> {
                     b'x' | b'X' | b'o' => spec.push(char::from(letter)),
                     _ => {}
                 }
-                match value.ty == read {
-                    true => self.expr(value)?,
-                    false => rust::cast(self.expr(value)?, self.ty(&read, at)?),
+                match (value.ty == read, round_trip(value, &read)) {
+                    (true, _) => self.expr(value)?,
+                    (false, Some(original)) => self.expr(original)?,
+                    (false, None) => rust::cast(self.expr(value)?, self.ty(&read, at)?),
                 }
             }
             // `%F` prints an infinity in capitals, which Rust does not.
