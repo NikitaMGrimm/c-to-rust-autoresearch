@@ -29,10 +29,15 @@ impl Lower<'_> {
         if params.iter().chain([&**ret]).any(Type::is_pointer) {
             return unsupported("a pointer to a function that takes a pointer", at);
         }
-        let params = params
+        let mut params = params
             .iter()
             .map(|param| self.ty(param, at))
             .collect::<R<Vec<_>>>()?;
+        match self.facts.class_access(function) {
+            Access::None => {}
+            Access::Read => params.insert(0, parse_quote!(&Globals)),
+            Access::Write => params.insert(0, parse_quote!(&mut Globals)),
+        }
         Ok(match &**ret {
             Type::Void => parse_quote!(fn(#(#params),*)),
             ret => {
@@ -65,12 +70,6 @@ impl Lower<'_> {
                 };
                 if name == "main" {
                     return unsupported("the address of `main`", at);
-                }
-                if self.facts.access(id) != Access::None {
-                    return unsupported(
-                        "a pointer to a function that uses globals: no rule yet",
-                        at,
-                    );
                 }
                 Ok(wrap(rust::name(self.names.function(id))))
             }
@@ -131,10 +130,13 @@ impl Lower<'_> {
         }
         // C's behaviour is undefined where the pointer is NULL.
         let target = self.function_value(callee, false)?;
-        let values = args
+        let mut values = args
             .iter()
             .map(|arg| self.typed(arg))
             .collect::<R<Vec<_>>>()?;
+        if self.facts.class_access(function) != Access::None {
+            values.insert(0, rust::name("globals"));
+        }
         Ok(rust::call_value(target, values))
     }
 }

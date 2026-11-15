@@ -102,6 +102,12 @@ pub struct Facts {
     through: HashSet<VarId>,
     addressed: HashSet<VarId>,
     access: Vec<Access>,
+    /// How the functions whose address is taken use the globals, by their
+    /// C function type.
+    classes: HashMap<Type, Access>,
+    /// The functions that take the globals only because another function
+    /// of their type needs them.
+    idle: HashSet<FuncId>,
     /// False for the facts before the first round, which know nothing.
     settled: bool,
 }
@@ -188,6 +194,19 @@ impl Facts {
     /// the program changes.
     pub fn access(&self, function: FuncId) -> Access {
         self.access.get(function).copied().unwrap_or_default()
+    }
+
+    /// How a call through a pointer to a function of this C type uses the
+    /// globals: as the strongest of the functions whose address is taken
+    /// and that have the type.
+    pub fn class_access(&self, function: &Type) -> Access {
+        self.classes.get(function).copied().unwrap_or_default()
+    }
+
+    /// Whether the function takes the globals and uses them nowhere, as
+    /// it has them only for the other functions of its type.
+    pub fn idle(&self, function: FuncId) -> bool {
+        self.idle.contains(&function)
     }
 
     /// The value of a condition that the facts decide: a constant, or a
@@ -442,6 +461,10 @@ struct Walk<'a> {
     /// The globals each function names.
     named: Vec<HashSet<VarId>>,
     calls: Vec<(FuncId, FuncId)>,
+    /// The functions whose address is taken, with their C function type.
+    taken: Vec<(FuncId, Type)>,
+    /// The calls through a pointer to a function of a C type.
+    indirect: Vec<(FuncId, Type)>,
 }
 
 impl<'a> Walk<'a> {
@@ -459,6 +482,8 @@ impl<'a> Walk<'a> {
             writers: HashSet::new(),
             named: vec![HashSet::new(); program.functions.len()],
             calls: Vec::new(),
+            taken: Vec::new(),
+            indirect: Vec::new(),
         }
     }
 
@@ -527,25 +552,58 @@ impl<'a> Walk<'a> {
                 }
             })
             .collect();
-        // A function uses the globals at least as its callees do.
+        let own = access.clone();
+        // A function uses the globals at least as its callees do. The
+        // functions that a pointer of one type may reach take the same
+        // `globals`, the strongest that one of them needs, and a call
+        // through such a pointer passes it.
+        let mut classes: HashMap<Type, Access> = HashMap::new();
         loop {
             let mut changed = false;
-            for &(caller, callee) in &self.calls {
-                if access[caller] < access[callee] {
-                    access[caller] = access[callee];
+            let mut raise = |at: &mut Access, to: Access| {
+                if *at < to {
+                    *at = to;
                     changed = true;
                 }
+            };
+            for &(caller, callee) in &self.calls {
+                let to = access[callee];
+                raise(&mut access[caller], to);
+            }
+            for (function, ty) in &self.taken {
+                raise(classes.entry(ty.clone()).or_default(), access[*function]);
+            }
+            for (function, ty) in &self.taken {
+                raise(&mut access[*function], classes[ty]);
+            }
+            for (caller, ty) in &self.indirect {
+                let to = classes.get(ty).copied().unwrap_or_default();
+                raise(&mut access[*caller], to);
             }
             if !changed {
                 break;
             }
         }
+        let idle = (0..program.functions.len())
+            .filter(|&function| {
+                access[function] != Access::None
+                    && own[function] == Access::None
+                    && self.calls.iter().all(|&(caller, callee)| {
+                        caller != function || access[callee] == Access::None
+                    })
+                    && self.indirect.iter().all(|(caller, ty)| {
+                        *caller != function || classes.get(ty).is_none_or(|&to| to == Access::None)
+                    })
+            })
+            .collect();
         Facts {
             pointers: self.pointers,
             mutated: self.mutated,
             through: self.through,
             addressed: self.addressed,
             access,
+            classes,
+            idle,
             settled: true,
         }
     }
@@ -710,11 +768,26 @@ impl<'a> Walk<'a> {
                     }
                 }
             }
-            ExprKind::Call(callee, args) => {
-                if let Some(name) = callee.function() {
-                    self.call(name, args);
+            ExprKind::Function(name) => {
+                if let (Some(function), Some(ty)) = (program.function(name), expr.ty.function()) {
+                    self.taken.push((function, ty.clone()));
                 }
             }
+            ExprKind::Call(callee, args) => match callee.function() {
+                // A function called by name has its address taken nowhere.
+                Some(name) => {
+                    self.call(name, args);
+                    for arg in args {
+                        self.expr(arg);
+                    }
+                    return;
+                }
+                None => {
+                    if let (Some(caller), Some(ty)) = (self.function, callee.ty.function()) {
+                        self.indirect.push((caller, ty.clone()));
+                    }
+                }
+            },
             // `calloc` starts its memory at zero, so the pointers in it
             // are NULL.
             ExprKind::Cast(inner) => {
