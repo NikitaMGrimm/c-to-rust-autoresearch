@@ -333,10 +333,13 @@ impl Lower<'_> {
             Some(init) => self.init(&var.ty, None, init)?,
             None => self.zero(&var.ty, var.at)?,
         };
-        let called = var.init.as_ref().is_some_and(|init| {
-            matches!(&init.kind, ExprKind::Call(callee, _)
+        // A borrow keeps its type: the call may give `&mut` where the
+        // variable holds `&`.
+        let called = !var.ty.is_pointer()
+            && var.init.as_ref().is_some_and(|init| {
+                matches!(&init.kind, ExprKind::Call(callee, _)
                 if callee.function().is_some_and(|name| self.program.function(name).is_some()))
-        });
+            });
         Ok(vec![match fixes_type(&value, called) {
             true => parse_quote!(let #mutability #name = #value;),
             false => parse_quote!(let #mutability #name: #ty = #value;),
