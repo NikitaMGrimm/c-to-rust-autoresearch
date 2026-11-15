@@ -18,10 +18,10 @@ const USAGE: &str = "usage: pool TAG SOURCE_DIR POOL_DIR [--jobs N]\n\
      POOL_DIR as gN_TAG_PATH.c. The programs are third-party code and run\n\
      here: call it through loop/cargo, with both directories in the checkout.";
 
-/// The C library's functions that a pool program may call, beside those it
-/// defines: they reach nothing but its own memory, standard input and the
-/// standard streams. The evaluator runs C programs without a sandbox, so a
-/// pool program must need none. A function that takes a `FILE *` is here
+/// The C library's symbols that a pool program's object files may need.
+/// They reach nothing but the program's memory, standard input and the
+/// standard streams: the evaluator runs C programs without a sandbox, so a
+/// pool program should need none. A function that takes a `FILE *` is here
 /// because nothing here opens a file, so only the standard streams exist.
 /// The clock and the environment are left out as well: a run must repeat.
 #[rustfmt::skip]
@@ -39,16 +39,32 @@ const LIBRARY: &[&str] = &[
     "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp", "strncmp", "strchr", "strrchr",
     "strstr", "strtok", "strspn", "strcspn", "strpbrk", "strdup", "strndup", "memcpy", "memmove",
     "memset", "memcmp", "memchr",
+    // What the compilers call in their place
+    "bcmp", "stpcpy", "mempcpy", "strnlen",
     // ctype.h, and what glibc's macros for it, for errno and for assert call
     "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "ispunct", "isxdigit",
     "isprint", "iscntrl", "isgraph", "isblank", "toupper", "tolower", "__ctype_b_loc",
     "__ctype_tolower_loc", "__ctype_toupper_loc", "__errno_location", "__assert_fail",
     // setjmp.h
     "setjmp", "_setjmp", "longjmp",
-    // Compiler builtins without a library name, after `__builtin_`
-    "va_start", "va_end", "va_copy", "expect", "unreachable", "trap", "constant_p", "clz", "ctz",
-    "popcount", "bswap16", "bswap32", "bswap64", "isnan", "isinf", "isfinite", "signbit",
-    "huge_val", "inf", "nan",
+    // The standard streams, and what the compilers add
+    "stdin", "stdout", "stderr", "__stack_chk_fail", "_GLOBAL_OFFSET_TABLE_", "__popcountdi2",
+    "__popcountsi2", "__clzdi2", "__clzsi2", "__ctzdi2", "__ctzsi2", "__multi3", "__divti3",
+    "__udivti3", "__modti3", "__umodti3",
+];
+/// How the compilers build a program before it serves as a reference, as
+/// `eval::References` does, here up to the object file.
+#[rustfmt::skip]
+const BUILDS: [&[&str]; 4] = [
+    &["clang-18", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"],
+    &["clang-18", "-g", "-O1", "-fsanitize=memory", "-fno-sanitize-recover=all", "-w"],
+    &["clang-18", "-O2", "-w"],
+    &["gcc", "-O2", "-w"],
+];
+/// What the sanitizers' own symbols start with.
+#[rustfmt::skip]
+const SANITIZERS: [&str; 6] = [
+    "__asan_", "__ubsan_", "__msan_", "__sanitizer_", "__start_asan_", "__stop_asan_",
 ];
 /// math.h, each also with the suffixes `f` and `l`.
 #[rustfmt::skip]
@@ -205,7 +221,7 @@ fn check(file: &Path, stem: &str, work: &Path) -> Result<(u8, String), String> {
     let c_file = work.join(format!("{stem}.c"));
     std::fs::write(&c_file, &source).map_err(|err| format!("no_scratch: {}", err.kind()))?;
     // Before anything of it runs.
-    if reaches_outside(&c_file)? {
+    if reaches_outside(&c_file, &source, work)? {
         return Err("reaches_outside".to_owned());
     }
     let references = References::build(&c_file, &[], work)?;
@@ -214,71 +230,64 @@ fn check(file: &Path, stem: &str, work: &Path) -> Result<(u8, String), String> {
     Ok((group, source))
 }
 
-/// Whether the program names a function that it does not define and that is
-/// not in [`LIBRARY`] or [`MATHS`], or holds assembly. Clang's syntax tree
-/// decides, so that neither a macro, a digraph nor a declaration of the
-/// program's own hides a call.
-fn reaches_outside(c_file: &Path) -> Result<bool, String> {
-    let output = Command::new("clang-18")
-        .args(["-Xclang", "-ast-dump=json", "-fsyntax-only", "-w"])
-        .arg(c_file)
-        .output()
-        .map_err(|err| format!("cannot run clang-18: {err}"))?;
-    let ast: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|_| "c_build: no syntax tree".to_owned())?;
-    let own: Vec<&serde_json::Value> = ast["inner"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|decl| {
-            let loc = &decl["loc"];
-            decl["isImplicit"] != true
-                && loc["includedFrom"].is_null()
-                && loc["expansionLoc"]["includedFrom"].is_null()
-                && (loc["offset"].is_number() || loc["expansionLoc"]["offset"].is_number())
-        })
-        .collect();
-    let has_body = |decl: &serde_json::Value| {
-        let mut inner = decl["inner"].as_array().into_iter().flatten();
-        inner.any(|node| node["kind"] == "CompoundStmt")
-    };
-    let defined: BTreeSet<&str> = own
-        .iter()
-        .filter(|decl| decl["kind"] == "FunctionDecl" && has_body(decl))
-        .filter_map(|decl| decl["name"].as_str())
-        .collect();
-    Ok(own.iter().any(|decl| names_outside(decl, &defined)))
-}
-
-fn names_outside(node: &serde_json::Value, defined: &BTreeSet<&str>) -> bool {
-    let kind = node["kind"].as_str().unwrap_or_default();
-    if matches!(kind, "GCCAsmStmt" | "MSAsmStmt" | "FileScopeAsmDecl") {
-        return true;
+/// Whether an object file of the program, in any of the reference's builds,
+/// needs a symbol beside those in [`LIBRARY`] and [`MATHS`], or its text
+/// names assembly. The object file decides, not the source: a macro, a
+/// declaration under another name or a function that is only called in one
+/// build ends as a symbol there. This is a filter for programs from a
+/// source that was not written against it, not a sandbox: assembly behind
+/// pasted tokens passes it, and so does `main`'s third parameter, the
+/// environment.
+fn reaches_outside(c_file: &Path, source: &str, work: &Path) -> Result<bool, String> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    if source.split(|c| !word(c)).any(|name| name.contains("asm")) {
+        return Ok(true);
     }
-    let referenced = &node["referencedDecl"];
-    if kind == "DeclRefExpr" && referenced["kind"] == "FunctionDecl" {
-        let name = referenced["name"].as_str().unwrap_or_default();
-        if !defined.contains(name) && !in_library(name) {
-            return true;
+    for (number, build) in BUILDS.iter().enumerate() {
+        let object = work.join(format!("{number}.o"));
+        let built = Command::new("timeout")
+            .args(["60", build[0]])
+            .args(&build[1..])
+            .arg("-c")
+            .arg("-o")
+            .arg(&object)
+            .arg(c_file)
+            .output()
+            .map_err(|err| format!("cannot run {}: {err}", build[0]))?;
+        if !built.status.success() {
+            return Err("c_build: object".to_owned());
+        }
+        let symbols = Command::new("nm")
+            .args(["--undefined-only", "--format=posix"])
+            .arg(&object)
+            .output()
+            .map_err(|err| format!("cannot run nm: {err}"))?;
+        if !symbols.status.success() {
+            return Err("c_build: symbols".to_owned());
+        }
+        let symbols = String::from_utf8_lossy(&symbols.stdout);
+        let names = symbols.lines().filter_map(|line| line.split(' ').next());
+        if !names.into_iter().all(in_library) {
+            return Ok(true);
         }
     }
-    let mut inner = node["inner"].as_array().into_iter().flatten();
-    inner.any(|node| names_outside(node, defined))
+    Ok(false)
 }
 
+/// Whether an object file may need the symbol `name`.
 fn in_library(name: &str) -> bool {
-    let name = name.strip_prefix("__builtin_").unwrap_or(name);
+    if SANITIZERS.iter().any(|prefix| name.starts_with(prefix)) {
+        return true;
+    }
+    // glibc's names for a function by the C standard in force, and its
+    // checked forms.
+    let name = ["__isoc99_", "__isoc23_", "_IO_"]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .or_else(|| name.strip_prefix("__")?.strip_suffix("_chk"))
+        .unwrap_or(name);
     let maths = |name: &str| MATHS.contains(&name);
-    let sized = |bits: &&str| {
-        let rest = name.strip_prefix(*bits);
-        rest.is_some_and(|rest| matches!(rest, "l" | "ll"))
-    };
-    LIBRARY.contains(&name)
-        || maths(name)
-        || name
-            .strip_suffix(['f', 'l'])
-            .is_some_and(|base| maths(base) || ["huge_val", "inf", "nan"].contains(&base))
-        || ["clz", "ctz", "popcount"].iter().any(sized)
+    LIBRARY.contains(&name) || maths(name) || name.strip_suffix(['f', 'l']).is_some_and(maths)
 }
 
 #[cfg(test)]
@@ -301,7 +310,7 @@ mod tests {
         let reaches = |source: &str| {
             let c_file = scratch.join("program.c");
             std::fs::write(&c_file, source).unwrap();
-            reaches_outside(&c_file).unwrap()
+            reaches_outside(&c_file, source, &scratch).unwrap()
         };
         for source in [
             "#include <stdio.h>\nint main(void) { FILE *f = (fopen)(\"a\", \"w\"); return !f; }",
@@ -312,17 +321,31 @@ mod tests {
             "int open();\nint main(void) { int (*f)() = open; return f(\"a\", 0); }",
             "#include <time.h>\nint main(void) { return (int)time(0); }",
             "#include <stdlib.h>\nint main(void) { return !getenv(\"HOME\"); }",
+            "extern char **environ;\nint main(void) { return !environ; }",
             "int main(void) { __asm__(\"nop\"); return 0; }",
+            // Only one build has the call.
+            "#ifndef __has_feature\n#define __has_feature(x) 0\n#endif\nint system(const char *);\n\
+             int main(void) {\n#if __has_feature(address_sanitizer)\nreturn system(\"true\");\n#else\nreturn 0;\n#endif\n}",
+            // The declarations seem to come from a header.
+            "# 1 \"pretend.h\" 1\nint system(const char *);\nint main(void) { return system(\"true\"); }",
+            // A library function's name for another symbol; assembly, too.
+            "extern int puts(const char *) __asm__(\"system\");\nint main(void) { return puts(\"true\"); }",
+            "extern char system;\nint main(void) { return ((int (*)(const char *))&system)(\"true\"); }",
+            "extern int system(const char *);\n\
+             int main(void) { char c __attribute__((cleanup(system))) = 0; return 0; }",
+            // An inline definition gives no symbol of its own.
+            "inline int system(const char *s) { return 0; }\nint main(void) { return system(\"true\"); }",
         ] {
             assert!(reaches(source), "{source}");
         }
-        let library = "#include <assert.h>\n#include <ctype.h>\n#include <errno.h>\n\
+        let library = "#define _GNU_SOURCE\n#include <assert.h>\n#include <ctype.h>\n#include <errno.h>\n\
             #include <math.h>\n#include <stdarg.h>\n#include <stdio.h>\n#include <stdlib.h>\n\
             #include <string.h>\n\
             static int sum(int n, ...) { va_list a; va_start(a, n); int s = va_arg(a, int); va_end(a); return s + n; }\n\
-            int main(void) { char *p = malloc(8); assert(p); strcpy(p, \"ab\"); errno = 0;\n\
-            fprintf(stderr, \"%d %f %d\\n\", isalpha(p[0]), sqrtf(2.0f) + fabsl(1.0L), sum(1, 2));\n\
-            if (isnan(pow(2, 3))) abort(); free(p); return __builtin_popcountll(7) - 3; }";
+            int main(int argc, char **argv) { char *p = malloc(8); assert(p); strcpy(p, argv[0]); errno = 0;\n\
+            char line[8]; if (fgets(line, sizeof line, stdin)) sscanf(line, \"%d\", &argc);\n\
+            fprintf(stderr, \"%d %f %d %ld\\n\", isalpha(p[0]), sqrtf(argc) + fabsl(1.0L), sum(1, 2), strtol(p, 0, 10));\n\
+            if (isnan(pow(argc, 3))) abort(); putchar(getchar()); free(p); return __builtin_popcountll(argc) - 3; }";
         for source in [
             library,
             "#include <time.h>\nint time_left(int x) { return x; }\nint main(void) { return time_left(0); }",

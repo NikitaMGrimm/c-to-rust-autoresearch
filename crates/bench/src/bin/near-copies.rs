@@ -111,7 +111,8 @@ fn clean(private: &Path, pool: &Path) -> Result<(), String> {
             }
         }
     }
-    let programs = shingled(&pool)?;
+    // A pool program's name may be a private one.
+    let programs = shingled(&pool).map_err(|_| "cannot read a pool program".to_owned())?;
     let (mut copies, mut named) = (0, 0);
     for (name, shingles) in &programs {
         let copy = sets
@@ -283,6 +284,10 @@ mod tests {
         );
         assert!(pool.join("g1_p_copy.c").exists());
         std::fs::remove_dir(pool.join("g1_p_copy.json")).unwrap();
+        std::fs::create_dir(pool.join("g1_secret.c")).unwrap();
+        let error = clean(&private, &pool).unwrap_err();
+        assert!(!error.contains("secret"), "{error}");
+        std::fs::remove_dir(pool.join("g1_secret.c")).unwrap();
         std::fs::remove_dir_all(private.join("held-out")).unwrap();
         let error = clean(&private, &pool).unwrap_err();
         assert!(!error.contains("secret"), "{error}");

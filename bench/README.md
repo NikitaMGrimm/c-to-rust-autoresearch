@@ -241,14 +241,16 @@ C file under `SOURCE_DIR` to `POOL_DIR/gN_TAG_PATH.c` when it is a program
 that runs without arguments and input and that run passes the same C checks
 as the benchmarks. `PATH` is the file's path in the source, and the group
 comes from the intake tool's feature detection. Before anything of a
-program runs, Clang's syntax tree must show that it names no function
-beside those it defines and a fixed list of the C library's, which reach
-only memory, standard input and the standard streams, and that it holds no
+program runs, its object files, built as the reference builds them, may
+need no symbol beside a fixed list of the C library's, which reach only
+memory, standard input and the standard streams, and its text may not name
 assembly. That leaves out the network, other processes, files and the
-terminal, and the clock and the environment too, so that a run repeats. The
-evaluator runs C programs without a sandbox, so a pool program must need
-none. The collection itself runs through `loop/cargo`, with both
-directories in the checkout, because it runs third-party code.
+terminal, and the clock and `getenv` too, so that a run repeats. It is a
+filter for sources that were not written against it, not a sandbox:
+assembly behind pasted tokens and `main`'s third parameter pass it. The
+evaluator runs C programs without a sandbox, so take a pool only from a
+source that you would run so. The collection itself runs through
+`loop/cargo`, with both directories in the checkout.
 
 `cargo run -p bench --bin near-copies -- PRIVATE_DIR --pool POOL_DIR` then
 deletes the pool's programs that are near-copies of a validation, held-out
