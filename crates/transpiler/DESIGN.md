@@ -636,6 +636,47 @@ What a third review found beside these, most frequent first:
 - **A record for two numbers.** `DivT { quot: x / y, rem: x % y }` for a
   local whose two members are read is `let (quot, rem) = (x / y, x % y);`.
 
+What a fifth review found beside these, in programs outside the
+development set too, most frequent first:
+
+- **An assertion written out.** `if !(f(6) == 8) { eprintln!(…);
+  std::process::abort(); }` at every `assert`. One helper that takes the
+  test and the message keeps C's message and its `abort`, which `assert!`
+  would not, and leaves one line. Needs no analysis.
+- **Names that give way to names of another kind.** A local renamed for a
+  field of `Globals` or for a function that its scope never calls, and a
+  constant that takes its record's name with an underscore, in lower
+  case: `static r_: R`. Needs the scopes kept apart when a name is
+  chosen, and a fallback in capitals.
+- **A rotation as two shifts.** `(x >> 9) | (x << 23)` for a `u32` is
+  `x.rotate_right(9)`, also with `^` between the halves. Only for the
+  exact shape: one unsigned operand without an effect, two constant
+  counts that add up to its width.
+- **An exchange.** Three `^=` between two locals are `std::mem::swap`, and
+  a call of a function that only exchanges two elements of one array,
+  for which R54 splits the array, is `a.swap(i, j)`. The second needs
+  what the callee does.
+- **A place or -1.** A search that returns an index or `-1` is `->
+  Option<usize>`. Needs which returns say that nothing was found, that
+  the others are no negative numbers, and every caller.
+- **`println!("")`** for a `printf("\n")`: `println!()`. Needs no
+  analysis.
+- **A `do` loop whose test is a constant.** R58's block and its label for
+  a `continue`, and `if !true { break; }`, where the test is never false:
+  a plain `loop`. Needs no analysis. A `continue` that ends the body
+  needs no statement either.
+- **The labels of a `switch` as numbers.** `match action { 11 => …, 12 =>
+  … }` where C names enumerators: the constants' names. Needs the
+  enumerator kept beside the value of a `case`.
+- **Statements after a jump forward.** A block that a `goto` leaves at
+  once keeps what C wrote after the `goto`, and a `return` follows a
+  `return`. What follows a statement that always leaves can go, where no
+  label stands in it.
+- **An array that is replaced by a longer copy.** `let mut longer = vec![0;
+  n]; for i in 0..used { longer[i] = items[i]; } drop(take(&mut items));
+  items = longer;` is `items.resize(n, 0)`. Needs that the copy is of the
+  whole used part and that nothing else points to the old array.
+
 ## Known weak spots
 
 Places where a rule assumes more than the analysis proves. Each should
@@ -674,6 +715,10 @@ become a fact and a refusal:
   walks on afterwards, as `q = p; p->n += 1; p = p->next;` with a later
   read of `q`, borrows `p` for as long as it is used: the program is
   translated and does not compile, where it should be refused.
+- A function that returns a field of its parameter, as `struct node
+  *after(struct node *p) { return p->next; }`, takes the owner of the list
+  where the caller only walks it with `p = after(p)`: the program is
+  translated and does not compile.
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.
