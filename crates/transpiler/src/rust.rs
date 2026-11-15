@@ -190,7 +190,17 @@ pub fn field_value(field: &str, value: Expr) -> syn::FieldValue {
     }
 }
 
+/// `base.field`; a record's literal as the base is in parentheses, which a
+/// condition needs around it.
 pub fn field(base: Expr, field: &str) -> Expr {
+    let base = match base {
+        Expr::Struct(_) => Expr::Paren(syn::ExprParen {
+            attrs: Vec::new(),
+            paren_token: Default::default(),
+            expr: Box::new(base),
+        }),
+        base => base,
+    };
     Expr::Field(syn::ExprField {
         attrs: Vec::new(),
         base: Box::new(base),

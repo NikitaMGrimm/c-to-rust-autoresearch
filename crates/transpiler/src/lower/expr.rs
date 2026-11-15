@@ -803,6 +803,8 @@ impl Lower<'_> {
                 Ok(rust::index(self.slice(base, write)?, index))
             }
             ExprKind::Deref(pointer) => self.pointee(pointer, write, false),
+            // R60: a compound literal that is only read, for one of its fields.
+            ExprKind::InitList(_) if !write => self.expr(place),
             _ => unsupported("a place with no rule", place.at),
         }
     }

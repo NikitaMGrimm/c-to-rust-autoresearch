@@ -1233,3 +1233,27 @@ Entry format, newest last:
   declaration, which replaces R33's reading of a union without a tag right
   before the declaration that uses it, and no longer refuses a member of an
   anonymous record
+
+## R60: compound literals
+
+- C: a compound literal that is only read, `(struct point){ 1, 2 }`, with
+  designators, missing fields and nested records, as an initialiser, the
+  value of an assignment, an argument, a returned value, a field of another
+  initialiser or a global's initialiser, and `(struct point){ 1, 2 }.x`;
+  a number, `(int){ 5 }`
+- Rust: the record's literal by R5's rule for an initialiser list of its
+  type, `Point { x: 1, y: 2 }`, in parentheses before a field; the number
+  converted to the type
+- Needs: nothing
+- Refused: one that is stored to or used as a place, `` a compound literal
+  as a place: no rule yet ``; its address, `` a pointer to a compound
+  literal: no rule yet ``; an array, `` a compound literal that is an
+  array: no rule yet ``; a string, `(char[]){ "…" }` or
+  `(const char *){ "…" }`, `` a compound literal that is a string: no rule
+  yet ``; another pointer, `` a compound literal that is a pointer: no rule
+  yet ``
+- Motivation: programs outside the development set write records as
+  compound literals; no development program needs it
+- Changes: the front end reads a compound literal that is only read as its
+  initialiser list with the literal's type; a place may be the field of
+  such a value

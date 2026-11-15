@@ -79,6 +79,9 @@ struct Reader<'a> {
     unnamed: Option<(Untagged, Option<u64>, u64)>,
     /// How many statement expressions the reader is in.
     in_block: usize,
+    /// Whether the compound literal read next is only read, so that it is
+    /// the value of its initialiser list.
+    literal_read: bool,
 }
 
 /// A record or an enumeration without a tag. Clang names its type only with
@@ -699,7 +702,12 @@ impl Reader<'_> {
             "ImplicitCastExpr" | "CStyleCastExpr" => match text(node, "castKind") {
                 // The value stays as it is.
                 "LValueToRValue" | "NoOp" | "BuiltinFnToFnPtr" => {
-                    return self.expr(child(0)?);
+                    let node = child(0)?;
+                    self.literal_read = reads_literal(node);
+                    let value = self.expr(node);
+                    // A refusal on the way may leave it set.
+                    self.literal_read = false;
+                    return value;
                 }
                 // A function used as a value is a pointer to it, and `*p`
                 // used so is `p` again.
@@ -763,6 +771,10 @@ impl Reader<'_> {
                 }
             }
             "UnaryOperator" => {
+                if text(node, "opcode") == "&" && kind(unparen(child(0)?)) == "CompoundLiteralExpr"
+                {
+                    return unsupported("a pointer to a compound literal: no rule yet", node);
+                }
                 let operand = boxed(self, 0)?;
                 match text(node, "opcode") {
                     "+" | "__extension__" => return Ok(*operand),
@@ -862,6 +874,7 @@ impl Reader<'_> {
                 }
                 ExprKind::InitList(items.iter().map(|item| self.expr(item)).collect::<R<_>>()?)
             }
+            "CompoundLiteralExpr" => return self.compound_literal(node),
             "ImplicitValueInitExpr" => ExprKind::Zero,
             "AddrLabelExpr" => return unsupported("a computed `goto`: no rule yet", node),
             "StmtExpr" => {
@@ -882,6 +895,43 @@ impl Reader<'_> {
             kind: expr_kind,
             at: at(node),
         })
+    }
+
+    /// R60: a compound literal that is only read is the value of its
+    /// initialiser list, with the literal's type; one that is a place, whose
+    /// fields are stored to or whose address is taken, is refused.
+    fn compound_literal(&mut self, node: &Value) -> R<Expr> {
+        let read = std::mem::take(&mut self.literal_read);
+        let ty = self.ty(node)?;
+        if matches!(ty.element(), Some(Type::Char)) {
+            return unsupported("a compound literal that is a string: no rule yet", node);
+        }
+        match ty {
+            Type::Array(..) => {
+                return unsupported("a compound literal that is an array: no rule yet", node);
+            }
+            Type::Pointer(_) => {
+                return unsupported("a compound literal that is a pointer: no rule yet", node);
+            }
+            _ if !read => {
+                return unsupported("a compound literal as a place: no rule yet", node);
+            }
+            _ => {}
+        }
+        let list = match children(node) {
+            [list] if kind(list) == "InitListExpr" => list,
+            _ => return unsupported("a compound literal without its initialiser list", node),
+        };
+        let mut value = self.expr(list)?;
+        if let Type::Record(_) = ty {
+            value.ty = ty;
+            return Ok(value);
+        }
+        // A number has one item, already converted to the literal's type.
+        match value.kind {
+            ExprKind::InitList(mut items) if items.len() == 1 => Ok(items.remove(0)),
+            _ => unsupported("a compound literal of a number without one value", node),
+        }
     }
 
     /// The statements of `({ stmts; value; })` and its value, if it has
@@ -1227,6 +1277,27 @@ fn assertion(node: &Value) -> Option<(&Value, String)> {
         literal(expression)?
     );
     Some((cond, message))
+}
+
+/// The node without the parentheses around it.
+fn unparen(node: &Value) -> &Value {
+    match kind(node) {
+        "ParenExpr" => children(node).first().map_or(node, unparen),
+        _ => node,
+    }
+}
+
+/// Whether reading the value of `node` reads a compound literal, or a field
+/// of one, and stores nothing to it.
+fn reads_literal(node: &Value) -> bool {
+    let node = unparen(node);
+    match kind(node) {
+        "CompoundLiteralExpr" => true,
+        "MemberExpr" if node["isArrow"] != true => {
+            children(node).first().is_some_and(reads_literal)
+        }
+        _ => false,
+    }
 }
 
 fn collect_labels(node: &Value, labels: &mut HashMap<String, String>) {

@@ -511,3 +511,112 @@ int main(int argc, char **argv) {
         &["struct Box_ {", "struct String_ {", "struct Option_ {"],
     );
 }
+
+#[test]
+fn a_compound_literal_that_is_read_is_its_value() {
+    let rust = check(
+        "compound-literal",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct offset { int dx; int dy; };
+struct span { struct offset from; struct offset to; int width; };
+static struct offset home = (struct offset){ 3, -1 };
+static struct offset scaled(struct offset v, int k) { return (struct offset){ v.dx * k, v.dy * k }; }
+static int dot(struct offset a, struct offset b) { return a.dx * b.dx + a.dy * b.dy; }
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct offset v = (struct offset){ n, n + 1 };
+    struct span s = { (struct offset){ 1, 2 }, { .dy = n }, 0 };
+    int total = v.dy + s.from.dy + s.to.dy;
+    v = (struct offset){ .dy = 7 };
+    s = (struct span){ (struct offset){ n, 0 }, home };
+    for (int i = 0; i < n; i++) {
+        struct offset step = (struct offset){ i, 1 };
+        step.dx += 2;
+        total += dot(step, (struct offset){ 1, i });
+    }
+    double half = (double){ n } / 2;
+    if ((struct offset){ n, 4 }.dy > n)
+        total += ((struct offset){ 5, 6 }).dx;
+    struct offset w = scaled(v, (int){ 2 });
+    printf("%d %d %d %d %d %d %.1f %d %d\n", v.dx, v.dy, s.from.dx, s.to.dx, s.to.dy, s.width, half, total, w.dy);
+    return 0;
+}
+"#,
+        &[&["0"], &["3"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "static HOME: Offset = Offset { dx: 3, dy: -1 };",
+            "fn scaled(v: Offset, k: i32) -> Offset {",
+            "dx: v.dx * k,",
+            "let mut v = Offset { dx: n, dy: n + 1 };",
+            "from: Offset { dx: 1, dy: 2 },",
+            "v = Offset { dx: 0, dy: 7 };",
+            "let mut step = Offset { dx: i, dy: 1 };",
+            "total += dot(step, Offset { dx: 1, dy: i });",
+            "let half = n as f64 / 2.0;",
+            "if (Offset { dx: n, dy: 4 }).dy > n {",
+            "total += (Offset { dx: 5, dy: 6 }).dx;",
+            "let w = scaled(v, 2);",
+        ],
+    );
+}
+
+#[test]
+fn a_compound_literal_that_is_a_place_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    let program = |body: &str| {
+        format!(
+            "struct cell {{ int row; int col; }};\nint total(const int *v, int n) {{ return n > 0 ? v[0] : 0; }}\nint main(void) {{\n    {body}\n    return 0;\n}}\n"
+        )
+    };
+    for (name, body, reason) in [
+        (
+            "literal-address",
+            "struct cell *c = &(struct cell){ 1, 2 }; c->row = 4;",
+            "a pointer to a compound literal: no rule yet",
+        ),
+        (
+            "literal-store",
+            "(struct cell){ 1, 2 }.col = 5;",
+            "a compound literal as a place: no rule yet",
+        ),
+        (
+            "literal-array",
+            "return total((int[]){ 4, 5 }, 2);",
+            "a compound literal that is an array: no rule yet",
+        ),
+        (
+            "literal-string",
+            "char *t = (char[]){ \"ab\" }; return t[0];",
+            "a compound literal that is a string: no rule yet",
+        ),
+        (
+            "literal-string-pointer",
+            "const char *t = (const char *){ \"ab\" }; return t[0];",
+            "a compound literal that is a string: no rule yet",
+        ),
+        (
+            "literal-pointer",
+            "int k = 2; int *q = (int *){ &k }; return *q;",
+            "a compound literal that is a pointer: no rule yet",
+        ),
+    ] {
+        assert_eq!(
+            translate(name, &program(body)).unwrap_err(),
+            format!("unsupported: {reason}, at line 4"),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        refused(
+            "literal-address-global",
+            "struct cell { int row; int col; };\nstatic const struct cell *first = &(struct cell){ 0, 1 };\nint main(void) {\n    return first->row;\n}\n"
+        ),
+        "unsupported: a pointer to a compound literal: no rule yet, at line 2"
+    );
+}
