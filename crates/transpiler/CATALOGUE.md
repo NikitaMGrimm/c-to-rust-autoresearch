@@ -147,7 +147,9 @@ Entry format, newest last:
   copy of the function; and a local pointer to a variable of its function
   that is used after the variable itself was stored to since the pointer
   got its address, or read where the pointer is stored through, since the
-  borrow is still in use there
+  borrow is still in use there; and in the same way a copy of a local
+  pointer that owns or is stored through, `q = p`, that is read after `p`
+  was stored through or assigned
 - Needs: `Facts::pointer` for each slot, with `local` for a pointer into a
   variable of its function; `Facts::in_use` for the first such use, in the
   order of the statements, where a loop's body follows itself; `Facts::stored_through` for `mut` on the

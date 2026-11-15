@@ -344,3 +344,14 @@ fn a_global_pointer_that_changes_or_has_no_place_is_refused() {
         "unsupported: a pointer to a compound literal: no rule yet, at line 3"
     );
 }
+
+#[test]
+fn a_copy_of_a_pointer_that_is_read_after_the_pointer_went_on_is_refused() {
+    // `first` would borrow `at`, which is stored through and then walks
+    // on while `first` is still read.
+    let c = "#include <stdio.h>\n#include <stdlib.h>\nstruct knot { int load; struct knot *after; };\nvoid raise(struct knot *at) {\n    struct knot *first = at;\n    at->load += 3;\n    at = at->after;\n    printf(\"%d %d\\n\", at->load, first->load);\n}\nint main(void) {\n    struct knot *head = malloc(sizeof(struct knot));\n    head->load = 1;\n    head->after = malloc(sizeof(struct knot));\n    head->after->load = 2;\n    head->after->after = NULL;\n    raise(head);\n    free(head->after);\n    free(head);\n    return 0;\n}\n";
+    assert_eq!(
+        translate("walk-copy", c).unwrap_err(),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 8"
+    );
+}

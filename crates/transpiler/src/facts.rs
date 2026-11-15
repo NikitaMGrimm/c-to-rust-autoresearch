@@ -1440,7 +1440,12 @@ impl InUse<'_> {
                             self.parts(target, state);
                             self.stored(var, state);
                         }
-                        None => self.expr(target, state),
+                        None => {
+                            self.expr(target, state);
+                            if let Some(pointer) = through(target) {
+                                self.stored(pointer, state);
+                            }
+                        }
                     },
                 }
             }
@@ -1540,19 +1545,47 @@ impl InUse<'_> {
         if let Some(order) = state {
             order.moved.remove(&var);
         }
+        // A store to a pointer is a store to what a copy of it borrows.
+        self.stored(var, state);
         if !pointer.ty.is_pointer() || pointer.kind.is_global() {
-            self.stored(var, state);
             return;
         }
         let Some(order) = state else { return };
         let borrows = &mut order.borrows;
         let mut targets = HashSet::new();
         addresses(program, value, &mut targets);
+        // A copy of a local pointer that owns or is stored through
+        // borrows that pointer, as a pointer to a variable borrows it.
+        let fact = |var| self.pointers.get(&Slot::Var(var));
+        if let ExprKind::Var(from) = value.uncast().kind
+            && from != var
+            && matches!(program.vars[from].kind, VarKind::Local | VarKind::Param)
+            && fact(from).is_some_and(|from| from.written || from.owned)
+            && !fact(var).is_some_and(|copy| copy.owned)
+        {
+            targets.insert(from);
+        }
         if targets.is_empty() {
             borrows.remove(&var);
         } else {
             borrows.insert(var, (targets, false));
         }
+    }
+}
+
+/// The pointer variable that a place is reached through: `p` in `p->f`,
+/// `*p`, `p[i]` and `p->in.f`.
+fn through(place: &Expr) -> Option<VarId> {
+    match &place.kind {
+        ExprKind::Member { base, arrow, .. } => match (&base.uncast().kind, arrow) {
+            (ExprKind::Var(var), true) => Some(*var),
+            _ => through(base),
+        },
+        ExprKind::Deref(pointer) | ExprKind::Index(pointer, _) => match pointer.uncast().kind {
+            ExprKind::Var(var) => Some(var),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
