@@ -488,7 +488,7 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
         (
             "fn_void",
             "int main(int argc, char **argv) { void *p = (void *)twice; return p == 0; }\n",
-            "unsupported: a `void` pointer, at line 7",
+            "unsupported: a function kept in a `void` pointer: no rule yet, at line 7",
         ),
         (
             "fn_no_prototype",

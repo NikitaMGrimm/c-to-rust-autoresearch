@@ -540,60 +540,80 @@ impl Lower<'_> {
 
     /// R3: a `switch` whose cases each end with `break` or `return`, as a
     /// `match`.
+    /// R45: cases that fall through into each other, as one arm.
     fn switch(&mut self, value: &Expr, body: &[Stmt]) -> R<syn::Stmt> {
         let at = value.at;
-        // Each arm: its values, whether `default` is among them, and its
-        // statements.
-        let mut arms: Vec<(Vec<i128>, bool, &[Stmt])> = Vec::new();
+        // Each part: its labels, `None` for `default`, and its statements.
+        let mut parts: Vec<Part> = Vec::new();
         let mut rest = body;
         if !matches!(rest.first(), Some(Stmt::Case(_) | Stmt::Default) | None) {
             return unsupported("statements before the first `case`", at);
         }
         while !rest.is_empty() {
-            let (mut values, mut default) = (Vec::new(), false);
+            let mut labels = Vec::new();
             while let Some((label @ (Stmt::Case(_) | Stmt::Default), after)) = rest.split_first() {
-                match label {
-                    Stmt::Case(value) => values.push(*value),
-                    _ => default = true,
-                }
+                labels.push(match label {
+                    Stmt::Case(value) => Some(*value),
+                    _ => None,
+                });
                 rest = after;
             }
             let end = rest
                 .iter()
                 .position(|stmt| matches!(stmt, Stmt::Case(_) | Stmt::Default))
                 .unwrap_or(rest.len());
-            arms.push((values, default, &rest[..end]));
+            parts.push((labels, unblock(&rest[..end])));
             rest = &rest[end..];
+        }
+        // C's scope of a declaration goes on to the end of the `switch`,
+        // and Rust's ends with its arm or its part.
+        for (index, (_, stmts)) in parts.iter().enumerate() {
+            let used = |var: VarId| {
+                parts[index + 1..].iter().any(|(_, later)| {
+                    any_expr(
+                        later,
+                        &self.program.vars,
+                        &mut |part| matches!(part.kind, ExprKind::Var(named) if named == var),
+                    )
+                })
+            };
+            if declared(stmts).any(used) {
+                return unsupported(
+                    "a variable that a `case` declares and a later `case` uses: no rule yet",
+                    at,
+                );
+            }
+        }
+        // A run of parts ends with one that leaves the `switch`, or with
+        // the `switch`.
+        let mut runs: Vec<&[Part]> = Vec::new();
+        let mut first = 0;
+        for (index, (_, stmts)) in parts.iter().enumerate() {
+            let leaves = matches!(
+                stmts.last(),
+                Some(Stmt::Break | Stmt::Return(_) | Stmt::Continue)
+            );
+            if leaves || index + 1 == parts.len() {
+                runs.push(&parts[first..=index]);
+                first = index + 1;
+            }
         }
         let value = self.expr(value)?;
         let mut cases: Vec<syn::Arm> = Vec::new();
         let mut otherwise: syn::Arm = parse_quote!(_ => {});
-        let last = arms.len().saturating_sub(1);
         // Whether a `break` in the middle of a case leaves the `switch`.
         let mut left = false;
-        for (index, (values, default, stmts)) in arms.into_iter().enumerate() {
-            // `case 1: { ...; break; }` is a case like any other.
-            let stmts = match stmts {
-                [Stmt::Block(inner)] => inner,
-                _ => stmts,
-            };
-            let stmts = match stmts.split_last() {
-                Some((Stmt::Break, before)) => before,
-                Some((Stmt::Return(_) | Stmt::Continue, _)) => stmts,
-                _ if index == last => stmts,
-                _ => return unsupported("a `case` that falls through: no rule yet", at),
-            };
+        for run in runs {
             self.nesting.push(Nest::Switch { left: false });
-            let body = self.block(stmts);
+            let arm = self.run(run);
             if let Some(Nest::Switch { left: true }) = self.nesting.pop() {
                 left = true;
             }
-            let body = body?;
-            if default {
-                otherwise = parse_quote!(_ => #body);
-            } else {
-                let values = values.into_iter().map(|value| rust::int(value, ""));
-                cases.push(parse_quote!(#(#values)|* => #body));
+            let (pattern, body) = arm?;
+            let arm: syn::Arm = parse_quote!(#pattern => #body);
+            match run.iter().any(|(labels, _)| labels.contains(&None)) {
+                true => otherwise = arm,
+                false => cases.push(arm),
             }
         }
         // Rust wants a label on a `continue` that leaves a block with a
@@ -617,6 +637,63 @@ impl Lower<'_> {
         ))
     }
 
+    /// The pattern and body of one arm of a `switch`, for parts that fall
+    /// through into each other. Each part but the last runs only for the
+    /// labels at or before it; once `default` is among those, for every
+    /// value but the labels after it.
+    fn run(&mut self, run: &[Part]) -> R<(syn::Pat, syn::Block)> {
+        let labels = |parts: &[Part]| -> Vec<syn::Expr> {
+            parts
+                .iter()
+                .flat_map(|(labels, _)| labels.iter().flatten())
+                .map(|value| rust::int(*value, ""))
+                .collect()
+        };
+        let default = run.iter().position(|(labels, _)| labels.contains(&None));
+        let Some(((_, last), before)) = run.split_last() else {
+            return Ok((parse_quote!(_), rust::block(Vec::new())));
+        };
+        let last = match last.split_last() {
+            Some((Stmt::Break, stmts)) => stmts,
+            _ => last,
+        };
+        if before.is_empty() {
+            let pattern = match default {
+                Some(_) => parse_quote!(_),
+                None => {
+                    let values = labels(run);
+                    parse_quote!(#(#values)|*)
+                }
+            };
+            return Ok((pattern, self.block(last)?));
+        }
+        let entry = rust::ident("entry");
+        let mut out = Vec::new();
+        for (index, (_, stmts)) in before.iter().enumerate() {
+            let (values, reached) = match default {
+                Some(default) if default <= index => (labels(&run[index + 1..]), false),
+                _ => (labels(&run[..=index]), true),
+            };
+            let test: syn::Expr = match (values.as_slice(), reached) {
+                ([value], true) => rust::binary(rust::name("entry"), "==", value.clone()),
+                ([value], false) => rust::binary(rust::name("entry"), "!=", value.clone()),
+                (_, true) => parse_quote!(matches!(#entry, #(#values)|*)),
+                (_, false) => rust::unary("!", parse_quote!(matches!(#entry, #(#values)|*))),
+            };
+            let body = self.block(stmts)?;
+            out.push(syn::Stmt::Expr(parse_quote!(if #test #body), None));
+        }
+        out.extend(self.stmts(last)?);
+        let pattern = match default {
+            Some(_) => parse_quote!(#entry),
+            None => {
+                let values = labels(run);
+                parse_quote!(#entry @ (#(#values)|*))
+            }
+        };
+        Ok((pattern, rust::block(out)))
+    }
+
     /// The number of `switch` statements around the statement being
     /// translated, in its function.
     fn switches(&self) -> usize {
@@ -633,6 +710,40 @@ fn switch_label(depth: usize) -> syn::Lifetime {
         depth => format!("'switch_{depth}"),
     };
     syn::Lifetime::new(&name, proc_macro2::Span::call_site())
+}
+
+/// The labels of a part of a `switch`, `None` for `default`, and its
+/// statements.
+type Part<'a> = (Vec<Option<i128>>, &'a [Stmt]);
+
+/// `case 1: { ...; break; }` is a case like any other.
+fn unblock(stmts: &[Stmt]) -> &[Stmt] {
+    match stmts {
+        [Stmt::Block(inner)] => inner,
+        _ => stmts,
+    }
+}
+
+/// The variables that the statements declare for the statements after
+/// them.
+fn declared(stmts: &[Stmt]) -> impl Iterator<Item = VarId> + '_ {
+    stmts.iter().flat_map(|stmt| match stmt {
+        Stmt::Decl(var) | Stmt::LetSome { var, .. } => vec![*var],
+        Stmt::Parse {
+            number,
+            error,
+            end,
+            start,
+            ..
+        } => number
+            .iter()
+            .chain(error)
+            .chain([end])
+            .chain(start.as_ref().map(|(_, read)| read))
+            .copied()
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// Whether the loop body has a `continue` for this loop.

@@ -57,6 +57,7 @@ const RESERVED: &[&str] = &[
     "scanned",
     "random",
     "Random",
+    "entry",
     "parse_int",
     "peek_byte",
     "read_byte",

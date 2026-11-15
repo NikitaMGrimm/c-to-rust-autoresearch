@@ -581,6 +581,12 @@ impl Reader<'_> {
                 part(0).map(|value| self.expr(value)).transpose()?,
             )),
             "NullStmt" => {}
+            // `__attribute__((fallthrough));` only says that a case falls
+            // through.
+            "AttributedStmt"
+                if inner
+                    .iter()
+                    .all(|part| matches!(kind(part), "FallThroughAttr" | "NullStmt")) => {}
             "GotoStmt" => match self.labels.get(text(node, "targetLabelDeclId")) {
                 Some(label) => out.push(Stmt::Goto(label.clone())),
                 None => return unsupported("a `goto` without its label", node),

@@ -16,6 +16,7 @@ mod records;
 mod refusals;
 mod scalars;
 mod search;
+mod switches;
 mod text;
 mod unions;
 mod voids;

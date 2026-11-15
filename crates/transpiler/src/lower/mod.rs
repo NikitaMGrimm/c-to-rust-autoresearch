@@ -864,8 +864,9 @@ impl Helper {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nest {
     Loop,
-    /// One case of a `switch`, and whether a `break` in the middle of it
-    /// leaves the `switch`.
+    /// One arm of a `switch`, with the cases that fall through into each
+    /// other, and whether a `break` in the middle of it leaves the
+    /// `switch`.
     Switch {
         left: bool,
     },

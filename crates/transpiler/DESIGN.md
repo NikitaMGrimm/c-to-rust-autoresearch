@@ -96,7 +96,7 @@ Keep to these:
 | A global that changes | A field of `Globals`, which `main` creates and each function that uses it takes as `globals: &Globals` or `&mut Globals` |
 | `main` | `fn main()`, with `-> ExitCode` unless it only returns 0; `argc` and `argv` from `std::env::args()` |
 | `for (int i = a; i < b; i++)` | `for i in a..b`, when the body changes neither `i` nor the bound |
-| `switch` without fall-through | `match` |
+| `switch` | `match`; cases that fall through share one arm, `entry @ (2 \| 1) => { if entry == 2 { … } … }` |
 | `printf` with a literal format | `print!` or `println!`, the format converted at translation time |
 | `const char *` that only holds string literals | `&str` |
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
@@ -439,7 +439,9 @@ place:
   second use is a use after a move. `Rc` belongs only on a slot that a fact
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
-- **Others.** `goto`, a `case` that falls through, unions other than the bits of a number (an `enum` when a
+- **Others.** `goto`, a `case` that falls through with a variable that a
+  later case uses, a `case` inside a loop (Duff's device), unions other
+  than the bits of a number (an `enum` when a
   tag says which member is live, `to_ne_bytes` for bytes beside a number),
   `+=` and `++` on a bit-field, variadic functions, an array whose length is an expression
   (Clang prints it only as text), a local that gets its first value in a branch or

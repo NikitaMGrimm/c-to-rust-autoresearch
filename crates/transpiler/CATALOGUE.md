@@ -868,3 +868,26 @@ Entry format, newest last:
   `g5_aabb` and `g5_agglom` hold one of several records, and
   `g5_call_predict` and `g5_get_predict_func` keep functions
 - Changes: extends R7, R8 and R10
+
+## R45: a `case` that falls through
+
+- C: a `switch` whose cases run into the case after them without `break`,
+  up to the case that leaves the `switch` with `break`, `return` or
+  `continue`, or to the end of the `switch`; `default` first, in the middle
+  or last among them; `__attribute__((fallthrough));` and
+  `[[fallthrough]];`, which say nothing more
+- Rust: one arm for all their labels, `entry @ (7 | 6 | 5) => { … }`, that
+  binds the value, which is evaluated once. Each part but the last runs
+  only for the labels at or before it, `if entry == 7 { … }`,
+  `if matches!(entry, 7 | 6) { … }`; from `default` on, for every value but
+  the labels after it, `if entry != 3 { … }`, and the arm is `entry => …`,
+  last in the `match` as `_` is. A `break` inside a part leaves the arm as
+  in R32
+- Needs: nothing
+- Refused: a variable that one case declares and a later case of the
+  `switch` uses, falling into it or not, whose scope in Rust would end with
+  its `if` or its arm; a `case` inside a loop or block of another case, as
+  in Duff's device
+- Motivation: `g5_siphash` reads the last bytes of a hash through cases
+  that fall through; `g5_cleanup` has such cases beside a `goto`
+- Changes: extends R3 and R32; the name `entry` is kept for the translation
