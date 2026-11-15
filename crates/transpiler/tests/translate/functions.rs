@@ -326,6 +326,91 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn a_pointer_to_a_function_that_may_be_null_is_an_option() {
+    let rust = check(
+        "fn_null",
+        &program(
+            r#"
+static int (*hook)(int);
+static void set(int k) { if (k) hook = negate; }
+static void run(int (*f)(int), int x) { if (!f) return; printf("%d\n", f(x)); }
+int main(int argc, char **argv) {
+    int k = atoi(argv[1]);
+    int (*f)(int) = NULL;
+    int (*g)(int) = 0;
+    if (k == 1) f = twice;
+    if (k == 2) f = square;
+    if (k > 1) g = negate;
+    if (f) printf("%d\n", f(k)); else printf("none\n");
+    if (g != NULL) printf("%d\n", g(k));
+    run(k ? twice : NULL, k);
+    run(NULL, k);
+    run(square, k);
+    set(k);
+    printf("%d\n", hook ? hook(k) : 0);
+    return 0;
+}
+"#,
+        ),
+        RUNS,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "hook: Option<fn(i32) -> i32>,",
+            "globals.hook = Some(negate);",
+            "fn run(f: Option<fn(i32) -> i32>, x: i32) {",
+            "let Some(f) = f else {",
+            r#"println!("{}", f(x));"#,
+            "let mut f: Option<fn(i32) -> i32> = None;",
+            "f = Some(twice);",
+            "if let Some(f) = f {",
+            r#"println!("{}", f(k));"#,
+            "if let Some(g) = g {",
+            "run(if k != 0 { Some(twice) } else { None }, k);",
+            "run(None, k);",
+            "run(Some(square), k);",
+        ],
+    );
+}
+
+#[test]
+fn a_call_through_a_pointer_that_may_be_null_unwraps_it() {
+    let rust = check(
+        "fn_null_call",
+        &program(
+            r#"
+struct handler { int id; int (*on)(int); };
+int main(int argc, char **argv) {
+    int k = atoi(argv[1]);
+    struct handler h = { 1 };
+    int (*f)(int) = NULL;
+    if (k >= 0) f = twice;
+    if (k > 1) h.on = square;
+    if (h.on) printf("%d\n", h.on(k)); else printf("%d none\n", h.id);
+    printf("%d\n", f(k));
+    return 0;
+}
+"#,
+        ),
+        RUNS,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "on: Option<fn(i32) -> i32>,",
+            "Self { id: 0, on: None }",
+            "let mut h: Handler = Handler { id: 1, on: None };",
+            "h.on = Some(square);",
+            r#"println!("{}", h.on.unwrap()(k));"#,
+            r#"println!("{}", f.unwrap()(k));"#,
+        ],
+    );
+}
+
+#[test]
 fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
     let refused = |name, main: &str| translate(name, &program(main)).unwrap_err();
     let cases = [
@@ -393,11 +478,6 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
             "fn_array_store_null",
             "int main(int argc, char **argv) { int (*ops[2])(int) = { twice, square }; ops[1] = 0; return ops[argc](1); }\n",
             "unsupported: NULL for a pointer to a function that holds no NULL, at line 7",
-        ),
-        (
-            "fn_nullable",
-            "int main(int argc, char **argv) { int (*f)(int) = 0; if (argc > 1) f = twice; return f ? f(1) : 0; }\n",
-            "unsupported: a pointer to a function that may be NULL: no rule yet, at line 7",
         ),
         (
             "fn_globals",

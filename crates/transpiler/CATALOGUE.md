@@ -813,18 +813,24 @@ Entry format, newest last:
   record that holds one stays `Copy` and has no `Default`; a global that
   never changes is a `const`, an array of them a `static`; the value is
   the function's path, and the call `p(x)`, `(s.op)(x)`,
-  `ops[i as usize](x)`, `choose(k)(x)`, the callee evaluated first
+  `ops[i as usize](x)`, `choose(k)(x)`, the callee evaluated first. One
+  that NULL may reach is `Option<fn(A) -> R>`, with `None`, `Some(f)`, and
+  the tests and the narrowing of R10: `if let Some(f) = f`, `let Some(f) =
+  f else { return; }`; a call where no test holds is `f.unwrap()(x)`, as
+  C's behaviour is undefined there
 - Needs: `Facts::pointer`, whose slots hold a pointer to a function as
   any other pointer but get no fact from it but `nullable`; a function
-  is never NULL, and nor is an element of an array of them
+  is never NULL, and nor is an element of an array of them; the rewrite
+  `normalise::narrow`
 - Refused: a pointer to a function that takes or returns a pointer, a
   comparison of two functions, a cast to another function type, to
   `void *` or to an integer, a function without a prototype or with
   variable arguments, the address of a library function and one handed
   to the library, a pointer to a pointer to a function, `sizeof` of one,
-  an array of them that holds NULL, a pointer to a function that uses
-  globals, and one that may be NULL
+  an array of them that holds NULL, and a pointer to a function that
+  uses globals
 - Motivation: `g5_mathop` and `g5_charinbuf` call functions through
   pointers, which were refused as `a call through a pointer`
 - Changes: R1, whose calls by name stay as they are; the front end reads
-  a function used as a value as a pointer to it
+  a function used as a value as a pointer to it. R10 holds a pointer to a
+  function that may be NULL
