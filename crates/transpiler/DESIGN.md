@@ -498,7 +498,9 @@ place:
   cursor that gets the end of a number (`p = end` in a loop over a line)
   needs the end pointer in the cursor's group.
 - **Walking a list.** `while (p) { …; p = p->next; }` needs a narrowing for
-  loops like the one for `if`; today it uses `is_some()` and `unwrap()`.
+  loops like the one for `if`; today it uses `is_some()` and `unwrap()`,
+  and `p.take().unwrap().next.as_deref_mut()` for the step of a borrow
+  that is stored through.
 - **Shared memory.** Two slots that own the same memory do not compile: the
   second use is a use after a move, which is refused where the first slot
   is a local. `Rc` belongs only on a slot that a fact

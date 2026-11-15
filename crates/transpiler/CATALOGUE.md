@@ -207,7 +207,10 @@ Entry format, newest last:
   test with no such form; `as_deref()`, `as_deref_mut()` and `unwrap()` for
   other uses, and `.map(|found| &*found)` for a call's result that may be
   stored through and is kept to read, since `as_deref()` would borrow from
-  a value that ends with its statement
+  a value that ends with its statement. A borrow that may be NULL and is
+  stored through walks on through itself, `p = p->next`, as `p =
+  p.take().unwrap().next.as_deref_mut();`: a reborrow of `p` would still
+  be in use where `p` is assigned
 - Needs: `Facts::pointer` (`nullable`); the rewrite `normalise::narrow`,
   which gives the tested pointer a variable of its own
 - Motivation: skeleton

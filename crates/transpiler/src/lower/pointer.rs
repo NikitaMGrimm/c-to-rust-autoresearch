@@ -556,7 +556,19 @@ impl Lower<'_> {
                     return Ok(rust::method(first, "unwrap_or", [rust::int(0, "")]));
                 }
                 let value = self.slot_value(pointer, write)?;
-                let value = self.unwrapped(value, repr, write);
+                // `p = p->next` for a borrow that may be NULL and that is
+                // stored through: the borrow goes on, and `p` holds
+                // nothing until the assignment gives it the next one. A
+                // reborrow of `p` would still be in use when `p` is
+                // assigned.
+                let walks = matches!(pointer.kind, ExprKind::Var(var) if self.walking == Some(var))
+                    && repr.nullable
+                    && repr.mutable
+                    && !repr.owned;
+                let value = match walks {
+                    true => rust::method(rust::method(value, "take", []), "unwrap", []),
+                    false => self.unwrapped(value, repr, write),
+                };
                 Ok(if field {
                     value
                 } else {

@@ -1000,8 +1000,24 @@ impl Lower<'_> {
                 return unsupported("a pointer that is moved or stored with no rule", expr.at);
             };
             let repr = self.repr(slot, expr.at)?;
-            let value = self.pointer(value, repr)?;
-            return Ok(rust::assign(self.place(target, true)?, value));
+            // `p = p->next`: the one read of `p` is the pointer that the
+            // field is reached through.
+            let through = |value: &Expr| match &value.kind {
+                ExprKind::Member {
+                    base, arrow: true, ..
+                } => match base.uncast().kind {
+                    ExprKind::Var(var) => Some(var),
+                    _ => None,
+                },
+                _ => None,
+            };
+            self.walking = match target.kind {
+                ExprKind::Var(var) if through(value) == Some(var) => Some(var),
+                _ => None,
+            };
+            let value = self.pointer(value, repr);
+            self.walking = None;
+            return Ok(rust::assign(self.place(target, true)?, value?));
         }
         let width = self.bit_field(target);
         let Some((op, compute)) = op else {

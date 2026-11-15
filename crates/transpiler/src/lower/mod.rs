@@ -947,6 +947,9 @@ struct Lower<'a> {
     /// Whether the last call of a function of the program was written as a
     /// block that splits an array first (R54).
     split: bool,
+    /// The local pointer that the assignment being written moves on
+    /// through itself, `p = p->next`.
+    walking: Option<VarId>,
     /// The block entered at a label that is being translated (R49).
     entered: Option<Entered>,
     /// The library's records that the translation names: `div_t` and its
@@ -979,6 +982,7 @@ impl<'a> Lower<'a> {
             labels: Vec::new(),
             counters: Vec::new(),
             split: false,
+            walking: None,
             entered: None,
             quotients: Default::default(),
             zeroing: Default::default(),

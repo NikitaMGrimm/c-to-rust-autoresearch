@@ -206,3 +206,58 @@ int main(int argc, char *argv[]) {
     );
     assert_lines(&rust, &["list = Some(spare);", "list = None;"]);
 }
+
+#[test]
+fn a_borrow_that_is_stored_through_walks_a_list() {
+    // `p = p.as_deref_mut().unwrap().next.as_deref_mut()` does not compile:
+    // the reborrow of `p` is in use where `p` is assigned.
+    let rust = check(
+        "walk-mut",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+struct bead { int weight; struct bead *after; };
+static struct bead *string_of(int count) {
+    struct bead *first = NULL;
+    for (int i = count; i > 0; i--) {
+        struct bead *fresh = malloc(sizeof(struct bead));
+        fresh->weight = i;
+        fresh->after = first;
+        first = fresh;
+    }
+    return first;
+}
+static void heavier(struct bead *string, int by) {
+    struct bead *at = string;
+    while (at != NULL) {
+        at->weight += by;
+        at = at->after;
+    }
+}
+static void weigh(struct bead *string, int skip, int weight) {
+    struct bead *at = string;
+    for (int i = 0; at != NULL && i < skip; i++) {
+        at = at->after;
+    }
+    if (at != NULL) at->weight = weight;
+}
+int main(int argc, char **argv) {
+    struct bead *string = string_of(atoi(argv[1]));
+    heavier(string, 10);
+    weigh(string, 1, 500);
+    weigh(string, 40, 9);
+    int sum = 0;
+    for (const struct bead *at = string; at != NULL; at = at->after) sum += at->weight;
+    printf("%d\n", sum);
+    while (string != NULL) {
+        struct bead *gone = string;
+        string = gone->after;
+        free(gone);
+    }
+    return 0;
+}
+"#,
+        &[&["0"], &["1"], &["5"]],
+        "",
+    );
+    assert_lines(&rust, &["at = at.take().unwrap().after.as_deref_mut();"]);
+}
