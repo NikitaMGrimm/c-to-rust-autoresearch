@@ -932,6 +932,32 @@ impl Lower<'_> {
         if !same_place(&array, &other) || !array.is_pure() {
             return None;
         }
+        // One index is the other and a constant more, `&a[i]` and
+        // `&a[i + 1]`: the sum of a signed `int` or wider does not wrap.
+        let more = |index: &Expr, base: &Expr| {
+            let ExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), left, right) =
+                &counted(index).kind
+            else {
+                return None;
+            };
+            let base = counted(base);
+            let signed = matches!(base.ty.int(), Some((32 | 64, true))) && base.ty == left.ty;
+            let (base_side, constant) = match op {
+                BinOp::Add if same_value(right, base) => (right, left),
+                _ => (left, right),
+            };
+            match constant.constant(self.program) {
+                Some(by) if signed && same_value(base_side, base) && base.is_pure() => {
+                    Some(if *op == BinOp::Add { by } else { -by })
+                }
+                _ => None,
+            }
+        };
+        match (more(&second, &first), more(&first, &second)) {
+            (Some(by), _) if by != 0 => return Some(by > 0),
+            (_, Some(by)) if by != 0 => return Some(by < 0),
+            _ => {}
+        }
         // The least value an index takes.
         let least = |index: &Expr| match counted(index).kind {
             ExprKind::Var(var) => self

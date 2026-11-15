@@ -874,7 +874,10 @@ Entry format, newest last:
   = 1; …; i++) copy(&a[0], &a[i]);`, with a step that adds to it and a
   body and a condition that leave it alone; the counter is an `int` or
   wider and signed, so that it may not wrap back to the constant, and it
-  is the index itself, not cut to a narrower type
+  is the index itself, not cut to a narrower type; or one index is the
+  other and a constant more or less, `swap(&a[i], &a[i + 1])`, `&a[k - 2]`
+  beside `&a[k]`, for an `i` that is an `int` or a `long` read without an
+  effect, whose sum does not wrap
 - Rust: the array is split before the later element, so that each
   argument borrows a part of its own: `let (lower, upper) =
   a.split_at_mut(i as usize); copy(&lower[0], &mut upper[0]);`, in a
@@ -885,7 +888,9 @@ Entry format, newest last:
 - Refused, as before, with `two arguments that point into the same
   memory, one of them to store through`: indices that may be equal (a
   counter that starts at the constant, a variable, a loop that counts
-  down or whose body moves the counter), more than two such arguments,
+  down or whose body moves the counter, two different variables, an
+  unsigned or narrow index beside itself and a constant more, which may
+  wrap), more than two such arguments,
   and a parameter that reads on from its element as an array, which
   would reach the other argument
 - Motivation: `g4_memcpy_fun_buffers` copies its first buffer to each of

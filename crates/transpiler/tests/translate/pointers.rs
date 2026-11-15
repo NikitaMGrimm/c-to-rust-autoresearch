@@ -399,3 +399,57 @@ int main(int argc, char *argv[]) {
     );
     assert_lines(&rust, &["view = &mut g;", "seen += *top;"]);
 }
+
+#[test]
+fn an_element_and_the_one_a_constant_further_are_split() {
+    // R54: `i` and `i + 1` are never the same element.
+    let rust = check(
+        "neighbours",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+static void trade(int *one, int *other) { int kept = *one; *one = *other; *other = kept; }
+int main(int argc, char **argv) {
+    int from = atoi(argv[1]);
+    int row[7] = { 5, 3, 8, 1, 9, 2, 7 };
+    for (int pass = 0; pass < 7; pass++) {
+        for (int at = 0; at + 1 < 7; at++) {
+            if (row[at] > row[at + 1]) trade(&row[at], &row[at + 1]);
+        }
+    }
+    trade(&row[from + 2], &row[from]);
+    long far = from;
+    trade(&row[far - 1], &row[far]);
+    for (int at = 0; at < 7; at++) printf("%d ", row[at]);
+    printf("\n");
+    return 0;
+}
+"#,
+        &[&["1"], &["4"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let (lower, upper) = row.split_at_mut((at + 1) as usize);",
+            "trade(&mut lower[at as usize], &mut upper[0]);",
+            "let (lower, upper) = row.split_at_mut((from + 2) as usize);",
+            "trade(&mut upper[0], &mut lower[from as usize]);",
+            "let (lower, upper) = row.split_at_mut(far as usize);",
+        ],
+    );
+    let refused = |name, index: &str, other: &str| {
+        crate::common::translate(
+            name,
+            &format!(
+                "static void trade(int *one, int *other) {{ int kept = *one; *one = *other; *other = kept; }}\nint main(int argc, char **argv) {{\n    int row[4] = {{ 1, 2, 3, 4 }};\n    unsigned u = 1; short s = 1; int i = 1, j = 1;\n    trade(&row[{index}], &row[{other}]);\n    return row[u] + row[s] + row[i] + row[j];\n}}\n"
+            ),
+        )
+        .unwrap_err()
+    };
+    let reason = "unsupported: two arguments that point into the same memory, one of them to store through, at line 5";
+    assert_eq!(refused("neighbours-unsigned", "u", "u + 1"), reason);
+    assert_eq!(refused("neighbours-narrow", "s", "(short)(s + 1)"), reason);
+    assert_eq!(refused("neighbours-other", "i", "j + 1"), reason);
+    assert_eq!(refused("neighbours-none", "i", "i + 0"), reason);
+    assert_eq!(refused("neighbours-effect", "i++", "i + 1"), reason);
+}
