@@ -167,7 +167,8 @@ refuses with the reason instead:
 A function that returns an owner out of a record which it only borrows,
 as `struct node *after(struct node *p) { return p->next; }`, is refused
 too: the translation would take the owner out of the record, where C's
-record still points to it.
+record still points to it. A function that nothing names is translated:
+what it would do shows nowhere.
 
 A test that the facts decide, such as `if (!p)` after a `malloc` that Rust
 cannot fail, is dropped with its dead branch, and the analysis runs again
@@ -736,6 +737,13 @@ become a fact and a refusal:
 - A pointer that a function returns from its parameter is not known to
   point to the caller's local: `int *p = identity(&x); return p;` is
   translated and does not compile, where the result should be refused.
+- A copy of a pointer is followed through the statements in their order
+  (`Facts::in_use`). Two reads in one statement, as `printf("%d %d", *q,
+  *p)` for a `q` that is stored through, and a copy that is read after a
+  `goto` and its label, are translated and do not compile.
+- A function that takes a record out of a list through a local, as `n =
+  p->next; p->next = n->next; return n;`, is translated and does not
+  compile: the local borrows the field that is then stored to.
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.

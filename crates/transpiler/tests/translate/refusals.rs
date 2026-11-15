@@ -372,4 +372,9 @@ fn a_result_taken_out_of_a_borrowed_record_is_refused() {
         translate("walk-call", c).unwrap_err(),
         "unsupported: a result that takes its memory out of a record that the function borrows: no rule yet, at line 4"
     );
+    let c = c.replace("return at->after;", "return at->after->after;");
+    assert_eq!(
+        translate("walk-call-twice", &c).unwrap_err(),
+        "unsupported: a result that takes its memory out of a record that the function borrows: no rule yet, at line 4"
+    );
 }

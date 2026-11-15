@@ -1506,11 +1506,9 @@ impl Lower<'_> {
                 // An owner that is returned out of a record which the
                 // function only borrows would leave `None` in the record,
                 // where C's record still points to the memory.
-                if let ExprKind::Member {
-                    base, arrow: true, ..
-                } = &value.uncast().kind
-                    && let ExprKind::Var(holder) = base.uncast().kind
+                if let Some(holder) = holder(value)
                     && repr.owned
+                    && named(self.program, &self.program.functions[function].name)
                     && !self.repr(Slot::Var(holder), value.at)?.owned
                 {
                     return unsupported(
@@ -1535,6 +1533,33 @@ impl Lower<'_> {
                 rust::call("ExitCode::from", [code])
             }
         })
+    }
+}
+
+/// Whether the program names the function anywhere, to call it or to
+/// keep its address. What a function that nothing names would do to its
+/// arguments shows nowhere.
+fn named(program: &Program, name: &str) -> bool {
+    let mut names = |expr: &Expr| matches!(&expr.kind, ExprKind::Function(named) if named == name);
+    let bodies = &program.functions;
+    bodies
+        .iter()
+        .any(|function| any_expr(&function.body, &program.vars, &mut names))
+        || program.globals.iter().any(|&global| {
+            let init = program.vars[global].init.as_ref();
+            init.is_some_and(|init| init.any(&mut names))
+        })
+}
+
+/// The pointer variable through which a field is reached: `p` in
+/// `p->next` and `p->next->next`.
+fn holder(field: &Expr) -> Option<VarId> {
+    match &field.uncast().kind {
+        ExprKind::Member { base, arrow, .. } => match (&base.uncast().kind, arrow) {
+            (ExprKind::Var(holder), true) => Some(*holder),
+            _ => holder(base),
+        },
+        _ => None,
     }
 }
 
