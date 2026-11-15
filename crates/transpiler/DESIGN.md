@@ -273,9 +273,9 @@ a cursor on that argument (see Cursors) that may be absent, an
 | `strpbrk(s, set)` | `find_any(s.as_bytes(), set.as_bytes())`, a helper, for text and bytes |
 | the result only tested: `if (strchr(s, c))`, `strchr(s, c) != NULL`, `== NULL`, `!strstr(s, t)`, also inside `&&`, `\|\|` and `?:` | `.is_some()`, `.is_none()`; `s.contains('x')` for text |
 | kept in a local that is only tested for NULL | `let found: Option<usize> = …;` and `found.is_some()`: `normalise::found` gives the local `Type::Found` |
-| kept in a local and used where the test holds: `if (p) { *p = 0; n = p - s; puts(p + 1); }` | `if let Some(p) = p { s[p] = 0; n = p as i64; … &s[p + 1..] }`: the local joins the cursors of `s`, so `s` stays usable beside it |
-| the search goes on from the result: `p = strchr(p + 1, c)`, `for (s = in; (s = strchr(s, c)); s++)` | the search of the rest, `find_byte(&s[p + 1..], c).map(\|at\| p + 1 + at)`; a cursor that is assigned in a condition and may be NULL is refused until loops narrow |
-| returned, handed on or stored in a record: `return memchr(b, c, n);` | the rest of the array from there, `….map(\|at\| &b[at..])`, an `Option<&[u8]>` as for any pointer that may be NULL; the caller's `found - buffer` is refused as a comparison of two addresses |
+| kept in a local and used where the test holds: `if (p) { *p = 0; n = p - s; puts(p + 1); }` | refused: `a place that a search found, used as a pointer: no rule yet`. It should join the cursors of `s` as an index that may be absent, `if let Some(p) = p { s[p] = 0; … }`, so that `s` stays usable beside it |
+| the search goes on from the result: `p = strchr(p + 1, c)`, `for (s = in; (s = strchr(s, c)); s++)` | refused with the same reason. It should be the search of the rest, `find_byte(&s[p + 1..], c).map(\|at\| p + 1 + at)` |
+| returned, handed on or stored in a record: `return memchr(b, c, n);` | refused with the same reason. It should be the rest of the array from there, `….map(\|at\| &b[at..])`, an `Option<&[u8]>` |
 | the first argument is itself NULL, an argument of the program or a result of `getenv` | NULL is refused (undefined in C); the others are text |
 | `c` beyond a `char` (`strchr(s, 300)`) | `c as u8`, as C converts it |
 | a store through the result when the argument is `const` text | refused as any store to text |
@@ -290,9 +290,9 @@ an `Option<String>` that the program owns:
 | `getenv(name)` for a `name` that is text or bytes | `std::env::var(name)`, `std::env::var(text_of(&name))` |
 | read as text: `atoi(v)`, `strtol(v, …)`, `printf("%s", v)`, `strlen(v)`, `strcmp(v, "x")`, `strchr(v, c)` | the rules for text, on `&v` |
 | `getenv("NAME") != NULL` and `== NULL`, not kept | `std::env::var("NAME").is_ok()`, `.is_err()` |
-| a byte of it, `v[0]`, `*v` | `v.as_bytes().first().copied().unwrap_or(0)`, `v.as_bytes().get(i)…`, as for an argument of the program |
+| a byte of it: `*v`; `v[i]` | `*v` by the rule for text; `v[i]` is refused, as a byte of an argument of the program is |
 | a store through it, `v[0] = 'x'`, or a move, `v++` | refused: the environment's text is not the program's to change, and a cursor over text needs its bytes |
-| kept in a record or a global, or returned | an owner of the `String`, by the rules for owners |
+| kept in a record or a global, or returned | refused: `kept in a record or a global: no rule yet`, and a result that borrows a local's `String` as one that points to a variable that ends with the function. It should be an owner of the `String` |
 | a value that is not UTF-8, or a name with `=` or a NUL | `var` gives `None` or stops where C gives the bytes; a weak spot, listed below |
 | `setenv`, `putenv`, `environ` | refused |
 
@@ -546,6 +546,10 @@ become a fact and a refusal:
   not know which array a local points into. A call that takes the pointer
   to store through and the array itself, as `char *p = s; memmove(p + 1,
   s, 3);` does, is translated and does not compile.
+- `parse_float_checked` tells an underflow from the number that was read,
+  after rounding. A text below the least normal number that rounds up to
+  it, such as `2.2250738585072012e-308`, is a range error for `strtod` and
+  none here.
 
 ## Tests
 
