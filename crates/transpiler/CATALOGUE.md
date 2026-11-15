@@ -1284,3 +1284,38 @@ Entry format, newest last:
   pointer that never changes; no development program needs it
 - Changes: R9 no longer sees such a pointer; R60's refusal of a compound
   literal's address no longer holds for a global pointer's initialiser
+
+## R59: `realloc` of an owned array
+
+- C: `p = realloc(p, n * sizeof(T))`, also with `sizeof *p`, `sizeof(T) *
+  n`, a bare `sizeof` for one element, and a plain count for an array of
+  bytes, with or without a cast of the result, where `p` is a local, a
+  field or a global that owns its array
+- Rust: for a size that is a product of literals and `sizeof`,
+  `p.resize(4, zero)` on the `Vec<T>` that the slot is, and
+  `p.get_or_insert_with(Vec::new).resize(…)` where it may be NULL, since
+  `realloc(NULL, size)` is `malloc(size)`. Any other size may be 0 when
+  the program runs. What C does then is the library's choice, and the
+  translation does what the library of the reference does, glibc: it
+  frees the array and returns NULL, and for a pointer that is NULL
+  already it returns an empty array. So NULL may reach the slot, an
+  `Option<Vec<T>>`, and the count is found first: `{ let grown_len = n as
+  usize; if grown_len == 0 && p.is_some() { p = None; } else {
+  p.get_or_insert_with(Vec::new).resize(grown_len, zero); } }`. The
+  elements that C keeps are kept; the new ones are zero, where C leaves
+  them without a value
+- Needs: `Facts::pointer` (`owned`, `many`, `nullable`): the result of
+  `realloc` is a fresh array, or NULL unless `facts::fixed_size` knows
+  the size, and its first argument owns what it frees, as `free`'s does
+- Refused: the result stored anywhere but the pointer it grows, tested or
+  not stored (`` `realloc` whose result is not stored back in the pointer
+  it grows: no rule yet ``), which includes `q = realloc(p, size)` and the
+  test of a second pointer for NULL before it replaces the first; a size
+  that is no count of elements written with `sizeof` (`` a size of
+  `realloc` with no rule ``); a constant size of 0 or one that is not such
+  a product; a count that is not constant and 64 bits wide, since C keeps
+  the low 64 bits of the product, which may be a small array; the array
+  of a parameter, which the caller still holds
+- Motivation: programs outside the development set grow an array with
+  `realloc`; no development program needs it alone
+- Changes: R8's slots owned only memory from `malloc` and `calloc`

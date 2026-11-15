@@ -470,6 +470,11 @@ impl Lower<'_> {
     /// nothing that the program does.
     pub(super) fn decided(&self, cond: &Expr) -> R<Option<bool>> {
         match self.facts.truth(self.program, cond) {
+            // R59: `realloc` is never NULL to the facts, as `malloc` is,
+            // but its result is not stored back where the test is.
+            Some(_) if calls_realloc(cond) => {
+                unsupported(super::pointer::REALLOC_ELSEWHERE, cond.at)
+            }
             Some(_) if !cond.is_pure() => unsupported(
                 "a test that the analysis decides but that calls or assigns",
                 cond.at,
@@ -490,6 +495,9 @@ impl Lower<'_> {
         };
         if errno {
             return unsupported("a read of `errno` that is not one call's error", cond.at);
+        }
+        if calls_realloc(cond) {
+            return unsupported(super::pointer::REALLOC_ELSEWHERE, cond.at);
         }
         if let Some(truth) = self.decided(cond)? {
             return Ok(match truth {
@@ -1025,6 +1033,13 @@ impl Lower<'_> {
             let (None, Some(slot)) = (op, place_slot(target)) else {
                 return unsupported("a pointer that is moved or stored with no rule", expr.at);
             };
+            if let ExprKind::Call(callee, args) = &value.uncast().kind
+                && callee.function() == Some("realloc")
+                && let [grown, bytes] = args.as_slice()
+                && same_value(grown.uncast(), target)
+            {
+                return self.resize(target, bytes);
+            }
             let repr = self.repr(slot, expr.at)?;
             // `p = p->next`: the one read of `p` is the pointer that the
             // field is reached through.
@@ -1364,6 +1379,11 @@ fn signed_offset(index: &Expr) -> Option<&Expr> {
 
 /// Whether the two expressions read the same places and constants in the
 /// same way, so that they have one value. Neither has an effect.
+fn calls_realloc(expr: &Expr) -> bool {
+    matches!(&expr.kind, ExprKind::Call(callee, _) if callee.function() == Some("realloc"))
+        || expr.children().into_iter().any(calls_realloc)
+}
+
 fn same_value(left: &Expr, right: &Expr) -> bool {
     left.ty == right.ty
         && match (&left.kind, &right.kind) {

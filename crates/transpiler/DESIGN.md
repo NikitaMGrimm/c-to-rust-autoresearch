@@ -106,7 +106,7 @@ Keep to these:
 | `printf` with a literal format | `print!` or `println!`, the format converted at translation time |
 | `const char *` that only holds string literals | `&str` |
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
-| `malloc`, `calloc`, `free` | `Box::new`, `vec![zero; n]`, `drop` |
+| `malloc`, `calloc`, `realloc`, `free` | `Box::new`, `vec![zero; n]`, `resize`, `drop` |
 | `scanf("%d", &x)` | `if let Some(scanned) = scan_int() { x = scanned as i32; }` |
 | `fgets(line, sizeof line, stdin)` | `read_line(&mut line)` |
 | `fgets(line, size, stdin)` for a `char *line` | `read_line_within(line, size)` |

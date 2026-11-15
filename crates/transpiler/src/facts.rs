@@ -326,6 +326,7 @@ impl Facts {
                     None if ALLOCATORS.contains(&name) => vec![Source::Fresh {
                         many: !allocates_one(program, name, args, None),
                     }],
+                    None if name == "realloc" => grown(program, args),
                     None if name == "getenv" => vec![Source::Environment],
                     None if crate::normalise::SEARCHES.contains(&name) => vec![Source::Unknown(
                         "a place that a search found, used as a pointer: no rule yet",
@@ -345,6 +346,11 @@ impl Facts {
                     vec![Source::Fresh {
                         many: !allocates_one(program, name, args, pointer.ty.element()),
                     }]
+                }
+                // R59: what `realloc` returns is the array it grew, which
+                // the rule keeps in the slot that held it.
+                (ExprKind::Call(callee, args), _) if callee.function() == Some("realloc") => {
+                    grown(program, args)
                 }
                 (_, true) => sources(inner),
                 (_, false) => vec![Source::Unknown("a pointer made from a number")],
@@ -908,7 +914,8 @@ impl<'a> Walk<'a> {
             }
             return;
         }
-        if let ("free", Some(freed)) = (name, args.first()) {
+        // `realloc` frees the array it grows, as `free` does.
+        if let ("free" | "realloc", Some(freed)) = (name, args.first()) {
             for source in self.sources(freed) {
                 if let Source::Slot(slot) = source {
                     self.seed(slot).owned = true;
@@ -1568,5 +1575,42 @@ fn addresses(program: &Program, value: &Expr, targets: &mut HashSet<VarId>) {
             targets,
         ),
         _ => {}
+    }
+}
+
+/// What `realloc` returns: the array it grew, and NULL where its size may
+/// be 0 when the program runs, for which the reference's library frees
+/// the array and returns NULL.
+fn grown(program: &Program, args: &[Expr]) -> Vec<Source> {
+    match args.get(1).and_then(|bytes| fixed_size(program, bytes)) {
+        Some(_) => vec![Source::Fresh { many: true }],
+        None => vec![Source::Fresh { many: true }, Source::Null],
+    }
+}
+
+/// The size that an allocation always has: a product of literals and
+/// `sizeof` that is not 0 and that C computes as written. `Expr::constant`
+/// folds without C's conversions, so nothing else counts as known.
+pub fn fixed_size(program: &Program, bytes: &Expr) -> Option<i128> {
+    fn plain(expr: &Expr) -> bool {
+        match &in_size(expr).kind {
+            ExprKind::Int(value) => *value >= 0,
+            ExprKind::SizeOf(_) => true,
+            ExprKind::Binary(BinOp::Mul, left, right) => {
+                matches!(expr.ty.int(), Some((64, _))) && plain(left) && plain(right)
+            }
+            _ => false,
+        }
+    }
+    let size = bytes.constant(program)?;
+    (plain(bytes) && (1..=i128::from(i64::MAX)).contains(&size)).then_some(size)
+}
+
+/// The expression without the conversions to 64 bits around it, which
+/// keep the value of a size. A conversion to fewer bits cuts it.
+pub fn in_size(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Cast(inner) if matches!(expr.ty.int(), Some((64, _))) => in_size(inner),
+        _ => expr,
     }
 }

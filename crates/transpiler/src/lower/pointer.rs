@@ -7,6 +7,10 @@ use crate::facts::{ALLOCATORS, Slot, is_argv, place_slot};
 use crate::rust;
 use syn::parse_quote;
 
+/// R59 grows an array only in place, in the slot that held it.
+pub(super) const REALLOC_ELSEWHERE: &str =
+    "`realloc` whose result is not stored back in the pointer it grows: no rule yet";
+
 /// Whether the callee is the library's `getenv`.
 pub(super) fn is_getenv(program: &crate::c::Program, callee: &Expr) -> bool {
     callee.function() == Some("getenv") && program.function("getenv").is_none()
@@ -250,6 +254,11 @@ impl Lower<'_> {
                     && ALLOCATORS.contains(&name)
                 {
                     return Ok(wrap(self.allocate(name, args, pointer, to)?));
+                }
+                if let ExprKind::Call(callee, _) = &inner.kind
+                    && callee.function() == Some("realloc")
+                {
+                    return unsupported(REALLOC_ELSEWHERE, at);
                 }
                 self.same_element(pointer, inner)?;
                 self.pointer(inner, to)
@@ -713,6 +722,102 @@ impl Lower<'_> {
             _ => return unsupported("an allocation whose size has no rule", at),
         };
         Ok(parse_quote!(vec![#zero; #count]))
+    }
+
+    /// R59: `p = realloc(p, size)` as `p.resize(count, zero)` on the `Vec`
+    /// that `p` is. The elements that C keeps are kept; C leaves the new
+    /// ones without a value, so zero is right. A slot that may be NULL
+    /// gets an empty `Vec` first, as `realloc(NULL, size)` is `malloc`.
+    pub(super) fn resize(&mut self, target: &Expr, bytes: &Expr) -> R<syn::Expr> {
+        let program = self.program;
+        let at = target.at;
+        let Some(slot) = place_slot(target) else {
+            return unsupported("`realloc` of a pointer expression with no rule", at);
+        };
+        // A parameter's array belongs to the caller, which still holds it.
+        if let ExprKind::Var(var) = target.kind
+            && program.vars[var].kind == VarKind::Param
+        {
+            return unsupported("`realloc` of a parameter's array", at);
+        }
+        let repr = self.repr(slot, at)?;
+        let Some(element) = target.ty.element() else {
+            return unsupported("`realloc` of a pointer without a type", at);
+        };
+        if !(repr.owned && repr.many) || repr.text {
+            return unsupported("`realloc` of a pointer that does not own an array", at);
+        }
+        let Some((size, _)) = element.layout(program) else {
+            return unsupported("`realloc` of a type without a size", at);
+        };
+        let size = i128::from(size);
+        // A size that is always the same and not 0 keeps the array. Any
+        // other may be 0 when the program runs, for which the reference's
+        // library frees the array and returns NULL.
+        let fixed = crate::facts::fixed_size(program, bytes).is_some();
+        if !fixed && bytes.constant(program).is_some() {
+            return unsupported("a constant size of `realloc` that keeps no array", at);
+        }
+        // A size is computed in 64 bits: a conversion to fewer cuts it,
+        // and a product of narrower numbers wraps.
+        let in_size = crate::facts::in_size;
+        let is_size = |bytes: &Expr| {
+            matches!(in_size(bytes).kind, ExprKind::SizeOf(_))
+                && bytes.constant(program) == Some(size)
+        };
+        let whole = in_size(bytes);
+        let count = match &whole.kind {
+            ExprKind::Binary(BinOp::Mul, count, bytes)
+            | ExprKind::Binary(BinOp::Mul, bytes, count)
+                if is_size(bytes) =>
+            {
+                // C multiplies in 64 bits and keeps the low ones: a count
+                // of that width may give a small array where Rust's count
+                // of elements has none.
+                let wide = count.uncast().ty == Type::Index
+                    || matches!(count.uncast().ty.int(), Some((64, _)));
+                if !fixed && wide {
+                    return unsupported(
+                        "a count of `realloc` as wide as a size, whose product C may wrap",
+                        at,
+                    );
+                }
+                self.index_value(count)?
+            }
+            _ if is_size(bytes) => rust::int(1, ""),
+            _ if size == 1 => self.index_value(bytes)?,
+            _ => return unsupported("a size of `realloc` with no rule", at),
+        };
+        let zero = self.zero(element, at)?;
+        let place = self.place(target, true)?;
+        let array = match repr.nullable {
+            true => rust::method(
+                place.clone(),
+                "get_or_insert_with",
+                [parse_quote!(Vec::new)],
+            ),
+            false => place.clone(),
+        };
+        if fixed {
+            return Ok(rust::method(array, "resize", [count, zero]));
+        }
+        if !repr.nullable {
+            return unsupported(
+                "`realloc` to a size that may be 0 of a pointer that holds no NULL",
+                at,
+            );
+        }
+        // The count is found first: it may read the array itself.
+        let held = rust::method(place.clone(), "is_some", []);
+        let resize = rust::method(array, "resize", [parse_quote!(grown_len), zero]);
+        Ok(parse_quote!({
+            let grown_len = #count;
+            if grown_len == 0 && #held {
+                #place = None;
+            } else {
+                #resize;
+            }
+        }))
     }
 
     /// R8: `free(p)` as `drop`. The memory would be freed at the end of the

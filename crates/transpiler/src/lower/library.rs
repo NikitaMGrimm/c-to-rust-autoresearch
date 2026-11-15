@@ -121,6 +121,7 @@ impl Lower<'_> {
                 Ok(parse_quote!(#print!("{}", #value)))
             }
             ("free", [pointer]) => self.free(pointer),
+            ("realloc", _) => unsupported(super::pointer::REALLOC_ELSEWHERE, at),
             // R46: the numbers of `rand` are those of a `Random` that the
             // one function that calls it holds.
             ("rand", []) => {

@@ -1,4 +1,4 @@
-use crate::common::{assert_lines, check};
+use crate::common::{assert_lines, check, translate};
 
 #[test]
 fn allocations_are_owned_and_freed_by_their_owner() {
@@ -260,4 +260,206 @@ int main(int argc, char **argv) {
         "",
     );
     assert_lines(&rust, &["at = at.take().unwrap().after.as_deref_mut();"]);
+}
+
+#[test]
+fn realloc_resizes_the_array_its_pointer_owns() {
+    let rust = check(
+        "grow",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct stack { long *slots; int top; int room; };
+static unsigned *marks;
+static void put(struct stack *s, long value) {
+    if (s->top == s->room) {
+        s->room += 3;
+        s->slots = (long *)realloc(s->slots, s->room * sizeof(long));
+    }
+    s->slots[s->top++] = value;
+}
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct stack s;
+    s.top = 0;
+    s.room = 1;
+    s.slots = malloc(sizeof *s.slots);
+    for (int i = 0; i < n; i++) put(&s, (long)i * 7);
+    float *w = malloc(2 * sizeof(float));
+    w[0] = 0.5f;
+    w[1] = 1.5f;
+    w = realloc(w, sizeof(float) * (n + 2));
+    for (int i = 2; i < n + 2; i++) w[i] = w[i - 1] + w[i - 2];
+    char *word = malloc(2);
+    word[0] = 'q';
+    word[1] = 0;
+    word = realloc(word, n + 2);
+    for (int i = 1; i <= n; i++) word[i] = 'a' + i;
+    word[n + 1] = 0;
+    marks = malloc(sizeof(unsigned));
+    marks[0] = 9;
+    marks = realloc(marks, (n + 1) * sizeof *marks);
+    for (int i = 1; i <= n; i++) marks[i] = marks[i - 1] + 2;
+    int *seen = NULL;
+    int count = 0;
+    for (int i = 0; i < n; i += 2) {
+        seen = realloc(seen, (count + 1) * sizeof(int));
+        seen[count++] = i;
+    }
+    for (int i = 0; i < s.top; i++) printf("%ld ", s.slots[i]);
+    printf("\n%.1f %s %u\n", w[n + 1], word, marks[n]);
+    for (int i = 0; i < count; i++) printf("%d ", seen[i]);
+    printf("\n");
+    free(s.slots);
+    free(w);
+    free(word);
+    free(marks);
+    free(seen);
+    return 0;
+}
+"#,
+        &[&["1"], &["5"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "slots: Option<Vec<i64>>,",
+            "let grown_len = s.room as usize;",
+            "s.slots.get_or_insert_with(Vec::new).resize(grown_len, 0);",
+            "w.get_or_insert_with(Vec::new).resize(grown_len, 0.0);",
+            "word.get_or_insert_with(Vec::new).resize(grown_len, 0);",
+            "globals.marks.get_or_insert_with(Vec::new).resize(grown_len, 0);",
+            "let grown_len = (count + 1) as usize;",
+            "seen.get_or_insert_with(Vec::new).resize(grown_len, 0);",
+        ],
+    );
+}
+
+#[test]
+fn realloc_to_a_size_of_zero_frees_the_array_as_the_library_does() {
+    let rust = check(
+        "shrink",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    int *a = malloc(2 * sizeof *a);
+    a[0] = n;
+    a[1] = 8;
+    a = realloc(a, a[0] * sizeof *a);
+    puts(a ? "kept" : "freed");
+    if (a) printf("%d\n", a[0]);
+    a = realloc(a, n * sizeof *a);
+    puts(a ? "kept" : "freed");
+    free(a);
+    a = NULL;
+    int none = 0;
+    a = realloc(a, none * sizeof *a);
+    puts(a ? "kept" : "freed");
+    free(a);
+    int *b = malloc(sizeof *b);
+    b[0] = 5;
+    b = realloc(b, 4 * sizeof *b);
+    b[3] = n;
+    printf("%d %d\n", b[0], b[3]);
+    free(b);
+    return 0;
+}
+"#,
+        &[&["0"], &["3"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let grown_len = a.as_deref().unwrap()[0] as usize;",
+            "if grown_len == 0 && a.is_some() {",
+            "a = None;",
+            "a.get_or_insert_with(Vec::new).resize(grown_len, 0);",
+            "b.resize(4, 0);",
+        ],
+    );
+}
+
+#[test]
+fn realloc_that_is_no_resize_in_place_is_refused() {
+    let refused = |name, body: &str| {
+        let c = format!(
+            "#include <stdlib.h>\nint main(void) {{\n    int *a = malloc(2 * sizeof(int));\n{body}    free(a);\n    return 0;\n}}\n"
+        );
+        translate(name, &c).unwrap_err()
+    };
+    let elsewhere = "unsupported: `realloc` whose result is not stored back in the pointer it grows: no rule yet, at line 4";
+    assert_eq!(
+        refused("bytes", "    a = realloc(a, 40);\n"),
+        "unsupported: a size of `realloc` with no rule, at line 4"
+    );
+    assert_eq!(
+        refused("none", "    a = realloc(a, 0);\n"),
+        "unsupported: a constant size of `realloc` that keeps no array, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "wide",
+            "    unsigned long n = 3;\n    a = realloc(a, n * sizeof(int));\n"
+        ),
+        "unsupported: a count of `realloc` as wide as a size, whose product C may wrap, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "cut",
+            "    int n = 3;\n    a = realloc(a, (unsigned char)(n * sizeof(int)));\n"
+        ),
+        "unsupported: a size of `realloc` with no rule, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "cut-constant",
+            "    a = realloc(a, (unsigned char)(65ULL * sizeof(int)));\n"
+        ),
+        "unsupported: a constant size of `realloc` that keeps no array, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "narrow-product",
+            "    unsigned n = 3;\n    a = realloc(a, n * (unsigned)sizeof(int));\n"
+        ),
+        "unsupported: a size of `realloc` with no rule, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "careful",
+            "    int *b = realloc(a, 3 * sizeof(int));\n    if (!b) return 1;\n    a = b;\n"
+        ),
+        elsewhere
+    );
+    assert_eq!(
+        refused(
+            "tested",
+            "    if ((a = realloc(a, 3 * sizeof(int))) == NULL) return 1;\n"
+        ),
+        elsewhere
+    );
+    assert_eq!(
+        translate(
+            "tested_null",
+            "#include <stdlib.h>\nint main(void) {\n    int *a = NULL;\n    if (!(a = realloc(a, sizeof(int)))) return 1;\n    free(a);\n    return 0;\n}\n"
+        )
+        .unwrap_err(),
+        elsewhere
+    );
+    assert_eq!(
+        refused("dropped", "    realloc(a, 3 * sizeof(int));\n"),
+        elsewhere
+    );
+    assert_eq!(
+        translate(
+            "parameter",
+            "#include <stdlib.h>\nint *more(int *a) {\n    a = realloc(a, 4 * sizeof(int));\n    return a;\n}\nint main(void) {\n    int *a = malloc(sizeof(int));\n    a = more(a);\n    free(a);\n    return 0;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: `realloc` of a parameter's array, at line 3"
+    );
 }

@@ -55,6 +55,7 @@ const RESERVED: &[&str] = &[
     "Globals",
     "before",
     "assert_holds",
+    "grown_len",
     "scanned",
     "random",
     "Random",
