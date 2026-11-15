@@ -105,6 +105,7 @@ Keep to these:
 | `scanf("%d", &x)` | `if let Some(scanned) = scan_int() { x = scanned as i32; }` |
 | `fgets(line, sizeof line, stdin)` | `read_line(&mut line)` |
 | `fgets(line, size, stdin)` for a `char *line` | `read_line_within(line, size)` |
+| `n = fread(bytes, 1, sizeof bytes, stdin)` | `n = read_items(&mut bytes, 1)` |
 | `%s` of a `char` array | `text_of(&line)` |
 
 ### Pointers
@@ -421,10 +422,10 @@ place:
   that return a pointer (`strchr`, `strstr`, `strtok`), a width in `%s`, and above all a `String`
   for a buffer that the program only fills and reads as a whole, which
   needs a fact that says so.
-- **Input.** `scanf` and `fgets` read through helpers over
+- **Input.** `scanf`, `fgets` and `fread` read through helpers over
   `std::io::stdin().lock()` that take a byte at a time, so that every way
   of reading shares what is left, as in C (`lower/input.rs`, and
-  `read_line` in `library.rs`). `getchar`, `fread`, `%s` and `%f` belong
+  `read_line` and `read_items` in `library.rs`). `getchar`, `%s` and `%f` belong
   there too. The result of `scanf` is its count wherever it is a value.
 - **Pointers to pointers and output parameters.** `T **out` that is only
   stored through is `&mut Option<Box<T>>` or a second result. The end
@@ -559,7 +560,8 @@ become a fact and a refusal:
 - A conversion from a floating-point number to an integer saturates in Rust
   where C's behaviour is undefined, and a NaN prints differently.
 - `read_line` takes an error of the read for the end of the input: after
-  some bytes it returns them, where `fgets` returns NULL.
+  some bytes it returns them, where `fgets` returns NULL. `read_items` does
+  too, as `fread` does, but leaves no error for `ferror`.
 - `&args[i]` stops the program where `i` is `argc`, and C reads NULL
   there: a program that only stores `argv[argc]` runs on in C.
 - `%08.2f` of an infinity is padded with zeros in Rust and with spaces in

@@ -992,3 +992,29 @@ Entry format, newest last:
   local declared in the block and used after the label
 - Motivation: `g5_cleanup` jumps to its cleanup
 - Changes: nothing
+
+## R50: `fread` of bytes from `stdin`
+
+- C: `fread(buffer, size, count, stdin)` into a `char`, `unsigned char` or
+  `uint8_t` array, a pointer into one (`buffer + 2`), a parameter that
+  points to bytes or an allocation; any size and count, also 0; its result
+  used, tested or discarded
+- Rust: `read_items(&mut buffer[..size * count], size)`, the whole array
+  where that is its length and `&mut buffer[2..9]` for an offset: a helper
+  that reads bytes until the slice is full or the input ends and returns
+  the number of whole items as a `u64`, 0 for a size of 0.
+  `read_items_within(buffer, size, count)` where the bytes are not
+  constants that the array is known to hold: C is right with more bytes
+  than its buffer as long as the input ends within it, so that helper
+  reads into as much of the buffer as there is and stops the program where
+  the input goes on beyond it, where C stores beyond the buffer
+- Needs: the helper `read_byte` of R11, so that `scanf`, `fgets` and
+  `fread` share what is left of the input
+- Refused: elements that are not bytes, such as `int` or a record, with
+  `` `fread` into elements that are not bytes ``, `signed char`, whose
+  bytes would be `i8`, and a stream other than
+  `stdin`, with `` `fread` on a file other than `stdin` ``
+- Motivation: `g2_028_strchr` reads its input with
+  `fread(in, 1, sizeof(in), stdin)`; it is refused next for a pointer that
+  `strchr` found and that steps on
+- Changes: none

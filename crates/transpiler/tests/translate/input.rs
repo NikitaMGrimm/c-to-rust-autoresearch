@@ -193,6 +193,130 @@ int main(int argc, char **argv) {
     );
 }
 
+#[test]
+fn fread_reads_bytes_from_stdin() {
+    let c = r#"
+#include <stdio.h>
+#include <stdint.h>
+char whole[6];
+size_t items(uint8_t *bytes, size_t count) {
+    return fread(bytes, 2, count, stdin);
+}
+int main(void) {
+    char in[8] = "ab";
+    unsigned char pairs[6];
+    size_t n = fread(in + 2, 1, 5, stdin);
+    printf("%zu <%s>\n", n, in);
+    if (fread(pairs, 3, 2, stdin) == 2) printf("%d %d %d\n", pairs[1], pairs[2], pairs[5]);
+    printf("%zu %zu\n", fread(in, 0, 4, stdin), fread(in, 4, 0, stdin));
+    fread(whole, 1, sizeof(whole), stdin);
+    printf("%d %d\n", whole[0], whole[5]);
+    printf("%zu\n", items(pairs, 3));
+    while ((n = fread(in, 1, sizeof in, stdin)) > 0) {
+        printf("%zu: %d %d\n", n, in[0], in[n - 1]);
+    }
+    return 0;
+}
+"#;
+    let mut rust = String::new();
+    for stdin in [
+        "",
+        "abc",
+        "abcde\0\u{e9}\u{ff}xyz\n",
+        "0123456789abcdefghijklmnopqrstuvwxyz\nand more lines\n\0\0\0 at the end",
+    ] {
+        rust = check("fread", c, &[&[]], stdin);
+    }
+    assert_lines(
+        &rust,
+        &[
+            "let mut n: u64 = read_items(&mut in_[2..7], 1);",
+            "if read_items(&mut pairs, 3) == 2 {",
+            "read_items(&mut globals.whole, 1);",
+            "read_items_within(bytes, 2, count as usize)",
+            "while {",
+        ],
+    );
+}
+
+#[test]
+fn fread_and_fgets_share_the_input() {
+    let c = r#"
+#include <stdio.h>
+int main(void) {
+    char head[5] = "";
+    char line[8] = "";
+    char rest[16] = "";
+    int x = 0;
+    printf("%zu <%s>\n", fread(head, 1, 4, stdin), head);
+    if (fgets(line, sizeof line, stdin)) printf("<%s>\n", line);
+    int scanned = scanf("%d", &x);
+    printf("%d %d\n", scanned, x);
+    printf("%zu <%s>\n", fread(rest, 1, 15, stdin), rest);
+    return 0;
+}
+"#;
+    for stdin in ["", "abc", "abcdef\n12 rest", "abcd\n-5\nthe rest of it\n"] {
+        check("fread-fgets", c, &[&[]], stdin);
+    }
+}
+
+#[test]
+fn fread_with_a_size_beyond_its_buffer_reads_what_fits() {
+    let c = r#"
+#include <stdio.h>
+int main(int argc, char **argv) {
+    char in[8] = "";
+    size_t n = fread(in, 1, 16, stdin);
+    printf("%zu %d\n", n, in[0]);
+    n = fread(in, 1, argc + 6, stdin);
+    printf("%zu\n", n);
+    return 0;
+}
+"#;
+    let mut rust = String::new();
+    for stdin in ["", "abc", "abcdefgh"] {
+        rust = check("fread-size", c, &[&[]], stdin);
+    }
+    assert_lines(
+        &rust,
+        &["n = read_items_within(&mut in_, 1, (args.len() as i32 + 6) as usize);"],
+    );
+}
+
+#[test]
+fn fread_with_no_rule_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    assert_eq!(
+        refused(
+            "fread-ints",
+            "#include <stdio.h>\nint main(void) {\n    int in[4] = {0};\n    fread(in, sizeof(int), 4, stdin);\n    return in[0];\n}\n"
+        ),
+        "unsupported: `fread` into elements that are not bytes: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "fread-record",
+            "#include <stdio.h>\nstruct pair { char a, b; };\nint main(void) {\n    struct pair p = {0, 0};\n    fread(&p, sizeof p, 1, stdin);\n    return p.a;\n}\n"
+        ),
+        "unsupported: `fread` into elements that are not bytes: no rule yet, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "fread-stream",
+            "#include <stdio.h>\nint main(void) {\n    char in[4];\n    fread(in, 1, 4, stderr);\n    return in[0];\n}\n"
+        ),
+        "unsupported: `fread` on a file other than `stdin`: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "fread-signed",
+            "#include <stdio.h>\nint main(void) {\n    signed char in[4] = {0};\n    fread(in, 1, 4, stdin);\n    return in[0];\n}\n"
+        ),
+        "unsupported: `fread` into `signed char`: no rule yet, at line 4"
+    );
+}
+
 const COUNTS: &str = r#"
 #include <stdio.h>
 int last = 0;

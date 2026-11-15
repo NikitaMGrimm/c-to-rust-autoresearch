@@ -73,6 +73,8 @@ const RESERVED: &[&str] = &[
     "Err",
     "read_line",
     "read_line_within",
+    "read_items",
+    "read_items_within",
     "parse_uint",
     "copy_text",
     "store_text",

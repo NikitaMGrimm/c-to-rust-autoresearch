@@ -56,6 +56,8 @@ enum Helper {
     ScanIntOrEnd,
     ReadLine,
     ReadLineWithin,
+    ReadItems,
+    ReadItemsWithin,
     UntilNul,
     TextOf,
     CopyText,
@@ -102,6 +104,8 @@ impl Helper {
             Helper::ScanIntOrEnd => &[Helper::ScanError, Helper::ScanInt],
             Helper::ReadLine => &[Helper::ReadByte],
             Helper::ReadLineWithin => &[Helper::ReadLine, Helper::PeekByte],
+            Helper::ReadItems => &[Helper::ReadByte],
+            Helper::ReadItemsWithin => &[Helper::ReadItems, Helper::PeekByte],
             Helper::TextOf | Helper::CopyString | Helper::AppendAtMost => &[Helper::UntilNul],
             Helper::AppendString => &[Helper::UntilNul, Helper::CopyString],
             Helper::NanF32 | Helper::NanF64 => &[Helper::Nan],
@@ -644,6 +648,35 @@ impl Helper {
                         return false;
                     }
                     read_line(&mut buffer[..room])
+                }
+            },
+            Helper::ReadItems => parse_quote! {
+                /// Reads from standard input into `buffer` as C's `fread` does
+                /// with items of `size` bytes: until `buffer` is full or the
+                /// input ends. Returns the number of whole items read.
+                fn read_items(buffer: &mut [u8], size: usize) -> u64 {
+                    let mut length = 0;
+                    while length < buffer.len() {
+                        let Some(byte) = read_byte() else {
+                            break;
+                        };
+                        buffer[length] = byte;
+                        length += 1;
+                    }
+                    length.checked_div(size).unwrap_or(0) as u64
+                }
+            },
+            Helper::ReadItemsWithin => parse_quote! {
+                /// `read_items` of `count` items of `size` bytes into `buffer`,
+                /// which may have room for fewer: C's `fread` is right as long
+                /// as the input ends within the buffer, and stores beyond it
+                /// otherwise, where this stops the program.
+                fn read_items_within(buffer: &mut [u8], size: usize, count: usize) -> u64 {
+                    let wanted = size.checked_mul(count).expect("fread reads fewer bytes than fit in memory");
+                    let room = wanted.min(buffer.len());
+                    let items = read_items(&mut buffer[..room], size);
+                    assert!(room == wanted || peek_byte().is_none(), "fread stores beyond its buffer");
+                    items
                 }
             },
             Helper::UntilNul => parse_quote! {

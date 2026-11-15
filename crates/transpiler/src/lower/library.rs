@@ -66,6 +66,9 @@ impl Lower<'_> {
                 Ok(rust::cast(length, parse_quote!(u64)))
             }
             ("fgets", [buffer, size, stream]) => self.read_line(buffer, size, stream, at),
+            ("fread", [buffer, size, count, stream]) => {
+                self.read_items(buffer, size, count, stream, at)
+            }
             ("memset", [target, value, size]) => self.memset(target, value, size, at),
             ("memcpy" | "memmove", [target, source, size]) => self.memcpy(target, source, size, at),
             // R22: the text of `source`, cut short or filled up with NUL
@@ -611,6 +614,57 @@ impl Lower<'_> {
         let size = self.expr(size)?;
         self.helper(Helper::ReadLineWithin);
         Ok(rust::call("read_line_within", [target, size]))
+    }
+
+    /// R50: `fread` of bytes from `stdin` as `read_items`, which reads
+    /// until the bytes are full or the input ends and gives the number of
+    /// whole items read.
+    fn read_items(
+        &mut self,
+        buffer: &Expr,
+        size: &Expr,
+        count: &Expr,
+        stream: &Expr,
+        at: u32,
+    ) -> R<syn::Expr> {
+        if !matches!(&stream.uncast().kind, ExprKind::Extern(name) if name == "stdin") {
+            return unsupported("`fread` on a file other than `stdin`: no rule yet", at);
+        }
+        let buffer = buffer.uncast();
+        match buffer.ty.element() {
+            Some(
+                Type::Char
+                | Type::Int {
+                    bits: 8,
+                    signed: false,
+                },
+            ) => {}
+            Some(Type::Int {
+                bits: 8,
+                signed: true,
+            }) => {
+                return unsupported("`fread` into `signed char`: no rule yet", at);
+            }
+            _ => return unsupported("`fread` into elements that are not bytes: no rule yet", at),
+        }
+        let room = self.room(buffer);
+        if let (Some(size @ 0..), Some(count @ 0..), Some(room)) = (
+            size.constant(self.program),
+            count.constant(self.program),
+            room,
+        ) && let Some(bytes) = size.checked_mul(count)
+            && bytes <= room
+        {
+            let target = rust::borrow(true, self.first(buffer, Ok(bytes))?);
+            self.helper(Helper::ReadItems);
+            return Ok(rust::call("read_items", [target, rust::int(size, "")]));
+        }
+        // C stores beyond the buffer only where the input goes on beyond
+        // it, so a slice of the size would stop the program too early.
+        let target = self.argument_pointer(buffer, Repr::BYTES_WRITTEN)?;
+        let (size, count) = (self.index_value(size)?, self.index_value(count)?);
+        self.helper(Helper::ReadItemsWithin);
+        Ok(rust::call("read_items_within", [target, size, count]))
     }
 
     /// How many elements the pointer is known to have room for: those of
