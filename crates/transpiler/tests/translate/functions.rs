@@ -462,6 +462,89 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn a_pointer_without_a_prototype_takes_no_parameters_from_functions_without_them() {
+    let rust = check(
+        "fn_no_prototype_none",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+typedef long (*source)();
+static long low() { return 3; }
+static long high(void) { return 40; }
+struct gauge { long (*read)(); int scale; };
+static long (*fallback)() = low;
+static long sample(long (*from)()) { return from() + 1; }
+static source pick(int k) { return k > 1 ? high : low; }
+int main(int argc, char **argv) {
+    int k = atoi(argv[1]);
+    struct gauge g = { high, 2 };
+    long (*both[2])() = { low, high };
+    source s = pick(k);
+    printf("%ld %ld %ld %ld %ld\n", g.read() * g.scale, fallback(), sample(low), s(), both[k % 2]());
+    return 0;
+}
+"#,
+        RUNS,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "const FALLBACK: fn() -> i64 = low;",
+            "read: fn() -> i64,",
+            "fn sample(from: fn() -> i64) -> i64 {",
+            "fn pick(k: i32) -> fn() -> i64 {",
+            "let both: [fn() -> i64; 2] = [low, high];",
+            "let s: fn() -> i64 = pick(k);",
+        ],
+    );
+}
+
+#[test]
+fn a_pointer_without_a_prototype_that_only_holds_null_is_an_option() {
+    let rust = check(
+        "fn_no_prototype_null",
+        "#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) {\n    int (*hook)() = 0;\n    if (argc > 3 || hook) printf(\"hooked\\n\");\n    else printf(\"plain %d\\n\", atoi(argv[1]));\n    return 0;\n}\n",
+        RUNS,
+        "",
+    );
+    assert_lines(&rust, &["let hook: Option<fn() -> i32> = None;"]);
+}
+
+#[test]
+fn a_pointer_without_a_prototype_takes_the_parameters_of_its_functions() {
+    let rust = check(
+        "fn_no_prototype_params",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct span { int from; int to; };
+static double scaled(struct span s, double by, int shift) { return (s.to - s.from) * by + shift; }
+static double offset(struct span s, double by, int shift) { return s.from + by - shift; }
+int main(int argc, char **argv) {
+    int k = atoi(argv[1]);
+    struct span s = { k, 2 * k + 1 };
+    double (*measure)() = k % 2 ? scaled : offset;
+    printf("%.2f\n", measure(s, 0.5, k));
+    measure = scaled;
+    printf("%.2f\n", measure(s, 1.25, 3));
+    return 0;
+}
+"#,
+        RUNS,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut measure: fn(Span, f64, i32) -> f64 = if k % 2 != 0 {",
+            "println!(\"{:.2}\", measure(s, 0.5, k));",
+            "measure = scaled;",
+        ],
+    );
+}
+
+#[test]
 fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
     let refused = |name, main: &str| translate(name, &program(main)).unwrap_err();
     let cases = [
@@ -491,14 +574,34 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
             "unsupported: a function kept in a `void` pointer: no rule yet, at line 7",
         ),
         (
-            "fn_no_prototype",
-            "int main(int argc, char **argv) { int (*f)() = twice; return f(1); }\n",
-            "unsupported: a pointer to a function without a prototype or with variable arguments, at line 7",
+            "fn_no_prototype_several",
+            "static int add(int x, int y) { return x + y; }\nint main(int argc, char **argv) { int (*f)() = twice; if (argc > 1) f = add; return f(1); }\n",
+            "unsupported: a pointer to a function without a prototype that holds functions of several types, at line 8",
+        ),
+        (
+            "fn_no_prototype_count",
+            "int main(int argc, char **argv) { int (*f)() = twice; return f(1, 2); }\n",
+            "unsupported: a call through a pointer to a function without a prototype with arguments its functions do not take, at line 7",
+        ),
+        (
+            "fn_no_prototype_other_type",
+            "int main(int argc, char **argv) { int (*f)() = twice; return f(1L); }\n",
+            "unsupported: a call through a pointer to a function without a prototype with arguments its functions do not take, at line 7",
+        ),
+        (
+            "fn_no_prototype_promoted",
+            "static int up(short x) { return x + 1; }\nint main(int argc, char **argv) { short s = 2; int (*f)() = (int (*)())up; return f(s); }\n",
+            "unsupported: a call through a pointer to a function without a prototype with arguments its functions do not take, at line 8",
+        ),
+        (
+            "fn_no_prototype_unreached",
+            "static int (*hook)();\nint main(int argc, char **argv) { return hook ? hook(argc) : 0; }\n",
+            "unsupported: a call through a pointer to a function without a prototype that no function reaches, at line 8",
         ),
         (
             "fn_variadic",
             "int main(int argc, char **argv) { int (*f)(const char *, ...) = printf; f(\"x\"); return 0; }\n",
-            "unsupported: a pointer to a function without a prototype or with variable arguments, at line 7",
+            "unsupported: a pointer to a variadic function, at line 7",
         ),
         (
             "fn_library",

@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, voids, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, places, join, ends, found 
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `places` replaces a global pointer that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -429,7 +429,12 @@ a pointer to memory.
 | a parameter or result that is a record, a number, an enumeration | by value, as in any function |
 | two such pointers compared, `p == f`, `p != q` | refused: `a comparison of two functions`; Rust gives two functions with one body one address, or one function two |
 | a cast to another function type, to `void *` or to an integer, and `%p` | refused |
-| a function without a prototype, `int (*f)()`, and a variadic one | refused |
+| a pointer without a prototype, `int (*f)()`, kept in any of these places | the parameters of the functions that reach it, found by `normalise::protos` before the analysis: `fn() -> i32` for functions defined with none, `fn(i32, f64) -> R` for those with parameters, `Option<fn() -> i32>` for one that only holds NULL. All such pointers with one result type are one group, which is coarser than the slots that hand them on |
+| functions with different parameter lists reach one group | refused: `a pointer to a function without a prototype that holds functions of several types` |
+| a call through it with another number of arguments, an argument of another type than the parameter after C's default promotions, or a parameter that the promotions change (`char`, `short`, `float`) | refused: `a call through a pointer to a function without a prototype with arguments its functions do not take`; C's behaviour is undefined there |
+| a call through it that no function reaches | refused |
+| a function declared without a prototype, `int zero();`, called by name | as any call by name |
+| a variadic one, `int (*f)(const char *, ...)` | refused: `a pointer to a variadic function` |
 | the address of a library function (`&strlen`), and one handed to the library (`qsort`, `bsearch`, `signal`, `atexit`) | refused: no rule yet |
 | a pointer to a pointer to a function, and `sizeof` of one | refused |
 | callee and arguments with side effects, `ops[i++](i)` | C leaves their order open; Rust evaluates the callee first |
@@ -561,7 +566,7 @@ place:
   a variable that a later case uses, a `case` inside a loop (Duff's
   device), unions other than the bits of a number (an `enum` when a
   tag says which member is live, `to_ne_bytes` for bytes beside a number),
-  `+=` and `++` on a bit-field, variadic functions, an array whose length is an expression
+  `+=` and `++` on a bit-field, variadic functions, two pointers to functions without a prototype with one result type that hold functions of different parameters (a group for each set of slots that hand them on, as `voids` finds), an array whose length is an expression
   (Clang prints it only as text), a local that gets its first value in a branch or
   in a loop (`let x;`).
 

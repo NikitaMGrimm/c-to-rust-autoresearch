@@ -966,8 +966,8 @@ Entry format, newest last:
   `Facts::idle`
 - Refused: a pointer to a function that takes or returns a pointer, a
   comparison of two functions, a cast to another function type, to
-  `void *` or to an integer, a function without a prototype or with
-  variable arguments, the address of a library function and one handed
+  `void *` or to an integer, a function with variable arguments, the
+  address of a library function and one handed
   to the library, a pointer to a pointer to a function, `sizeof` of one,
   an array of them into which a pointer that may be NULL is stored, and a
   call through one whose class changes the globals with an argument that
@@ -1348,3 +1348,31 @@ Entry format, newest last:
 - Motivation: programs outside the development set use a variable beside a
   pointer to it; no development program needs it
 - Changes: `normalise::alias` runs after `cursors`, and the facts after it
+
+## R63: a pointer to a function without a prototype
+
+- C: a pointer to a function without a prototype, `int (*f)()`, in a
+  global, a local, a field, a parameter, a result, a `typedef` and an
+  element of an array; the functions that reach it, defined with no
+  parameters (`int zero()`, `int zero(void)`) or with parameters, by name,
+  through `c ? f : g` or another pointer; calls through it
+- Rust: R42's `fn` type with the parameters of those functions,
+  `fn() -> i32`, `fn(i32, f64, Span) -> f64`; `Option<fn() -> i32>` for
+  one that only holds NULL and is only tested
+- Needs: the rewrite `normalise::protos`, which runs after `voids`: all
+  such pointers with one result type are one group, whose parameters are
+  those of every function converted to it or from it, and which every
+  call through it must pass, as C's default promotions leave them
+- Refused: functions with different parameters in one group, `` a
+  pointer to a function without a prototype that holds functions of
+  several types ``; a call with another number of arguments, an argument
+  of another type or a parameter that the promotions change (`char`,
+  `short`, `float`), `` a call through a pointer to a function without a
+  prototype with arguments its functions do not take ``; a call that no
+  function reaches, `` a call through a pointer to a function without a
+  prototype that no function reaches ``; a variadic pointer, `` a pointer
+  to a variadic function ``
+- Motivation: programs outside the development set keep functions in
+  pointers without a prototype; no development program needs it
+- Changes: R42 refused every pointer without a prototype together with
+  the variadic ones; a variadic one keeps its own refusal

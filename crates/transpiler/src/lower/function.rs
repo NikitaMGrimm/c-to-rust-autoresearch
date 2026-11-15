@@ -19,8 +19,12 @@ impl Lower<'_> {
             return unsupported("a function type", at);
         };
         if *variadic {
+            // `protos` gives one without a prototype its parameters.
             return unsupported(
-                "a pointer to a function without a prototype or with variable arguments",
+                match params.is_empty() {
+                    true => "a pointer to a function without a prototype",
+                    false => "a pointer to a variadic function",
+                },
                 at,
             );
         }

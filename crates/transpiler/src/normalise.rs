@@ -16,6 +16,10 @@
 //! as that address: every use is the initialiser, and the pointer goes.
 //! It runs before the first analysis, so that no fact sees the pointer.
 //!
+//! `protos`, R63, gives a pointer to a function without a prototype the
+//! parameters of the functions it holds. It runs after `voids`; it is in a
+//! file of its own.
+//!
 //! `join` gives a local its first value where it is declared: C89 declares
 //! at the top of a block and assigns later, and Rust declares where the
 //! value is known. It needs no facts and runs before the first analysis.
@@ -49,6 +53,7 @@ mod cursors;
 mod ends;
 mod errno;
 mod found;
+mod protos;
 mod same;
 mod unions;
 mod voids;
@@ -57,6 +62,7 @@ pub use alias::alias;
 pub use cursors::{cursors, steps_before};
 pub use ends::ends;
 pub use found::{SEARCHES, found, is_search};
+pub use protos::protos;
 pub use same::same;
 pub use unions::unions;
 pub use voids::voids;
