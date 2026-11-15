@@ -621,6 +621,10 @@ become a fact and a refusal:
 - An operation whose two operands are the same expression, `x / x` or
   `a - a`, is translated as written and does not compile: Rust's lints
   deny it.
+- A copy of a function with one parameter for two (R53) still declares
+  the locals that were pointers of the two: `int *p = a, *q = b;` in
+  `f(void *a, void *b)` called as `f(x, x)` is one `&mut` and one `&` of
+  the same memory, and does not compile.
 
 ## The listing
 
