@@ -103,6 +103,17 @@ impl Lower<'_> {
                 Ok(parse_quote!(#print!("{}", #value)))
             }
             ("free", [pointer]) => self.free(pointer),
+            // R46: the numbers of `rand` are those of a `Random` that the
+            // one function that calls it holds.
+            ("rand", []) => {
+                self.random(name, at)?;
+                Ok(parse_quote!(random.next()))
+            }
+            ("srand", [seed]) => {
+                self.random(name, at)?;
+                let seed = self.typed(seed)?;
+                Ok(parse_quote!(random = Random::new(#seed)))
+            }
             ("exit", [code]) => Ok(rust::call("std::process::exit", [self.typed(code)?])),
             ("abs" | "labs" | "llabs", [value]) => Ok(rust::method(self.expr(value)?, "abs", [])),
             ("sqrt" | "fabs" | "floor" | "ceil", [value]) => {
@@ -212,6 +223,23 @@ impl Lower<'_> {
         let text = self.text(text, true)?;
         self.helper(Helper::ParseInt);
         Ok(rust::call("parse_int", [text]))
+    }
+
+    /// R46: notes that the function holds the program's `Random`, or
+    /// refuses a call of `rand` or `srand` where another function calls
+    /// them too: the numbers of the two would have to be one sequence.
+    fn random(&mut self, name: &str, at: u32) -> R<()> {
+        if self.program.callers(&["rand", "srand"]).len() != 1 {
+            return unsupported(
+                format!("`{name}` in more than one function: no rule yet"),
+                at,
+            );
+        }
+        if self.program.callers(&["rand"]).is_empty() {
+            return unsupported("`srand` in a program without `rand`", at);
+        }
+        self.helper(Helper::Random);
+        Ok(())
     }
 
     /// R18: `parse_float` of text, as an `f32` or an `f64`.

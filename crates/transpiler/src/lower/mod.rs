@@ -41,6 +41,8 @@ enum Helper {
     ParseIntChecked,
     ParseUintChecked,
     ParseFloatChecked,
+    Random,
+    RandomNumbers,
     FormatE,
     FormatG,
     PeekByte,
@@ -88,6 +90,8 @@ impl Helper {
             | Helper::PeekByte
             | Helper::ScanError
             | Helper::UntilNul => &[],
+            Helper::RandomNumbers => &[],
+            Helper::Random => &[Helper::RandomNumbers],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
             Helper::ScanInt => &[Helper::SkipSpace, Helper::ReadByte],
             Helper::ScanIntOrEnd => &[Helper::ScanError, Helper::ScanInt],
@@ -642,6 +646,54 @@ impl Helper {
                     text.iter().position(|byte| set.contains(byte))
                 }
             },
+            Helper::Random => parse_quote! {
+                /// The numbers of glibc's `rand`: each is the sum of the
+                /// numbers 3 and 31 before it, without its lowest bit.
+                struct Random {
+                    /// The last 34 sums, the oldest at `next`.
+                    sums: [u32; 34],
+                    next: usize,
+                }
+            },
+            Helper::RandomNumbers => parse_quote! {
+                impl Random {
+                    /// The numbers that follow `srand(seed)`; a program
+                    /// that never calls it gets those of the seed 1.
+                    fn new(seed: u32) -> Random {
+                        let mut sums = [0; 34];
+                        // glibc keeps the seed as an `int`.
+                        let mut word = seed.max(1) as i32;
+                        sums[0] = word as u32;
+                        for sum in &mut sums[1..31] {
+                            word = 16807 * (word % 127773) - 2836 * (word / 127773);
+                            if word < 0 {
+                                word += i32::MAX;
+                            }
+                            *sum = word as u32;
+                        }
+                        sums.copy_within(0..3, 31);
+                        let mut random = Random { sums, next: 0 };
+                        // glibc drops the first 310 sums.
+                        for _ in 0..310 {
+                            random.sum();
+                        }
+                        random
+                    }
+
+                    fn sum(&mut self) -> u32 {
+                        let sum = self.sums[(self.next + 3) % 34]
+                            .wrapping_add(self.sums[(self.next + 31) % 34]);
+                        self.sums[self.next] = sum;
+                        self.next = (self.next + 1) % 34;
+                        sum
+                    }
+
+                    /// What C's `rand()` returns, from 0 to `RAND_MAX`.
+                    fn next(&mut self) -> i32 {
+                        (self.sum() >> 1) as i32
+                    }
+                }
+            },
             Helper::TextOf => parse_quote! {
                 /// The text that C reads in `bytes`, to print or to parse.
                 fn text_of(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
@@ -1073,7 +1125,7 @@ impl Lower<'_> {
             Some((Stmt::Return(None), rest)) => (rest, None),
             _ => (stmts, None),
         };
-        let mut body = self.stmts(rest)?;
+        let mut body = self.seeded(rest)?;
         if let Some(value) = last {
             let value = match self.in_main() {
                 false => self.returned(value).map(Some),
@@ -1087,6 +1139,49 @@ impl Lower<'_> {
             // A `main` without an exit code ends with `return 0`, which
             // needs no code.
         }
+        Ok(body)
+    }
+
+    /// R46: the statements of the function that calls `rand`, with its
+    /// `Random`: declared by the `srand` that comes before every other
+    /// call of the two, or else at the start with the seed 1, as C starts.
+    fn seeded(&mut self, stmts: &[Stmt]) -> R<Vec<syn::Stmt>> {
+        let program = self.program;
+        if program.callers(&["rand"]) != self.function.into_iter().collect::<Vec<_>>()
+            || program.callers(&["rand", "srand"]).len() != 1
+        {
+            return self.stmts(stmts);
+        }
+        let called = |expr: &Expr, names: &[&str]| match &expr.kind {
+            ExprKind::Call(callee, _) => {
+                callee.function().is_some_and(|name| names.contains(&name))
+            }
+            _ => false,
+        };
+        let first = stmts.iter().position(|stmt| {
+            any_expr(std::slice::from_ref(stmt), &program.vars, &mut |expr| {
+                called(expr, &["rand", "srand"])
+            })
+        });
+        let seed = first.and_then(|first| match &stmts[first] {
+            Stmt::Expr(call) if called(call, &["srand"]) => match &call.kind {
+                ExprKind::Call(_, args) if args.len() == 1 && args[0].is_pure() => {
+                    Some((first, &args[0]))
+                }
+                _ => None,
+            },
+            _ => None,
+        });
+        self.helper(Helper::Random);
+        let Some((first, seed)) = seed else {
+            let mut body: Vec<syn::Stmt> = vec![parse_quote!(let mut random = Random::new(1);)];
+            body.extend(self.stmts(stmts)?);
+            return Ok(body);
+        };
+        let mut body = self.stmts(&stmts[..first])?;
+        let seed = self.typed(seed)?;
+        body.push(parse_quote!(let mut random = Random::new(#seed);));
+        body.extend(self.stmts(&stmts[first + 1..])?);
         Ok(body)
     }
 

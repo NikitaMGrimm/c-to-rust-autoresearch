@@ -55,6 +55,8 @@ const RESERVED: &[&str] = &[
     "Globals",
     "before",
     "scanned",
+    "random",
+    "Random",
     "parse_int",
     "peek_byte",
     "read_byte",

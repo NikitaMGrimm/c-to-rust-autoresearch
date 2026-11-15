@@ -752,3 +752,20 @@ Entry format, newest last:
 - Motivation: `g1_022_stdlib_div` was refused for a member of a record from
   a header
 - Changes: nothing
+
+## R46: `rand` and `srand`
+
+- C: `rand()` and `srand(seed)` where one function of the program holds
+  every call of both
+- Rust: `let mut random = Random::new(seed);` for the `srand` that is a
+  statement of the function's body before every other call of the two,
+  `random = Random::new(seed)` for any other, and `random.next()` for
+  `rand()`. `Random` is a helper with glibc's numbers: each is the sum of
+  the numbers 3 and 31 before it without its lowest bit, from 34 sums that
+  `new` fills from the seed and steps 310 times. Without a first `srand`
+  the function starts with `Random::new(1)`, as a C program does
+- Refused: calls in more than one function, which would share one
+  `Random`; `srand` in a program without `rand`; `rand_r`, `random` and
+  `drand48`, as before
+- Motivation: `g1_016_switch_arith` was refused for `srand`
+- Changes: nothing

@@ -42,6 +42,21 @@ impl Program {
     pub fn function(&self, name: &str) -> Option<FuncId> {
         self.functions.iter().position(|f| f.name == name)
     }
+
+    /// The functions that call one of the library's functions `names`.
+    pub fn callers(&self, names: &[&str]) -> Vec<FuncId> {
+        let mut calls = |expr: &Expr| match &expr.kind {
+            ExprKind::Call(callee, _) => {
+                callee.function().is_some_and(|name| names.contains(&name))
+            }
+            _ => false,
+        };
+        let functions = self.functions.iter().enumerate();
+        functions
+            .filter(|(_, function)| any_expr(&function.body, &self.vars, &mut calls))
+            .map(|(id, _)| id)
+            .collect()
+    }
 }
 
 #[derive(Debug)]

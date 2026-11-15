@@ -739,3 +739,72 @@ int main(int argc, char *argv[]) {
         "unsupported: `div` of a value with a side effect: no rule yet, at line 5"
     );
 }
+
+#[test]
+fn rand_reads_the_numbers_of_a_random_that_its_function_holds() {
+    let rust = check(
+        "rand_seeded",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    unsigned seed = (unsigned)strtoul(argv[1], NULL, 10);
+    srand(seed);
+    int first = rand();
+    long sum = 0;
+    for (int i = 0; i < 1000; i++) sum += rand() % 1000;
+    printf("%d %ld %d\n", first, sum, rand() / (RAND_MAX / 6 + 1));
+    srand(seed + 1);
+    printf("%d\n", rand());
+    return 0;
+}
+"#,
+        &[&["0"], &["1"], &["42"], &["2147483648"], &["4294967295"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut random = Random::new(seed);",
+            "let first: i32 = random.next();",
+            "random = Random::new(seed.wrapping_add(1));",
+        ],
+    );
+    // Without `srand`, and with one that only some paths reach, the
+    // numbers start as those of the seed 1.
+    let rust = check(
+        "rand_unseeded",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    printf("%d\n", rand());
+    if (argc > 1) srand(7);
+    printf("%d %d\n", rand(), rand() % 6);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(&rust, &["let mut random = Random::new(1);"]);
+    let refused = |name: &str, body: &str| {
+        let c = format!("#include <stdio.h>\n#include <stdlib.h>\n{body}");
+        translate(name, &c).unwrap_err()
+    };
+    assert_eq!(
+        refused(
+            "rand_two",
+            "int roll(void) { return rand() % 6; }\nint main(void) {\n    srand(3);\n    printf(\"%d\\n\", roll());\n    return 0;\n}\n"
+        ),
+        "unsupported: `rand` in more than one function: no rule yet, at line 3"
+    );
+    assert_eq!(
+        refused(
+            "rand_none",
+            "int main(void) {\n    srand(3);\n    return 0;\n}\n"
+        ),
+        "unsupported: `srand` in a program without `rand`, at line 4"
+    );
+}
