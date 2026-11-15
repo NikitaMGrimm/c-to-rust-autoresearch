@@ -707,6 +707,31 @@ impl Lower<'_> {
         }
         let width = self.bit_field(target);
         let Some((op, compute)) = op else {
+            // `x = x op y` is `x op= y` where the place does nothing when
+            // evaluated and no conversion sits between the operation and
+            // the store; a shift may take another type on its right.
+            if let ExprKind::Binary(op, left, right) = &value.kind
+                && width.is_none()
+                && target.ty != Type::Index
+                && value.ty == target.ty
+                && right.ty == target.ty
+                && matches!(
+                    op,
+                    BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Rem
+                        | BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                )
+                && target.is_pure()
+                && same_value(left, target)
+                && !same_value(left, right)
+            {
+                return self.assign(expr, Some(&(*op, target.ty.clone())), target, right);
+            }
             let value = self.init(&target.ty, None, value)?;
             let value = self.in_bits(value, &target.ty, width);
             return Ok(rust::assign(self.place(target, true)?, value));

@@ -319,8 +319,7 @@ keeps C's promotions, checked arithmetic and the input it consumes:
   statement, `dst[dst_at] = src[src_at]; dst_at += 1; src_at += 1;`, where
   nothing else in the statement reads the cursors.
 - **Statements of C in conditions.** `if !({ x -= e; x } > 0)` for a
-  store in a condition, `x = x * y` for `x *= y`. The compound form needs
-  a place without effects.
+  store in a condition.
 - **The spelling of numbers.** `0xAAAA` printed as `43690`, `INT_MIN` as
   `-2147483647 - 1` (`i32::MIN`), an `f32` constant with all the digits of
   its `double`. Needs the literal's text from Clang.

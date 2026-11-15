@@ -607,3 +607,43 @@ int main(int argc, char *argv[]) {
         "{rust}"
     );
 }
+
+#[test]
+fn an_update_of_a_place_by_itself_is_compound() {
+    let rust = check(
+        "compound",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct box { int count; double weight; };
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    int x = n;
+    int a[3] = {1, 2, 3};
+    struct box b = {n, 0.5};
+    unsigned u = n;
+    char c = 'a';
+    x = x * n;
+    a[n % 3] = a[n % 3] + x;
+    b.count = b.count - 1;
+    b.weight = b.weight * 3.0;
+    u = u * 7u;
+    c = c + 1;
+    printf("%d %d %d %.1f %u %c\n", x, a[n % 3], b.count, b.weight, u, c);
+    return 0;
+}
+"#,
+        &[&["3"], &["4"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "x *= n;",
+            "a[(n % 3) as usize] += x;",
+            "b.count -= 1;",
+            "b.weight *= 3.0;",
+            "u = u.wrapping_mul(7);",
+        ],
+    );
+}
