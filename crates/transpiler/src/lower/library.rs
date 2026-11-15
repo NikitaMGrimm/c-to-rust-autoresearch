@@ -444,7 +444,7 @@ impl Lower<'_> {
     /// a byte-string literal, the bytes of a `&str` or of an argument, or
     /// the bytes up to the NUL. `sliced` asks for a slice where a literal
     /// would be an array.
-    fn bytes_of(&mut self, text: &Expr, sliced: bool) -> R<syn::Expr> {
+    pub(super) fn bytes_of(&mut self, text: &Expr, sliced: bool) -> R<syn::Expr> {
         if let Some(bytes) = literal_bytes(text) {
             return Ok(byte_string(bytes, sliced));
         }

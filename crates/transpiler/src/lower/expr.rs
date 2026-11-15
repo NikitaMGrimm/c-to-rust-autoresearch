@@ -6,6 +6,7 @@ use super::pointer::Repr;
 use super::{Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Type, UnOp, VarId};
 use crate::facts::{Access, Slot, place_slot};
+use crate::normalise::is_search;
 use crate::rust;
 use syn::parse_quote;
 
@@ -416,7 +417,11 @@ impl Lower<'_> {
             return test;
         }
         match &cond.kind {
-            ExprKind::Unary(UnOp::Not, inner) if inner.ty.is_pointer() => self.is_set(inner, false),
+            ExprKind::Unary(UnOp::Not, inner)
+                if inner.ty.is_pointer() || inner.ty == Type::Found =>
+            {
+                self.is_set(inner, false)
+            }
             ExprKind::Unary(UnOp::Not, inner) => Ok(rust::unary("!", self.cond(inner)?)),
             ExprKind::Binary(op, left, right) if op.is_logical() => {
                 // A side that the facts decide and that does not decide the
@@ -434,11 +439,14 @@ impl Lower<'_> {
                 self.comparison(*op, left, right, cond.at)
             }
             ExprKind::Cast(inner)
-                if cond.ty == Type::Bool || inner.ty == Type::Bool || inner.ty.is_pointer() =>
+                if cond.ty == Type::Bool
+                    || inner.ty == Type::Bool
+                    || inner.ty.is_pointer()
+                    || inner.ty == Type::Found =>
             {
                 self.cond(inner)
             }
-            _ if cond.ty.is_pointer() => self.is_set(cond, true),
+            _ if cond.ty.is_pointer() || cond.ty == Type::Found => self.is_set(cond, true),
             _ if cond.ty == Type::Bool => self.expr(cond),
             _ => {
                 let zero = match cond.ty {
@@ -469,6 +477,14 @@ impl Lower<'_> {
             let test = if set { "is_ok" } else { "is_err" };
             return Ok(rust::method(self.environment(args, pointer.at)?, test, []));
         }
+        // R40: a search that is only tested.
+        if is_search(self.program, pointer) {
+            let found = self.search_found(pointer.uncast())?;
+            return Ok(match set {
+                true => found,
+                false => rust::unary("!", found),
+            });
+        }
         let test = if set { "is_some" } else { "is_none" };
         Ok(rust::method(self.optional(pointer)?, test, []))
     }
@@ -476,7 +492,9 @@ impl Lower<'_> {
     /// The `Option` that holds a pointer which may be NULL.
     fn optional(&mut self, pointer: &Expr) -> R<syn::Expr> {
         match &pointer.kind {
-            ExprKind::Cast(inner) if inner.ty.is_pointer() => self.optional(inner),
+            ExprKind::Cast(inner) if inner.ty.is_pointer() || inner.ty == Type::Found => {
+                self.optional(inner)
+            }
             ExprKind::Var(_) | ExprKind::Member { .. } => {
                 // The analysis leaves the test only of a pointer that may
                 // be NULL, and of one that may be `argv[argc]`.

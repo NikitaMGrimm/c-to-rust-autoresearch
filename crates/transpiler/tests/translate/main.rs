@@ -14,5 +14,6 @@ mod pointers;
 mod records;
 mod refusals;
 mod scalars;
+mod search;
 mod text;
 mod unions;

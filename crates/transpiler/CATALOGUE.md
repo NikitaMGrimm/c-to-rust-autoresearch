@@ -677,3 +677,30 @@ Entry format, newest last:
   the same pointer; `setenv`, `putenv` and `environ`
 - Motivation: `g3_envy` was refused for the pointer that `getenv` returns
 - Changes: extends R10 and R13
+
+## R40: a search of text or bytes
+
+- C: `strchr`, `strrchr`, `memchr`, `strstr` and `strpbrk` of a `char`
+  array, a slice, text or a program argument, where the result is only
+  tested: `if (strchr(s, c))`, `!= NULL`, `== NULL`, `!`, also inside `&&`,
+  `||` and `?:`; and a local pointer that only ever holds such results or
+  NULL and is only tested
+- Rust: the place found as an `Option<usize>`, an index into the bytes of
+  the first argument: `s.find('x')` and `s.rfind('x')` of text for a
+  constant ASCII character other than NUL, `s.find(t)` of two texts, and
+  for the rest `find_byte`, `rfind_byte`, `find_bytes` and `find_any` on
+  the bytes without their NUL, which find the NUL itself at the end and an
+  empty needle at 0; `memchr` is
+  `a.iter().take(n as usize).position(|&found| found == c)`. The character
+  is the byte C converts it to, `c as u8`. A test is `.is_some()`, or
+  `s.contains('x')` and `s.contains(t)` for text; the local is
+  `let found: Option<usize> = …;`
+- Needs: the rewrite `normalise::found`, which gives the local
+  `Type::Found`; `strchr`, `strrchr`, `strstr` and `strpbrk` read their
+  arguments as text, so a `&str` stays one
+- Refused: the result used as a pointer, by the analysis's refusal of a
+  pointer from a library function; `memchr` of text, and of a byte with a
+  side effect, which the closure would repeat
+- Motivation: `g3_envy` tests whether text from the environment holds a
+  character
+- Changes: none

@@ -124,6 +124,10 @@ pub enum Type {
     /// C's unsigned numbers it does not wrap around, since a pointer may
     /// not leave its array.
     Index,
+    /// Where a search of the library found something in its first
+    /// argument, as an index, or nothing: `normalise` gives it to a local
+    /// that only holds such results.
+    Found,
     Pointer(Box<Type>),
     /// The length is `None` when it is not a constant, as in a
     /// variable-length array.
@@ -175,7 +179,7 @@ impl Type {
     /// Size and alignment in bytes on x86-64, for `sizeof`.
     pub fn layout(&self, program: &Program) -> Option<(u64, u64)> {
         Some(match self {
-            Type::Void | Type::Function { .. } => return None,
+            Type::Void | Type::Function { .. } | Type::Found => return None,
             Type::Bool | Type::Char => (1, 1),
             Type::Int { bits, .. } | Type::Float { bits } => {
                 (u64::from(*bits) / 8, u64::from(*bits) / 8)

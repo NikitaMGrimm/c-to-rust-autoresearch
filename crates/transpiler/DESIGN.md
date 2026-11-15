@@ -265,14 +265,14 @@ a cursor on that argument (see Cursors) that may be absent, an
 
 | C | Rust, or the refusal |
 | --- | --- |
-| `strchr(s, c)` of bytes | `find_byte(&s, c as u8)`, a helper that stops at the NUL and finds it when `c` is 0, as C does |
-| `strchr(s, 'x')` of text (`&str`, `String`) | `s.find('x')` for a constant that is ASCII and not NUL; other characters are refused for text |
+| `strchr(s, c)` of bytes | `find_byte(until_nul(&s), c as u8)`, a helper that finds the NUL at the end when `c` is 0, as C does |
+| `strchr(s, 'x')` of text (`&str`, `String`) | `s.find('x')` for a constant that is ASCII and not NUL; other characters `find_byte(s.as_bytes(), c as u8)` |
 | `strrchr` | `rfind_byte`, `s.rfind('x')` |
-| `memchr(s, c, n)` | `s.iter().take(n as usize).position(\|&byte\| byte == c as u8)`: no byte beyond `n` or the array is read, and `n` of 0 finds nothing |
+| `memchr(s, c, n)` | `s.iter().take(n as usize).position(\|&found\| found == c as u8)`: no byte beyond `n` or the array is read, and `n` of 0 finds nothing; refused for text, and for a `c` with a side effect |
 | `strstr(s, t)` | `s.find(t)` for text, `find_bytes(&s, &t)` for bytes up to their NULs; an empty `t` is found at 0 |
-| `strpbrk(s, set)` | `s.find(\|c\| set.contains(c))` for text, a helper for bytes |
+| `strpbrk(s, set)` | `find_any(s.as_bytes(), set.as_bytes())`, a helper, for text and bytes |
 | the result only tested: `if (strchr(s, c))`, `strchr(s, c) != NULL`, `== NULL`, `!strstr(s, t)`, also inside `&&`, `\|\|` and `?:` | `.is_some()`, `.is_none()`; `s.contains('x')` for text |
-| kept in a local that is only tested for NULL | `let found: Option<usize> = …;` and `found.is_some()` |
+| kept in a local that is only tested for NULL | `let found: Option<usize> = …;` and `found.is_some()`: `normalise::found` gives the local `Type::Found` |
 | kept in a local and used where the test holds: `if (p) { *p = 0; n = p - s; puts(p + 1); }` | `if let Some(p) = p { s[p] = 0; n = p as i64; … &s[p + 1..] }`: the local joins the cursors of `s`, so `s` stays usable beside it |
 | the search goes on from the result: `p = strchr(p + 1, c)`, `for (s = in; (s = strchr(s, c)); s++)` | the search of the rest, `find_byte(&s[p + 1..], c).map(\|at\| p + 1 + at)`; a cursor that is assigned in a condition and may be NULL is refused until loops narrow |
 | returned, handed on or stored in a record: `return memchr(b, c, n);` | the rest of the array from there, `….map(\|at\| &b[at..])`, an `Option<&[u8]>` as for any pointer that may be NULL; the caller's `found - buffer` is refused as a comparison of two addresses |

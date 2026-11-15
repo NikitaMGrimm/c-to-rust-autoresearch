@@ -23,6 +23,7 @@ impl Lower<'_> {
                 parse_quote!(#name)
             }
             Type::Index => parse_quote!(usize),
+            Type::Found => parse_quote!(Option<usize>),
             Type::Array(element, Some(length)) => {
                 let (element, length) = (self.ty(element, at)?, rust::int((*length).into(), ""));
                 parse_quote!([#element; #length])
@@ -85,6 +86,7 @@ impl Lower<'_> {
             Type::Bool => parse_quote!(false),
             Type::Char | Type::Int { .. } | Type::Index => rust::int(0, ""),
             Type::Float { .. } => rust::float(0.0, ""),
+            Type::Found => parse_quote!(None),
             Type::Array(element, Some(length)) => {
                 let (zero, length) = (self.zero(element, at)?, rust::int((*length).into(), ""));
                 match self.is_copy(element) {
@@ -182,6 +184,8 @@ impl Lower<'_> {
         let program = self.program;
         match (ty, &init.kind) {
             (_, ExprKind::Zero) => self.zero_of(ty, slot, init.at),
+            (Type::Found, ExprKind::Null) => Ok(parse_quote!(None)),
+            (Type::Found, _) => self.search(init.uncast()),
             (Type::Pointer(_), _) => match slot {
                 Some(slot) => {
                     let repr = self.repr(slot, init.at)?;

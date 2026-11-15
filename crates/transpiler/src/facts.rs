@@ -132,9 +132,10 @@ pub const ALLOCATORS: [&str; 2] = ["malloc", "calloc"];
 
 /// The library functions that read the text their `char` pointers point to
 /// as a whole and keep none of them, so that the text can be a `&str`.
-const TEXT_READERS: [&str; 18] = [
+const TEXT_READERS: [&str; 22] = [
     "printf", "fprintf", "puts", "fputs", "strlen", "atoi", "atol", "atoll", "atof", "strtol",
-    "strtoll", "strtoul", "strtoull", "strtod", "strtof", "strcmp", "strncmp", "getenv",
+    "strtoll", "strtoul", "strtoull", "strtod", "strtof", "strcmp", "strncmp", "getenv", "strchr",
+    "strrchr", "strstr", "strpbrk",
 ];
 
 impl Facts {
@@ -259,6 +260,9 @@ impl Facts {
                         many: !allocates_one(program, name, args, None),
                     }],
                     None if name == "getenv" => vec![Source::Environment],
+                    None if crate::normalise::SEARCHES.contains(&name) => vec![Source::Unknown(
+                        "a place that a search found, used as a pointer: no rule yet",
+                    )],
                     None => vec![Source::Unknown("a pointer from a library function")],
                 },
                 None => vec![Source::Unknown("a pointer from a call through a pointer")],

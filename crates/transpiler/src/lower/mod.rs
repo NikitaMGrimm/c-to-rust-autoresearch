@@ -6,6 +6,7 @@ mod expr;
 mod input;
 mod library;
 mod pointer;
+mod search;
 mod stmt;
 mod types;
 
@@ -56,6 +57,10 @@ enum Helper {
     AppendAtMost,
     TextWithin,
     FirstBytes,
+    FindByte,
+    RfindByte,
+    FindBytes,
+    FindAny,
 }
 
 impl Helper {
@@ -71,6 +76,10 @@ impl Helper {
             | Helper::StoreTextCut
             | Helper::TextWithin
             | Helper::FirstBytes
+            | Helper::FindByte
+            | Helper::RfindByte
+            | Helper::FindBytes
+            | Helper::FindAny
             | Helper::PeekByte
             | Helper::UntilNul => &[],
             Helper::ReadByte | Helper::SkipSpace => &[Helper::PeekByte],
@@ -528,6 +537,43 @@ impl Helper {
                 /// shorter: what C's `strncmp` reads of text that ends there.
                 fn first_bytes(text: &[u8], count: usize) -> &[u8] {
                     &text[..count.min(text.len())]
+                }
+            },
+            Helper::FindByte => parse_quote! {
+                /// Where C's `strchr` finds `byte` in `text`, the bytes before
+                /// the NUL, which it finds at the end.
+                fn find_byte(text: &[u8], byte: u8) -> Option<usize> {
+                    match byte {
+                        0 => Some(text.len()),
+                        _ => text.iter().position(|&found| found == byte),
+                    }
+                }
+            },
+            Helper::RfindByte => parse_quote! {
+                /// Where C's `strrchr` finds the last `byte` in `text`, the
+                /// bytes before the NUL, which it finds at the end.
+                fn rfind_byte(text: &[u8], byte: u8) -> Option<usize> {
+                    match byte {
+                        0 => Some(text.len()),
+                        _ => text.iter().rposition(|&found| found == byte),
+                    }
+                }
+            },
+            Helper::FindBytes => parse_quote! {
+                /// Where C's `strstr` finds `part` in `text`, both without
+                /// their NUL. An empty part is found at the start.
+                fn find_bytes(text: &[u8], part: &[u8]) -> Option<usize> {
+                    if part.is_empty() {
+                        return Some(0);
+                    }
+                    text.windows(part.len()).position(|window| window == part)
+                }
+            },
+            Helper::FindAny => parse_quote! {
+                /// Where C's `strpbrk` finds one of the bytes of `set` in
+                /// `text`, both without their NUL.
+                fn find_any(text: &[u8], set: &[u8]) -> Option<usize> {
+                    text.iter().position(|byte| set.contains(byte))
                 }
             },
             Helper::TextOf => parse_quote! {

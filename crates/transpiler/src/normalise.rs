@@ -15,6 +15,10 @@
 //! pointer a result of the call. It needs no facts either, and is in a file
 //! of its own.
 //!
+//! `found`, R40, makes a local that only holds what a search of the
+//! library found, and is only tested, whether and where it found it. It
+//! needs no facts and is in a file of its own.
+//!
 //! `cursors`, R24, makes a pointer that walks an array an index beside the
 //! array; it is in a file of its own.
 //!
@@ -26,10 +30,12 @@
 mod cursors;
 mod ends;
 mod errno;
+mod found;
 mod unions;
 
 pub use cursors::cursors;
 pub use ends::ends;
+pub use found::{SEARCHES, found, is_search};
 pub use unions::unions;
 
 use crate::c::{

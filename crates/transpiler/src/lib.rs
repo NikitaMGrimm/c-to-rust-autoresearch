@@ -62,6 +62,7 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     normalise::unions(&mut program)?;
     normalise::join(&mut program);
     normalise::ends(&mut program);
+    normalise::found(&mut program);
     let facts = facts::Facts::of(&program);
     normalise::cursors(&mut program, &facts);
     let facts = facts::Facts::of(&program);

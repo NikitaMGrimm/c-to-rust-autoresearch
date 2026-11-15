@@ -115,6 +115,11 @@ pub fn string(text: &str) -> Expr {
     parse_quote!(#literal)
 }
 
+pub fn char(value: char) -> Expr {
+    let literal = syn::LitChar::new(value, Span::call_site());
+    parse_quote!(#literal)
+}
+
 pub fn byte(value: u8) -> Expr {
     let literal = syn::LitByte::new(value, Span::call_site());
     parse_quote!(#literal)
