@@ -1039,6 +1039,20 @@ impl Lower<'_> {
                 ExprKind::Var(var) if through(value) == Some(var) => Some(var),
                 _ => None,
             };
+            // Any other value that reads `p` borrows it while it is
+            // assigned.
+            if let ExprKind::Var(var) = target.kind
+                && self.walking.is_none()
+                && repr.nullable
+                && repr.mutable
+                && !repr.owned
+                && value.any(&mut |read| matches!(read.kind, ExprKind::Var(read) if read == var))
+            {
+                return unsupported(
+                    "a pointer that is stored through and assigned from itself other than by one field: no rule yet",
+                    expr.at,
+                );
+            }
             let value = self.pointer(value, repr);
             self.walking = None;
             return Ok(rust::assign(self.place(target, true)?, value?));

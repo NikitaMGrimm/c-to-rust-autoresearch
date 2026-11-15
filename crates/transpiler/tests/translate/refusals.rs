@@ -281,3 +281,25 @@ fn a_variable_that_its_own_initialiser_names_is_refused() {
     );
     crate::common::assert_lines(&rust, &["let width: u64 = 8;"]);
 }
+
+/// `p = p->next` walks on through `p` itself; any other value that reads
+/// `p` would borrow it while it is assigned.
+#[test]
+fn a_walk_by_more_than_one_field_is_refused() {
+    let reason = "unsupported: a pointer that is stored through and assigned from itself other than by one field: no rule yet, at line 6";
+    for (name, step) in [
+        (
+            "walk-either",
+            "at = far ? at->after : at;\n    printf(\"%d\\n\", at->load);",
+        ),
+        (
+            "walk-twice",
+            "at = at->after->after;\n    printf(\"%d %d\\n\", at == NULL, far);",
+        ),
+    ] {
+        let c = format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct knot {{ int load; struct knot *after; }};\nvoid raise(struct knot *at, int far) {{\n    at->load += 3;\n    {step}\n}}\nint main(void) {{\n    struct knot *head = malloc(sizeof(struct knot));\n    head->load = 1;\n    head->after = malloc(sizeof(struct knot));\n    head->after->load = 2;\n    head->after->after = NULL;\n    raise(head, 1);\n    raise(head, 0);\n    free(head->after);\n    free(head);\n    return 0;\n}}\n"
+        );
+        assert_eq!(translate(name, &c).unwrap_err(), reason);
+    }
+}

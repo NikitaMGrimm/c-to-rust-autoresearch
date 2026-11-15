@@ -670,6 +670,10 @@ become a fact and a refusal:
 - A pointer that a function returns from its parameter is not known to
   point to the caller's local: `int *p = identity(&x); return p;` is
   translated and does not compile, where the result should be refused.
+- A second pointer that is set from a pointer which is stored through and
+  walks on afterwards, as `q = p; p->n += 1; p = p->next;` with a later
+  read of `q`, borrows `p` for as long as it is used: the program is
+  translated and does not compile, where it should be refused.
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.
