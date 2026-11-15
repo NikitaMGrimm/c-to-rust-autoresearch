@@ -142,3 +142,26 @@ fn text_that_would_store_other_bytes_is_refused() {
         "unsupported: an `snprintf` size beyond its buffer, at line 4"
     );
 }
+
+#[test]
+fn a_line_with_nothing_on_it_has_no_text() {
+    let rust = check(
+        "empty-line",
+        r#"
+#include <stdio.h>
+int main(void) {
+    printf("a");
+    printf("\n");
+    puts("");
+    fprintf(stderr, "\n");
+    fputs("", stdout);
+    printf("%d\n", 3);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["println!();", "eprintln!();", "print!(\"\");"]);
+    assert!(!rust.contains("println!(\"\")"), "{rust}");
+}

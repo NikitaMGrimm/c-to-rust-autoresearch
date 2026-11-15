@@ -949,6 +949,10 @@ impl Lower<'_> {
                     Some(line) if !line_end => (stream.println(), line),
                     _ => (print, text.as_str()),
                 };
+                // A line with nothing on it.
+                if text.is_empty() && print == stream.println() {
+                    return Ok(parse_quote!(#print!()));
+                }
                 let text = rust::string(text);
                 parse_quote!(#print!(#text))
             }
@@ -965,6 +969,8 @@ impl Lower<'_> {
         let (text, arguments) = self.format(format, values, false, at)?;
         let (print, println) = (stream.print(), stream.println());
         Ok(match text.strip_suffix('\n') {
+            // A line with nothing on it.
+            Some("") if arguments.is_empty() => parse_quote!(#println!()),
             Some(line) => {
                 let line = rust::string(line);
                 parse_quote!(#println!(#line #(, #arguments)*))

@@ -659,8 +659,6 @@ development set too, most frequent first:
 - **A place or -1.** A search that returns an index or `-1` is `->
   Option<usize>`. Needs which returns say that nothing was found, that
   the others are no negative numbers, and every caller.
-- **`println!("")`** for a `printf("\n")`: `println!()`. Needs no
-  analysis.
 - **A `do` loop whose test is a constant.** R58's block and its label for
   a `continue`, and `if !true { break; }`, where the test is never false:
   a plain `loop`. Needs no analysis. A `continue` that ends the body
