@@ -17,7 +17,9 @@ const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage 
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
      --usage adds a report of the transcripts usage tool to the private log.\n\
      --dev-only keeps CANDIDATE on the development score alone; validation is\n\
-     only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop.\n\
+     only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop;\n\
+     a file steady-rules there keeps a rule as a fix is kept: the development\n\
+     score need not rise.\n\
      Run it from a clean checkout of main, not from the loop agent's checkout.";
 
 /// The only paths a loop change may touch; the evaluator and the benchmarks
@@ -74,6 +76,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
         strict,
         run,
     })
+}
+
+/// The file in a run's log directory with which the owner lets the run keep
+/// steady rules. It is in the private directory, which the agent's guard
+/// blocks and its audit reports.
+const STEADY_RULES: &str = "steady-rules";
+
+/// Whether a rule is kept as a fix is, when it lowers no score: for a run
+/// whose log directory holds [`STEADY_RULES`]. The development set then no
+/// longer has to hold a program for every rule.
+fn steady_rules(args: &Args) -> bool {
+    args.run.is_some() && log_dir(args).join(STEADY_RULES).exists()
 }
 
 /// Where the gate appends its log: the run's directory, or the loop's.
@@ -148,8 +162,11 @@ fn gate(args: &Args) -> Result<bool, String> {
             score(&after, &lax_after, set, args.strict),
         )
     };
-    let reason =
-        problem.or_else(|| rejection(scores("dev"), scores("validation"), steady, args.dev_only));
+    let steady_rules = steady_rules(args);
+    let reason = problem.or_else(|| {
+        let steady = steady || steady_rules;
+        rejection(scores("dev"), scores("validation"), steady, args.dev_only)
+    });
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -196,6 +213,7 @@ fn gate(args: &Args) -> Result<bool, String> {
         "refactor": refactor,
         "dev_only": args.dev_only,
         "strict": args.strict,
+        "steady_rules": steady_rules,
         "decision": if reason.is_none() { "keep" } else { "reject" },
         "reason": reason,
         "sets": summary,
@@ -434,6 +452,35 @@ mod tests {
         let args = parsed(&["private", "base", "candidate", "--dev-only"]).unwrap();
         assert!(args.dev_only);
         assert_eq!(log_dir(&args), Path::new("private/loop"));
+    }
+
+    #[test]
+    fn only_a_run_with_the_owners_file_keeps_steady_rules() {
+        let scratch = eval::Scratch::new("gate").unwrap();
+        let private = scratch.to_str().unwrap();
+        let run = parsed(&[private, "base", "candidate", "--run", "r1"]).unwrap();
+        let other = parsed(&[private, "base", "candidate", "--run", "r2"]).unwrap();
+        let loop_ = parsed(&[private, "base", "candidate"]).unwrap();
+        assert!(!steady_rules(&run));
+        for dir in ["runs/r1", "loop"] {
+            std::fs::create_dir_all(scratch.join(dir)).unwrap();
+            std::fs::write(scratch.join(dir).join(STEADY_RULES), "").unwrap();
+        }
+        assert!(steady_rules(&run));
+        assert!(!steady_rules(&other) && !steady_rules(&loop_));
+        assert!(parsed(&[private, "base", "candidate", "--steady-rules"]).is_none());
+    }
+
+    #[test]
+    fn a_steady_rule_stays_when_no_score_drops() {
+        // A rule that raises no score: rejected, and kept as a steady one.
+        assert!(rejection((3, 3), (2, 2), false, false).is_some());
+        assert!(rejection((3, 3), (2, 2), true, false).is_none());
+        assert!(rejection((3, 4), (2, 2), true, false).is_none());
+        // Either score dropping still rejects it.
+        assert!(rejection((3, 2), (2, 2), true, false).is_some());
+        assert!(rejection((3, 3), (2, 1), true, false).is_some());
+        assert!(rejection((3, 4), (2, 1), true, false).is_some());
     }
 
     #[test]
