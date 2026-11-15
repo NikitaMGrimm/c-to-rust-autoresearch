@@ -31,16 +31,22 @@ fn hiding(temp: &Path, inner: &Command, readable: &[&Path], writable: &Path) -> 
         command.arg("--tmpfs").arg(home);
     }
     // A readable directory around the temporary directory comes first, or
-    // its bind would show the temporary directory again.
-    let around =
-        |path: &&&Path| temp.starts_with(path.canonicalize().unwrap_or(path.to_path_buf()));
-    for path in readable.iter().filter(around) {
-        command.arg("--ro-bind").arg(path).arg(path);
+    // its bind would show the temporary directory again. Where its path is
+    // a link, the temporary directory has a second path under it.
+    let inside = |path: &&&Path| {
+        let resolved = path.canonicalize().unwrap_or(path.to_path_buf());
+        temp.strip_prefix(resolved).ok().map(|rest| path.join(rest))
+    };
+    for path in readable {
+        if let Some(temp) = inside(&path) {
+            command.arg("--ro-bind").arg(path).arg(path);
+            command.arg("--tmpfs").arg(temp);
+        }
     }
     if temp != Path::new("/tmp") {
         command.arg("--tmpfs").arg(temp);
     }
-    for path in readable.iter().filter(|path| !around(path)) {
+    for path in readable.iter().filter(|path| inside(path).is_none()) {
         command.arg("--ro-bind").arg(path).arg(path);
     }
     command.arg("--bind").arg(writable).arg(writable);
@@ -79,21 +85,25 @@ mod tests {
     #[test]
     fn a_readable_directory_around_the_temporary_directory_does_not_show_it() {
         let dir = crate::Scratch::new("test").unwrap();
-        let (temp, out) = (dir.join("tmp"), dir.join("out"));
-        for dir in [&temp, &out] {
+        let (around, link) = (dir.join("around"), dir.join("link"));
+        let (temp, out) = (around.join("tmp"), dir.join("out"));
+        for dir in [&around, &temp, &out] {
             std::fs::create_dir(dir).unwrap();
         }
-        let (hidden, shown) = (temp.join("program.c"), dir.join("tool"));
-        for file in [&hidden, &shown] {
+        std::os::unix::fs::symlink(&around, &link).unwrap();
+        for file in [temp.join("program.c"), around.join("tool")] {
             std::fs::write(file, "").unwrap();
         }
-        let reads = |file: &Path| {
-            let mut cat = Command::new("cat");
-            cat.arg(file);
-            let status = hiding(&temp, &cat, &[&dir], &out).status().unwrap();
-            status.success()
-        };
-        assert!(reads(&shown));
-        assert!(!reads(&hidden));
+        // By its own path and by a link to it, as a toolchain may be installed.
+        for readable in [&around, &link] {
+            let reads = |file: &str| {
+                let mut cat = Command::new("cat");
+                cat.arg(readable.join(file));
+                let status = hiding(&temp, &cat, &[readable], &out).status().unwrap();
+                status.success()
+            };
+            assert!(reads("tool"), "{}", readable.display());
+            assert!(!reads("tmp/program.c"), "{}", readable.display());
+        }
     }
 }
