@@ -72,7 +72,7 @@ impl Lower<'_> {
             // bytes to the size.
             ("strncpy", [target, source, size]) => {
                 let target = rust::borrow(true, self.first(target, Err(size))?);
-                let source = self.pointer(source, Repr::BYTES)?;
+                let source = self.argument_pointer(source, Repr::BYTES)?;
                 self.helper(Helper::CopyText);
                 Ok(rust::call("copy_text", [target, source]))
             }
@@ -86,8 +86,8 @@ impl Lower<'_> {
                 unsupported(format!("`{name}` within one array: no rule yet"), at)
             }
             ("strcpy" | "strcat", [target, source]) => {
-                let target = self.pointer(target, Repr::BYTES_WRITTEN)?;
-                let source = self.pointer(source, Repr::BYTES)?;
+                let target = self.argument_pointer(target, Repr::BYTES_WRITTEN)?;
+                let source = self.argument_pointer(source, Repr::BYTES)?;
                 let (helper, function) = match name {
                     "strcpy" => (Helper::CopyString, "copy_string"),
                     _ => (Helper::AppendString, "append_string"),
@@ -96,8 +96,8 @@ impl Lower<'_> {
                 Ok(rust::call(function, [target, source]))
             }
             ("strncat", [target, source, count]) => {
-                let target = self.pointer(target, Repr::BYTES_WRITTEN)?;
-                let source = self.pointer(source, Repr::BYTES)?;
+                let target = self.argument_pointer(target, Repr::BYTES_WRITTEN)?;
+                let source = self.argument_pointer(source, Repr::BYTES)?;
                 let count = self.index_value(count)?;
                 self.helper(Helper::AppendAtMost);
                 Ok(rust::call("append_at_most", [target, source, count]))
@@ -275,7 +275,7 @@ impl Lower<'_> {
         if !self.reads_bytes(text) {
             return self.pointer(text, Repr::TEXT);
         }
-        let bytes = self.pointer(text, Repr::BYTES)?;
+        let bytes = self.argument_pointer(text, Repr::BYTES)?;
         self.helper(Helper::TextOf);
         let text = rust::call("text_of", [bytes]);
         Ok(match borrowed {
@@ -292,7 +292,7 @@ impl Lower<'_> {
 
     /// R14: the bytes of the text that a pointer to bytes points to.
     fn until_nul(&mut self, text: &Expr) -> R<syn::Expr> {
-        let bytes = self.pointer(text, Repr::BYTES)?;
+        let bytes = self.argument_pointer(text, Repr::BYTES)?;
         self.helper(Helper::UntilNul);
         Ok(rust::call("until_nul", [bytes]))
     }
@@ -578,7 +578,7 @@ impl Lower<'_> {
                 rust::call("first_bytes", [bytes, count])
             }
             None => {
-                let bytes = self.pointer(text, Repr::BYTES)?;
+                let bytes = self.argument_pointer(text, Repr::BYTES)?;
                 self.helper(Helper::TextWithin);
                 rust::call("text_within", [bytes, count])
             }
@@ -607,7 +607,7 @@ impl Lower<'_> {
         // `fgets` stores no further than its text reaches, so a size
         // beyond the buffer is no error in C until the text is as long,
         // and a slice of that size is one at once.
-        let target = self.pointer(buffer.uncast(), Repr::BYTES_WRITTEN)?;
+        let target = self.argument_pointer(buffer.uncast(), Repr::BYTES_WRITTEN)?;
         let size = self.expr(size)?;
         self.helper(Helper::ReadLineWithin);
         Ok(rust::call("read_line_within", [target, size]))
@@ -969,7 +969,7 @@ impl Lower<'_> {
             ..Repr::BYTES
         };
         let Some(size) = size else {
-            let target = self.pointer(target.uncast(), bytes)?;
+            let target = self.argument_pointer(target.uncast(), bytes)?;
             self.helper(Helper::StoreText);
             return Ok(rust::call("store_text", [text, target]));
         };
@@ -983,7 +983,7 @@ impl Lower<'_> {
         }
         // As for `fgets`, a size beyond the buffer is no error in C until
         // the text needs the room.
-        let target = self.pointer(target.uncast(), bytes)?;
+        let target = self.argument_pointer(target.uncast(), bytes)?;
         let size = self.expr(size)?;
         self.helper(Helper::StoreTextWithin);
         Ok(rust::call("store_text_within", [text, target, size]))

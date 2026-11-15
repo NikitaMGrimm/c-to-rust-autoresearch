@@ -104,8 +104,8 @@ int main(int argc, char *argv[]) {
     assert_lines(
         &rust,
         &[
-            "store_text(&format!(\"Entry_{}\", id), &mut *out);",
-            "store_text_within(&format!(\"item-{}\", id), &mut *out, size)",
+            "store_text(&format!(\"Entry_{}\", id), out);",
+            "store_text_within(&format!(\"item-{}\", id), out, size)",
             "&format!(\"{}:{:x} {{}}\", args[1], size as u32),",
             "&mut e.name,",
             "&format!(\"{}%{:5.1}\", 65 as u8 as char, size as f64 / 4.0),",

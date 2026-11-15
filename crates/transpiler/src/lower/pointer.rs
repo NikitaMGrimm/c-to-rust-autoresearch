@@ -2,7 +2,7 @@
 //! its slot, and every use of a pointer converts between two such types.
 
 use super::{Lower, R, unsupported};
-use crate::c::{BinOp, Expr, ExprKind, Type};
+use crate::c::{BinOp, Expr, ExprKind, Type, VarKind};
 use crate::facts::{ALLOCATORS, Slot, is_argv, place_slot};
 use crate::rust;
 use syn::parse_quote;
@@ -422,16 +422,27 @@ impl Lower<'_> {
         })
     }
 
-    /// A pointer as an argument. Rust reborrows a `&mut` variable that is
-    /// passed to a function, so it is passed by its name.
+    /// A pointer as an argument of a function whose parameter is a borrow
+    /// written out, not a generic. Rust reborrows a `&mut` variable that is
+    /// passed to such a parameter, as `&mut` or as `&`, so it is passed by
+    /// its name.
     pub(super) fn argument_pointer(&mut self, pointer: &Expr, to: Repr) -> R<syn::Expr> {
         if let ExprKind::Var(var) = pointer.kind
-            && to.mutable
             && !to.owned
             && !to.nullable
-            && self.repr(Slot::Var(var), pointer.at)? == to
         {
-            return self.place(pointer, true);
+            let from = self.repr(Slot::Var(var), pointer.at)?;
+            let local = matches!(self.program.vars[var].kind, VarKind::Local | VarKind::Param);
+            if (from == to && to.mutable)
+                || (local
+                    && from.mutable
+                    && Repr {
+                        mutable: false,
+                        ..from
+                    } == to)
+            {
+                return self.place(pointer, to.mutable);
+            }
         }
         self.pointer(pointer, to)
     }

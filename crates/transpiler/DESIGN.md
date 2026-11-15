@@ -528,10 +528,8 @@ What a third review found beside these, most frequent first:
 - **A result and a flag.** `fn parse_val(text: &[u8], val: &mut i32) ->
   bool` that stores once where it returns true is `-> Option<i32>`. Needs
   every caller: the output is not read where the call fails.
-- **A reborrow that the parameter's type makes.** `print_house(&*house)`
-  and `copy_string(&mut *dest, src)` for an argument that is a `&mut`: the
-  call reborrows by itself. `as_deref_mut()` on an `Option` that nothing
-  reads again could take it.
+- **A reborrow that nothing needs.** `as_deref_mut()` on an `Option` that
+  nothing reads again could take it.
 - **A vector of zeros that a loop fills.** `vec![0; n]` and then `ones[i] =
   1` for every `i` is `vec![1; n]`, when the loop stores each element once
   and nothing reads the vector before.

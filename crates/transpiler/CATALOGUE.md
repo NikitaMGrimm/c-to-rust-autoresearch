@@ -472,7 +472,7 @@ Entry format, newest last:
   stores the text and a NUL and stops the program where they do not fit;
   `store_text_cut(…, &mut buffer)` for `snprintf` with the array's length,
   and `&mut buffer[..4]` for a smaller constant size, which stores what
-  leaves room for the NUL; `store_text_within(…, &mut *out, size)` for any
+  leaves room for the NUL; `store_text_within(…, out, size)` for any
   other size, which stops the program only where C would write beyond the
   buffer. Each returns C's result as an `i32`. The text comes first, so its
   values may read the buffer. The format is R4's; refused, since the text

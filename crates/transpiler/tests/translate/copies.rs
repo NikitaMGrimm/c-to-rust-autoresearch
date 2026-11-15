@@ -36,8 +36,8 @@ int main(int argc, char *argv[]) {
     assert_lines(
         &rust,
         &[
-            "copy_string(&mut *to, b\"hi \\0\");",
-            "append_string(&mut *to, name);",
+            "copy_string(to, b\"hi \\0\");",
+            "append_string(to, name);",
             "copy_string(&mut person.name, b\"Ada\\0\");",
             "copy_string(&mut line[3..], &word[args.len() as i32 as usize..]);",
             "append_string(&mut line, b\"\\0\");",

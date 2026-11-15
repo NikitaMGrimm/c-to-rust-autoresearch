@@ -174,3 +174,48 @@ int main(void) {
         &["let missing: Option<&Entry> = find(&mut entries, 3, 9).map(|found| &*found);"],
     );
 }
+
+#[test]
+fn a_borrow_passed_on_by_name_is_reborrowed() {
+    let rust = check(
+        "reborrow",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+struct counter { int n; };
+void show(const struct counter *c) { printf("%d\n", c->n); }
+void bump(struct counter *c) { c->n++; }
+void twice(struct counter *c, char *name) {
+    show(c);
+    bump(c);
+    show(c);
+    bump(c);
+    strcpy(name, "two");
+    printf("%s %d\n", name, (int)strlen(name));
+    c->n += 10;
+    show(c);
+}
+int main(int argc, char *argv[]) {
+    struct counter c = {atoi(argv[1])};
+    char name[8] = "";
+    twice(&c, name);
+    show(&c);
+    return 0;
+}
+"#,
+        &[&["3"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "show(c);",
+            "bump(c);",
+            "copy_string(name, b\"two\\0\");",
+            "println!(\"{} {}\", text_of(name), until_nul(name).len() as i32);",
+            "twice(&mut c, &mut name);",
+            "show(&c);",
+        ],
+    );
+}

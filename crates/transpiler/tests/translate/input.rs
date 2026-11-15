@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
     assert_lines(
         &rust,
         &[
-            "if !read_line_within(&mut *line, size) {",
+            "if !read_line_within(line, size) {",
             "if read_line_within(&mut a, args.len() as i32 + 2) {",
             "if read_line_within(&mut b, 9) {",
         ],
