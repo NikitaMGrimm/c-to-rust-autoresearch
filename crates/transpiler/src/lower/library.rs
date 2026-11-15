@@ -695,17 +695,23 @@ impl Lower<'_> {
                 at,
             );
         }
-        let Some((each, _)) = element.layout(program) else {
-            return unsupported("a copy of a type without a size", at);
-        };
-        let each = i128::from(each);
-        let is_each = |bytes: &Expr| bytes.constant(program) == Some(each);
-        let count = match (size.constant(program), &size.uncast().kind) {
-            (Some(bytes), _) if bytes % each == 0 => Ok(bytes / each),
-            (Some(_), _) => return unsupported("a copy of part of an element", at),
-            (None, _) if each == 1 => Err(size),
-            (None, ExprKind::Binary(BinOp::Mul, count, bytes)) if is_each(bytes) => Err(&**count),
-            (None, ExprKind::Binary(BinOp::Mul, bytes, count)) if is_each(bytes) => Err(&**count),
+        let each = element.layout(program).map(|(each, _)| i128::from(each));
+        let is_each = |bytes: &Expr| each.is_some() && bytes.constant(program) == each;
+        let count = match (size.constant(program), &size.uncast().kind, each) {
+            // The size of the element's own type is one element, also
+            // where the translation does not know its size in C, as for
+            // a record with bit-fields.
+            (_, ExprKind::SizeOf(ty), _) if ty == element => Ok(1),
+            (_, _, None) => return unsupported("a copy of a type without a size", at),
+            (Some(bytes), _, Some(each)) if bytes % each == 0 => Ok(bytes / each),
+            (Some(_), ..) => return unsupported("a copy of part of an element", at),
+            (None, _, Some(1)) => Err(size),
+            (None, ExprKind::Binary(BinOp::Mul, count, bytes), _) if is_each(bytes) => {
+                Err(&**count)
+            }
+            (None, ExprKind::Binary(BinOp::Mul, bytes, count), _) if is_each(bytes) => {
+                Err(&**count)
+            }
             _ => return unsupported("a copy whose size is no count of elements", at),
         };
         // The count is written once for each side.

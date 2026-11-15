@@ -189,3 +189,33 @@ fn a_copy_that_is_no_count_of_elements_of_one_type_is_refused() {
         "unsupported: a copy whose size calls or assigns: no rule yet, at line 5"
     );
 }
+
+/// R29: `sizeof` of a record's own type copies one record, also where it
+/// has bit-fields.
+#[test]
+fn memcpy_of_a_record_with_bit_fields_is_an_assignment() {
+    let rust = check(
+        "copy_bit_fields",
+        r#"
+#include <stdio.h>
+#include <string.h>
+struct flags { unsigned on : 1; unsigned level : 3; };
+struct state { struct flags flags; int value; };
+int main(int argc, char *argv[]) {
+    struct state now;
+    struct state backup = {{0, 0}, 7};
+    printf("%d\n", backup.value);
+    now.flags.on = 1;
+    now.flags.level = (unsigned)argc;
+    now.value = 40 + argc;
+    memcpy(&backup, &now, sizeof(struct state));
+    now.value = 0;
+    printf("%d %d %d %d\n", backup.flags.on, backup.flags.level, backup.value, now.value);
+    return 0;
+}
+"#,
+        &[&[], &["x", "y"]],
+        "",
+    );
+    assert_lines(&rust, &["backup = now;"]);
+}
