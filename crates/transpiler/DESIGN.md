@@ -250,6 +250,96 @@ union with members of different sizes, with an array, a record or a pointer
 is refused: of those, bytes beside a number would be `to_ne_bytes`, and a
 union that is one of several kinds of value would be an `enum`.
 
+### What the library reports
+
+The C library reports through pointers and through `errno` what Rust
+returns as a value: a place that was found or NULL, a variable of the
+environment or NULL, the end of a number, an error beside a result, the
+number of conversions or the end of the input. Each becomes a result.
+
+**A place that a search found.** `strchr`, `strrchr`, `memchr`, `strstr` and
+`strpbrk` return a pointer into their first argument, or NULL. The result is
+a cursor on that argument (see Cursors) that may be absent, an
+`Option<usize>` from `position`:
+
+| C | Rust, or the refusal |
+| --- | --- |
+| `strchr(s, c)` of bytes | `find_byte(&s, c as u8)`, a helper that stops at the NUL and finds it when `c` is 0, as C does |
+| `strchr(s, 'x')` of text (`&str`, `String`) | `s.find('x')` for a constant that is ASCII and not NUL; other characters are refused for text |
+| `strrchr` | `rfind_byte`, `s.rfind('x')` |
+| `memchr(s, c, n)` | `s.iter().take(n as usize).position(\|&byte\| byte == c as u8)`: no byte beyond `n` or the array is read, and `n` of 0 finds nothing |
+| `strstr(s, t)` | `s.find(t)` for text, `find_bytes(&s, &t)` for bytes up to their NULs; an empty `t` is found at 0 |
+| `strpbrk(s, set)` | `s.find(\|c\| set.contains(c))` for text, a helper for bytes |
+| the result only tested: `if (strchr(s, c))`, `strchr(s, c) != NULL`, `== NULL`, `!strstr(s, t)`, also inside `&&`, `\|\|` and `?:` | `.is_some()`, `.is_none()`; `s.contains('x')` for text |
+| kept in a local that is only tested for NULL | `let found: Option<usize> = …;` and `found.is_some()` |
+| kept in a local and used where the test holds: `if (p) { *p = 0; n = p - s; puts(p + 1); }` | `if let Some(p) = p { s[p] = 0; n = p as i64; … &s[p + 1..] }`: the local joins the cursors of `s`, so `s` stays usable beside it |
+| the search goes on from the result: `p = strchr(p + 1, c)`, `for (s = in; (s = strchr(s, c)); s++)` | the search of the rest, `find_byte(&s[p + 1..], c).map(\|at\| p + 1 + at)`; a cursor that is assigned in a condition and may be NULL is refused until loops narrow |
+| returned, handed on or stored in a record: `return memchr(b, c, n);` | the rest of the array from there, `….map(\|at\| &b[at..])`, an `Option<&[u8]>` as for any pointer that may be NULL; the caller's `found - buffer` is refused as a comparison of two addresses |
+| the first argument is itself NULL, an argument of the program or a result of `getenv` | NULL is refused (undefined in C); the others are text |
+| `c` beyond a `char` (`strchr(s, 300)`) | `c as u8`, as C converts it |
+| a store through the result when the argument is `const` text | refused as any store to text |
+| an argument with a side effect | evaluated once, in C's order |
+
+**A variable of the environment.** `getenv(name)` is `std::env::var(name).ok()`,
+an `Option<String>` that the program owns:
+
+| C | Rust, or the refusal |
+| --- | --- |
+| `char *v = getenv("NAME");` then `if (v == NULL)`, `if (v)`, `v != NULL && …` | `let v: Option<String> = std::env::var("NAME").ok();` and the rules for a pointer that may be NULL |
+| `getenv(name)` for a `name` that is text or bytes | `std::env::var(name)`, `std::env::var(text_of(&name))` |
+| read as text: `atoi(v)`, `strtol(v, …)`, `printf("%s", v)`, `strlen(v)`, `strcmp(v, "x")`, `strchr(v, c)` | the rules for text, on `&v` |
+| `getenv("NAME") != NULL` and `== NULL`, not kept | `std::env::var("NAME").is_ok()`, `.is_err()` |
+| a byte of it, `v[0]`, `*v` | `v.as_bytes().first().copied().unwrap_or(0)`, `v.as_bytes().get(i)…`, as for an argument of the program |
+| a store through it, `v[0] = 'x'`, or a move, `v++` | refused: the environment's text is not the program's to change, and a cursor over text needs its bytes |
+| kept in a record or a global, or returned | an owner of the `String`, by the rules for owners |
+| a value that is not UTF-8, or a name with `=` or a NUL | `var` gives `None` or stops where C gives the bytes; a weak spot, listed below |
+| `setenv`, `putenv`, `environ` | refused |
+
+**`errno`.** A library function that fails stores a number in `errno` and
+never clears it, so a program stores 0, calls, and compares. In Rust the
+call returns the error beside its value:
+
+| C | Rust, or the refusal |
+| --- | --- |
+| `errno = 0; n = strtol(text, &end, 10); if (errno == ERANGE)` | `let (n, end, range) = parse_int_checked(text);` and `if range`; `range` is whether the number was beyond its type, which is all that `strtol`, `strtoul`, `strtod` and their like report in base 10 |
+| `errno == ERANGE`, `errno != 0`, `errno`, `errno == 0`, `!errno` after such a call | `range`, `range`, `range`, `!range`, `!range` |
+| `errno == EDOM`, `errno == EINVAL` after such a call | `false`: the call never reports it |
+| `errno = 0; r = pow(x, y);` and the same tests, also for `sqrt`, `log`, `exp` and the other functions of `math.h` with a rule | `let r = x.powf(y);` and a test of the result as glibc makes it: `EDOM` where the result is NaN and no argument is, `ERANGE` where it is infinite and the arguments are finite, or zero for `pow` and `exp` where an exact result would not be |
+| a call whose `errno` nothing reads | the call as before, without the third result |
+| a read with no `errno = 0` before the call in the same block, or with another call between the store and the read that may set it (a function of the program, a library function that reports through it), or after a branch or a loop that holds such a call | refused: `a read of `errno` that is not one call's error` |
+| `errno = 0` that no read follows | dropped |
+| a store of another value, `errno = EINVAL`, `errno = saved` | refused |
+| `errno` as a value: `int e = errno;`, `printf("%d", errno)`, `strerror(errno)`, `perror(…)`, `return errno;`, an argument | refused: the number is the platform's |
+| `&errno`, and `errno` set in one function and read in another | refused |
+| `errno` after `malloc`, `fopen`, `fgets`, `scanf` and other calls that report something else through it | refused |
+
+The rewrite `normalise::ends` does this with the end pointer: the call
+becomes `Stmt::Parse` with a variable for the error, and each read of
+`errno` that the call reaches becomes a read of that variable.
+
+**The end of a number**, beyond what Cursors above describes:
+
+| C | Rust, or the refusal |
+| --- | --- |
+| `strtoul`, `strtoull`, `strtod`, `strtof` with `&end` | `parse_uint_prefix`, `parse_float_prefix::<f64>`, as `strtol` |
+| `char *end = text;` or `end = NULL;` before the call, with nothing reading it between | the store is dropped: the call always stores the end |
+| the end read before any call, or stored by anything else and then read | refused |
+| a base other than 10: a constant 0, 8 or 16, or a variable | refused: no rule yet |
+| an end in a field, a global or a parameter (`char **out`) | refused: a pointer to a pointer |
+| a NULL text | undefined in C |
+
+**The result of `scanf`** is the number of conversions that stored a value,
+or -1 (`EOF`) where the input ended before the first of them:
+
+| C | Rust, or the refusal |
+| --- | --- |
+| `scanf(…) == N`, `!= N` for the format's `N` conversions | `if let Some(…)`, `let Some(…) = … else` (R11) |
+| any other use of the value: `int n = scanf(…);`, `scanf(…) == EOF`, `!= EOF`, `< 1`, `> 0`, `>= 1`, `== 0`, `while (scanf(…) == 1)`, a `switch` on it, `return scanf(…);` | the count as a value: a block that reads each conversion in turn and gives the number stored, or -1 when the first found the end of the input, `{ match scan_int() { Scan::Value(v) => { x = v as i32; 1 } Scan::NoMatch => 0, Scan::End => -1 } }`; the helpers tell the end of the input from text that is no number |
+| a comparison of that value with a constant that decides it for every count (`scanf("%d", &x) < 5`) | the same block; nothing is folded |
+| `%c` at the end of the input, white space in the format | as R11; white space stores nothing and counts nothing |
+| `%*d`, `%s`, `%[`, `%n`, `%f`, a width | refused: no rule yet |
+| `sscanf`, and `fscanf` on another stream than `stdin` | refused |
+
 ## Not yet built
 
 The direction for each, so that the first rule for it starts in the right
