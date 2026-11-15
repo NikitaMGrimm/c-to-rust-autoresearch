@@ -243,6 +243,25 @@ pub fn call(function: &str, args: impl IntoIterator<Item = Expr>) -> Expr {
     parse_quote!(#function(#(#args),*))
 }
 
+/// A call of a function that a value holds, such as `p(x)`. A field
+/// would read as a method, so it is called as `(s.op)(x)`.
+pub fn call_value(function: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
+    let function = match function {
+        Expr::Field(_) => Expr::Paren(syn::ExprParen {
+            attrs: Vec::new(),
+            paren_token: Default::default(),
+            expr: Box::new(function),
+        }),
+        function => function,
+    };
+    Expr::Call(syn::ExprCall {
+        attrs: Vec::new(),
+        func: Box::new(function),
+        paren_token: Default::default(),
+        args: Punctuated::from_iter(args),
+    })
+}
+
 /// `&value` or `&mut value`.
 pub fn borrow(mutable: bool, value: Expr) -> Expr {
     Expr::Reference(syn::ExprReference {

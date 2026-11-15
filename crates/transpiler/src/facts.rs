@@ -78,6 +78,10 @@ pub enum Source {
     /// A variable of the environment, from `getenv`: fresh text that the
     /// slot owns, or NULL.
     Environment,
+    /// A function of the program or of the library, which is never NULL,
+    /// or an element of an array of pointers to functions, into which no
+    /// rule stores NULL.
+    Function,
     /// Anything the analysis has no model for, and what it is.
     Unknown(&'static str),
 }
@@ -235,7 +239,9 @@ impl Facts {
                 let pointer = self.pointer(*slot);
                 !pointer.nullable && !pointer.argument
             }
-            Source::Fresh { .. } | Source::Place { .. } | Source::Literal => true,
+            Source::Fresh { .. } | Source::Place { .. } | Source::Literal | Source::Function => {
+                true
+            }
             // `argv[argc]` is NULL, and the analysis does not know `argc`.
             Source::Null | Source::Argument | Source::Environment | Source::Unknown(_) => false,
         });
@@ -313,12 +319,13 @@ impl Facts {
                 }
             }
             ExprKind::Index(base, _) if is_argv(program, base) => vec![Source::Argument],
+            ExprKind::Index(..) if pointer.ty.function().is_some() => vec![Source::Function],
             ExprKind::Index(..) | ExprKind::Deref(_) => {
                 vec![Source::Unknown(
                     "a pointer stored in an array or behind a pointer",
                 )]
             }
-            ExprKind::Function(_) => vec![Source::Unknown("a pointer to a function")],
+            ExprKind::Function(_) => vec![Source::Function],
             _ => vec![Source::Unknown("a pointer the analysis has no model for")],
         }
     }
@@ -462,14 +469,15 @@ impl<'a> Walk<'a> {
         // borrow that a rule here could give it.
         for (id, record) in program.records.iter().enumerate() {
             for (index, field) in record.fields.iter().enumerate() {
-                if field.ty.is_pointer() {
+                // A pointer to a function points to no memory.
+                if field.ty.is_pointer() && field.ty.function().is_none() {
                     self.seed(Slot::Field(id, index)).owned = true;
                 }
             }
         }
         for &global in &program.globals {
             let var = &program.vars[global];
-            if var.ty.is_pointer() {
+            if var.ty.is_pointer() && var.ty.function().is_none() {
                 self.seed(Slot::Var(global)).owned = true;
             }
             let slot = var.ty.is_pointer().then_some(Slot::Var(global));
@@ -1075,6 +1083,7 @@ impl<'a> Walk<'a> {
                         );
                         to.nullable |= !flow.set;
                     }
+                    Source::Function => {}
                     Source::Unknown(what) => to.conflict = Some(what),
                 }
                 *self.seed(flow.to) = to;

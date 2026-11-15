@@ -346,6 +346,33 @@ or -1 (`EOF`) where the input ended before the first of them:
 | `%*d`, `%s`, `%[`, `%n`, `%f`, a width | refused: no rule yet |
 | `sscanf`, and `fscanf` on another stream than `stdin` | refused |
 
+### Pointers to functions
+
+A pointer to a function is a value of Rust's type `fn(A, B) -> R`: it is
+`Copy`, it points to no memory that the program owns, and none of the
+pointer facts but `nullable` apply to it. The analysis does not treat it as
+a pointer to memory.
+
+| Shape | Rust, or the refusal |
+| --- | --- |
+| the type `R (*)(A, B)`, also through a `typedef`, and a function type `typedef R op(A, B);` used as `op *` | `fn(A, B) -> R`; `fn(A)` for `void` |
+| a parameter written as a function, `void run(int f(int))` | the same: C makes it a pointer |
+| where it is kept: a local, a parameter, a result, a field of a record, a global, an element of an array (`ops[i]`) | the type in that place; a record with one stays `Copy` |
+| its value: a function's name, `&f`, `*f`, another such pointer, `c ? f : g`, a call's result | the function's path `f`, the value |
+| NULL may reach it | `Option<fn(A) -> R>`, `None`, `Some(f)`, with the tests and the narrowing of R10: `if (p)`, `p != NULL`, `if (!p) return;` |
+| a call: `p(x)`, `(*p)(x)`, `s.op(x)`, `ops[i](x)`, `select(k)(x)` | `p(x)`, `(s.op)(x)`, `ops[i as usize](x)`, `select(k)(x)` |
+| a call through one that may be NULL where no test holds | `p.unwrap()(x)`, as for any pointer that may be NULL: C's behaviour is undefined there |
+| the functions that reach one type use globals | every function whose address is taken and that has this C type takes the same `globals` parameter, the strongest that one of them needs (`&mut Globals` over `&Globals`), and each call through such a pointer passes it; the caller then uses the globals as they do |
+| a parameter or a result of the pointed-to function is a pointer (`int (*)(const char *)`) | refused: `a pointer to a function that takes a pointer`; the functions that reach it would have to agree on one borrow |
+| a parameter or result that is a record, a number, an enumeration | by value, as in any function |
+| two such pointers compared, `p == f`, `p != q` | refused: `a comparison of two functions`; Rust gives two functions with one body one address, or one function two |
+| a cast to another function type, to `void *` or to an integer, and `%p` | refused |
+| a function without a prototype, `int (*f)()`, and a variadic one | refused |
+| the address of a library function (`&strlen`), and one handed to the library (`qsort`, `bsearch`, `signal`, `atexit`) | refused: no rule yet |
+| a pointer to a pointer to a function, and `sizeof` of one | refused |
+| callee and arguments with side effects, `ops[i++](i)` | C leaves their order open; Rust evaluates the callee first |
+| a function that reaches a pointer and is never called by name | still translated, and not reported as unused |
+
 ## Not yet built
 
 The direction for each, so that the first rule for it starts in the right
@@ -384,8 +411,7 @@ place:
   second use is a use after a move. `Rc` belongs only on a slot that a fact
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
-- **Others.** `goto`, a `case` that falls through, pointers to functions
-  (`fn` types), unions other than the bits of a number (an `enum` when a
+- **Others.** `goto`, a `case` that falls through, unions other than the bits of a number (an `enum` when a
   tag says which member is live, `to_ne_bytes` for bytes beside a number),
   `+=` and `++` on a bit-field, variadic functions, an array whose length is an expression
   (Clang prints it only as text), a local that gets its first value in a branch or

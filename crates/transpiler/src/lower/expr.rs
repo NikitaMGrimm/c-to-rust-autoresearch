@@ -147,6 +147,9 @@ impl Lower<'_> {
                 Ok(parse_quote!({ #(#first)* #last }))
             }
             ExprKind::Str(_) => unsupported("a string literal as a value: no rule yet", at),
+            ExprKind::SizeOf(ty) if ty.function().is_some() => {
+                unsupported("`sizeof` of a pointer to a function", at)
+            }
             ExprKind::Function(name) => {
                 unsupported(format!("the function `{name}` as a value"), at)
             }
@@ -521,6 +524,11 @@ impl Lower<'_> {
             let pointer = match (null(left), null(right)) {
                 (true, false) => right,
                 (false, true) => left,
+                _ if left.ty.function().is_some() || right.ty.function().is_some() => {
+                    // Rust gives two functions with one body one address,
+                    // or one function two.
+                    return unsupported("a comparison of two functions", at);
+                }
                 _ => return self.same_address(op, left, right, at),
             };
             return match op {
@@ -694,7 +702,7 @@ impl Lower<'_> {
     pub(super) fn call(&mut self, call: &Expr, callee: &Expr, args: &[Expr]) -> R<syn::Expr> {
         let program = self.program;
         let Some(name) = callee.function() else {
-            return unsupported("a call through a pointer", call.at);
+            return self.call_through(call, callee, args);
         };
         let Some(id) = program.function(name) else {
             return self.library(call, name, args);
@@ -707,7 +715,8 @@ impl Lower<'_> {
         // gives it away once.
         let mut lent: Vec<(Vec<Part>, bool)> = Vec::new();
         for (&param, arg) in function.params.iter().zip(args) {
-            if !program.vars[param].ty.is_pointer() {
+            let ty = &program.vars[param].ty;
+            if !ty.is_pointer() || ty.function().is_some() {
                 continue;
             }
             let Some(memory) = pointed(arg) else {
@@ -756,6 +765,15 @@ impl Lower<'_> {
     ) -> R<syn::Expr> {
         if target.is_errno() {
             return unsupported("a store to `errno` other than 0 before a call", expr.at);
+        }
+        if target.ty.function().is_some() && op.is_none() {
+            // An element of an array of pointers to functions holds no NULL.
+            let nullable = match place_slot(target) {
+                Some(slot) => self.repr(slot, expr.at)?.nullable,
+                None => false,
+            };
+            let value = self.function_value(value, nullable)?;
+            return Ok(rust::assign(self.place(target, true)?, value));
         }
         if target.ty.is_pointer() {
             let (None, Some(slot)) = (op, place_slot(target)) else {

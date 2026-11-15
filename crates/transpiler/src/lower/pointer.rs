@@ -158,6 +158,16 @@ impl Lower<'_> {
         at: u32,
     ) -> R<syn::Type> {
         let repr = self.repr(slot, at)?;
+        if let Some(function) = pointer.function() {
+            let ty = self.fn_type(function, at)?;
+            if repr.nullable {
+                return unsupported("a pointer to a function that may be NULL: no rule yet", at);
+            }
+            return Ok(match repr.nullable {
+                true => parse_quote!(Option<#ty>),
+                false => ty,
+            });
+        }
         let element = match pointer.element() {
             Some(Type::Void) => return unsupported("a `void` pointer", at),
             Some(Type::Pointer(_)) => return unsupported("a pointer to a pointer", at),
@@ -225,6 +235,9 @@ impl Lower<'_> {
     /// representation `to` holds.
     pub(super) fn pointer(&mut self, pointer: &Expr, to: Repr) -> R<syn::Expr> {
         let at = pointer.at;
+        if pointer.ty.function().is_some() {
+            return self.function_value(pointer, to.nullable);
+        }
         let wrap = |value: syn::Expr| match to.nullable {
             true => rust::call("Some", [value]),
             false => value,
@@ -430,6 +443,9 @@ impl Lower<'_> {
     fn same_element(&self, cast: &Expr, inner: &Expr) -> R<()> {
         if !inner.ty.is_pointer() {
             return unsupported("a pointer made from a number", cast.at);
+        }
+        if (cast.ty.function().is_some() || inner.ty.function().is_some()) && cast.ty != inner.ty {
+            return unsupported("a cast of a pointer to a function", cast.at);
         }
         match (cast.ty.element(), inner.ty.element()) {
             (Some(Type::Void), _) | (_, Some(Type::Void)) => Ok(()),
