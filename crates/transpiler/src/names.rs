@@ -277,6 +277,10 @@ pub fn label(name: &str) -> String {
     let looped = name
         .strip_prefix("outer")
         .is_some_and(|rest| rest.is_empty() || rest.strip_prefix('_').is_some_and(is_number));
+    let looped = looped
+        || name
+            .strip_prefix("next")
+            .is_some_and(|rest| rest.is_empty() || rest.strip_prefix('_').is_some_and(is_number));
     match RESERVED.contains(&name.as_str()) || name.starts_with("switch") || looped {
         true => format!("{name}_label"),
         false => name,
@@ -294,6 +298,15 @@ pub fn loop_label(depth: usize) -> String {
     match depth {
         0 | 1 => "outer".to_owned(),
         depth => format!("outer_{depth}"),
+    }
+}
+
+/// The label of the body of a loop that has something to do after it,
+/// which a `continue` leaves.
+pub fn step_label(depth: usize) -> String {
+    match depth {
+        0 | 1 => "next".to_owned(),
+        depth => format!("next_{depth}"),
     }
 }
 

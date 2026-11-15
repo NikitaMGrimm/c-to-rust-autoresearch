@@ -4,7 +4,7 @@ use super::input::Read;
 use super::{Entered, Helper, Lower, Nest, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, VarId, VarKind, any_expr};
 use crate::facts::Slot;
-use crate::names::{ENTRY, loop_label};
+use crate::names::{ENTRY, loop_label, step_label};
 use crate::normalise::leaves;
 use crate::rust;
 use syn::parse_quote;
@@ -371,10 +371,10 @@ impl Lower<'_> {
                 if once(body).is_some() {
                     return Err(never_twice(cond.at));
                 }
-                if continues(body) {
-                    return unsupported("`continue` in a `do` loop: no rule yet", cond.at);
-                }
-                let (mut body, label) = self.loop_body(body)?;
+                let (mut body, label) = match continues(body) {
+                    true => self.stepped_body(body)?,
+                    false => self.loop_body(body)?,
+                };
                 let cond = rust::unary("!", self.cond(cond)?);
                 body.stmts.push(parse_quote!(if #cond { break; }));
                 out.push(parse_quote!(#label loop #body));
@@ -408,9 +408,19 @@ impl Lower<'_> {
                 match self.nesting.last_mut() {
                     // R49: a `break` of a loop around a block entered at a
                     // label names the loop.
-                    Some(Nest::Loop { named }) if outside.is_some() => {
+                    Some(Nest::Loop { named, .. }) if outside.is_some() => {
                         *named = true;
                         out.push(parse_quote!(break #outside;));
+                    }
+                    // R58: so does one of a loop whose body is a block
+                    // with a label.
+                    Some(Nest::Loop {
+                        named,
+                        stepped: true,
+                    }) => {
+                        *named = true;
+                        let label = self.loop_label(index);
+                        out.push(parse_quote!(break #label;));
                     }
                     Some(Nest::Loop { .. }) => out.push(parse_quote!(break;)),
                     // R32: a `break` that is not the end of its case
@@ -426,9 +436,20 @@ impl Lower<'_> {
             Stmt::Continue => {
                 let looped = |nest: &Nest| matches!(nest, Nest::Loop { .. });
                 match self.nesting.iter().rposition(looped) {
+                    // R58: the loop has something to do after its body,
+                    // which a `continue` only leaves.
+                    Some(index)
+                        if matches!(self.nesting[index], Nest::Loop { stepped: true, .. }) =>
+                    {
+                        let label = self.step_label(index);
+                        out.push(parse_quote!(break #label;));
+                    }
                     Some(index) if self.outside(index) => {
                         let label = self.loop_label(index);
-                        self.nesting[index] = Nest::Loop { named: true };
+                        self.nesting[index] = Nest::Loop {
+                            named: true,
+                            stepped: false,
+                        };
                         out.push(parse_quote!(continue #label;));
                     }
                     _ => out.push(parse_quote!(continue;)),
@@ -691,10 +712,29 @@ impl Lower<'_> {
     /// The body of a loop, and the loop's label if a statement in it
     /// names the loop.
     fn loop_body(&mut self, body: &[Stmt]) -> R<(syn::Block, Option<syn::Label>)> {
-        self.nesting.push(Nest::Loop { named: false });
-        let label = self.loop_label(self.nesting.len() - 1);
+        self.looped(body, false)
+    }
+
+    /// R58: the body of a loop that has something to do after it, a step
+    /// or a test, where a `continue` is in the body: a block with a label
+    /// that the `continue` leaves, `'next: { …; break 'next; … }`.
+    fn stepped_body(&mut self, body: &[Stmt]) -> R<(syn::Block, Option<syn::Label>)> {
+        self.looped(body, true)
+    }
+
+    fn looped(&mut self, body: &[Stmt], stepped: bool) -> R<(syn::Block, Option<syn::Label>)> {
+        self.nesting.push(Nest::Loop {
+            named: false,
+            stepped,
+        });
+        let index = self.nesting.len() - 1;
+        let (label, step) = (self.loop_label(index), self.step_label(index));
         let body = self.block(body);
-        let named = matches!(self.nesting.pop(), Some(Nest::Loop { named: true }));
+        let named = matches!(self.nesting.pop(), Some(Nest::Loop { named: true, .. }));
+        let body = body.map(|body| match stepped {
+            true => parse_quote!({ #step: #body }),
+            false => body,
+        });
         Ok((
             body?,
             named.then(|| syn::Label {
@@ -706,10 +746,19 @@ impl Lower<'_> {
 
     /// The label of the loop at this index of `nesting`.
     fn loop_label(&self, index: usize) -> syn::Lifetime {
-        let looped = |nest: &&Nest| matches!(nest, Nest::Loop { .. });
-        let depth = self.nesting.iter().take(index + 1).filter(looped).count();
-        let name = format!("'{}", loop_label(depth));
+        let name = format!("'{}", loop_label(self.loop_depth(index)));
         syn::Lifetime::new(&name, proc_macro2::Span::call_site())
+    }
+
+    /// The label of the body of the loop at this index of `nesting`.
+    fn step_label(&self, index: usize) -> syn::Lifetime {
+        let name = format!("'{}", step_label(self.loop_depth(index)));
+        syn::Lifetime::new(&name, proc_macro2::Span::call_site())
+    }
+
+    fn loop_depth(&self, index: usize) -> usize {
+        let looped = |nest: &&Nest| matches!(nest, Nest::Loop { .. });
+        self.nesting.iter().take(index + 1).filter(looped).count()
     }
 
     /// R1, R5, R6, R7, R8: a local variable. One without an initialiser
@@ -812,12 +861,6 @@ impl Lower<'_> {
             out.push(parse_quote!(#label for #name in #range #body));
             return Ok(());
         }
-        if continues(body) && step.is_some() {
-            return unsupported(
-                "`continue` in a `for` loop that is not a count: no rule yet",
-                cond.map_or(0, |cond| cond.at),
-            );
-        }
         let mut stmts = self.stmts(init)?;
         // R52: a loop that goes on while a search finds something.
         let (found, body) = match (cond, body) {
@@ -836,7 +879,10 @@ impl Lower<'_> {
             }
             _ => (None, body),
         };
-        let (mut body, label) = self.loop_body(body)?;
+        let (mut body, label) = match continues(body) && step.is_some() {
+            true => self.stepped_body(body)?,
+            false => self.loop_body(body)?,
+        };
         if let Some(step) = step {
             body.stmts.extend(self.effect(step)?);
         }

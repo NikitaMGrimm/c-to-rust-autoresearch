@@ -1216,3 +1216,62 @@ int main(int argc, char **argv) {
     );
     assert!(!rust.contains("A pair") && !rust.contains("counted"));
 }
+
+#[test]
+fn a_continue_before_a_step_or_a_test_leaves_the_body() {
+    // R58
+    let rust = check(
+        "continue-step",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    int n = atoi(argv[1]);
+    int sum = 0, rounds = 0;
+    for (int low = 0, high = n; low < high; low += 2, high--) {
+        if ((low + high) % 3 == 0) continue;
+        sum += low * high;
+        if (sum > 60) break;
+    }
+    do {
+        rounds++;
+        switch (rounds % 3) {
+        case 0: continue;
+        case 1: sum += 1; break;
+        default: break;
+        }
+        for (int k = rounds; k > 0; k /= 2) {
+            if (k == 2) continue;
+            sum += k;
+        }
+    } while (rounds < n);
+    int next = 0;
+    for (int i = 0; i < n; i += 4) {
+        if (i == 4) continue;
+        if (i == 8) goto next;
+        next += i + 1;
+    }
+    next += 500;
+next:
+    printf("%d %d %d\n", sum, rounds, next);
+    return 0;
+}
+"#,
+        &[&["0"], &["3"], &["7"], &["12"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "'outer: while low < high {",
+            "'next: {",
+            "break 'next;",
+            "break 'outer;",
+            "low += 2;",
+            "'next_2: {",
+            "break 'next_2;",
+            "k /= 2;",
+            "if !(rounds < n) {",
+            "'next_label: {",
+        ],
+    );
+}

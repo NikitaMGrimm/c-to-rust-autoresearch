@@ -914,8 +914,8 @@ Entry format, newest last:
   pointer`: a pointer that is read after the loop, that starts at an
   offset, that another pointer is stored in, or whose step has a value
   that is read (`*s++`); a search that reads the pointer twice
-  (`memchr(s, c, n - (s - text))`). `continue` with a step is refused by
-  R3
+  (`memchr(s, c, n - (s - text))`). `continue` with a step leaves the
+  body as in any loop with a step (R58)
 - Motivation: `g2_028_strchr` counts the finds of a character
 - Changes: extends R40 and R47
 ## R42: pointers to functions
@@ -1170,3 +1170,26 @@ Entry format, newest last:
   functions in this way and were refused for Clang's `FullComment`; no
   development program needs it
 - Changes: none
+
+
+## R58: `continue` in a loop that has something to do after its body
+
+- C: `continue` in a `for` loop with a step that is no count of R3, `for
+  (i = 0, j = n; i < j; i += 2, j--)`, and in a `do` loop, where it goes
+  on with the step or with the test; also inside an `if`, a block or a
+  `switch` of the body
+- Rust: the body is a block with a label that the `continue` leaves, and
+  the step or the test follows the block: `while i < j { 'next: { …; if
+  skip { break 'next; } … } i += 2; j -= 1; }`, and `loop { 'next: { … }
+  if !test { break; } }` for `do`. Rust has no plain `break` inside a
+  block with a label, so a `break` of such a loop names it, `break
+  'outer;`. The labels are `'next` and `'outer`, with the depth of the
+  loop from the second on (`'next_2`); a C label of that name gets
+  another
+- Needs: nothing
+- Motivation: programs outside the development set skip the rest of a
+  `do` body or of a `for` body with a step; no development program needs
+  it
+- Changes: R3 refused them (`` `continue` in a `do` loop ``, `` `continue`
+  in a `for` loop that is not a count ``)
+

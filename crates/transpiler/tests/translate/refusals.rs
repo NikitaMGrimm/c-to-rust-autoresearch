@@ -228,5 +228,8 @@ fn a_global_owner_used_after_it_was_moved_is_refused() {
         &[&[]],
         "",
     );
-    crate::common::assert_lines(&rust, &["globals.pile = gone.as_deref_mut().unwrap().under.take();"]);
+    crate::common::assert_lines(
+        &rust,
+        &["globals.pile = gone.as_deref_mut().unwrap().under.take();"],
+    );
 }

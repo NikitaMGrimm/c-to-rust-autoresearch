@@ -898,8 +898,10 @@ impl Helper {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nest {
     /// A loop, and whether a statement in it names it, from inside a block
-    /// that is entered at a label (R49).
-    Loop { named: bool },
+    /// that is entered at a label (R49) or that a `continue` leaves
+    /// (R58): `stepped` says that the body is such a block, since the
+    /// loop has something to do after it.
+    Loop { named: bool, stepped: bool },
     /// One arm of a `switch`, with the cases that fall through into each
     /// other, and whether a `break` in the middle of it leaves the
     /// `switch`.
