@@ -616,6 +616,7 @@ fn an_update_of_a_place_by_itself_is_compound() {
 #include <stdio.h>
 #include <stdlib.h>
 struct box { int count; double weight; };
+int twice(int n) { return 2 * n; }
 int main(int argc, char *argv[]) {
     int n = atoi(argv[1]);
     int x = n;
@@ -629,6 +630,7 @@ int main(int argc, char *argv[]) {
     b.weight = b.weight * 3.0;
     u = u * 7u;
     c = c + 1;
+    x = x + twice(n);
     printf("%d %d %d %.1f %u %c\n", x, a[n % 3], b.count, b.weight, u, c);
     return 0;
 }
@@ -644,6 +646,8 @@ int main(int argc, char *argv[]) {
             "b.count -= 1;",
             "b.weight *= 3.0;",
             "u = u.wrapping_mul(7);",
+            "c = (c as i8 as i32 + 1) as u8;",
+            "x = x + twice(n);",
         ],
     );
 }

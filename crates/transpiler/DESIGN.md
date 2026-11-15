@@ -301,10 +301,9 @@ What two reviews of the passing translations found that no rule writes as
 Rust would, most frequent first. Each needs the proof named with it, and
 keeps C's promotions, checked arithmetic and the input it consumes:
 
-- **Types that inference gives.** A `let` drops its annotation where the
-  value is a record literal, a cast, a literal with a suffix or a call of
-  a function of the program. A call of a helper or of the standard
-  library, and an operation on values whose types are fixed, keep it.
+- **Types that inference gives.** `let n: i64 = parse_int(…)` and `let
+  wide: i64 = n as i64 * k as i64`: a call of a helper, and an operation
+  on values whose types are fixed.
 - **A value from an expression instead of a variable set later.** `let mut
   x = 0;` and then a store in a branch or after a read, where `let x =
   if …` or `scan_int().map_or(0, …)` says it. Needs every store and read

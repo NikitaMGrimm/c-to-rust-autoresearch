@@ -718,7 +718,9 @@ impl Lower<'_> {
         let Some((op, compute)) = op else {
             // `x = x op y` is `x op= y` where the place does nothing when
             // evaluated and no conversion sits between the operation and
-            // the store; a shift may take another type on its right.
+            // the store; a shift may take another type on its right. Rust
+            // evaluates the right side of `op=` first, so it must not call
+            // or assign either.
             if let ExprKind::Binary(op, left, right) = &value.kind
                 && width.is_none()
                 && target.ty != Type::Index
@@ -736,6 +738,7 @@ impl Lower<'_> {
                         | BinOp::BitXor
                 )
                 && target.is_pure()
+                && right.is_pure()
                 && same_value(left, target)
                 && !same_value(left, right)
             {
