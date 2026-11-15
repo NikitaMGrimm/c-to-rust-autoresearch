@@ -86,7 +86,7 @@ int main(void) {
             // The rest of the array from a cursor.
             "&s[s_at..]",
             "let distance = p as i64;",
-            "let q: usize = p + 1;",
+            "let q = p + 1;",
             "n = n.wrapping_add_signed(step as isize);",
         ],
     );
@@ -148,12 +148,12 @@ int main(void) {
             // NULL reaches the slice, not the index.
             "fn length(s: Option<&[u8]>) -> i32 {",
             "let end = globals.used as usize;",
-            "let mut it: usize = end;",
+            "let mut it = end;",
             "while i < 3 && it > 0 {",
             "last += STORE[it];",
             "while h < 4 {",
             "squares += heap[h];",
-            "let second: usize = first + 2;",
+            "let second = first + 2;",
             "first = second;",
         ],
     );

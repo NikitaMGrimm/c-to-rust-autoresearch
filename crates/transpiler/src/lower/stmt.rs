@@ -435,10 +435,15 @@ impl Lower<'_> {
             let repr = self.repr(slot, var.at)?;
             let ty = self.slot_type(slot, &var.ty, None, var.at)?;
             return Ok(vec![match &var.init {
-                Some(init) => {
-                    let value = self.pointer(init, repr)?;
-                    parse_quote!(let #mutability #name: #ty = #value;)
-                }
+                // A string literal is a `&str` whatever the text's
+                // borrows are.
+                Some(init) => match self.pointer(init, repr)? {
+                    value @ syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(_),
+                        ..
+                    }) => parse_quote!(let #mutability #name = #value;),
+                    value => parse_quote!(let #mutability #name: #ty = #value;),
+                },
                 None if repr.nullable => parse_quote!(let #mutability #name: #ty = None;),
                 None => parse_quote!(let #mutability #name: #ty;),
             }]);
@@ -456,14 +461,16 @@ impl Lower<'_> {
             Some(init) => self.init(&var.ty, None, init)?,
             None => self.zero(&var.ty, var.at)?,
         };
-        // A borrow keeps its type: the call may give `&mut` where the
-        // variable holds `&`.
-        let called = !var.ty.is_pointer()
-            && var.init.as_ref().is_some_and(|init| {
-                matches!(&init.kind, ExprKind::Call(callee, _)
+        let called = var.init.as_ref().is_some_and(|init| {
+            matches!(&init.kind, ExprKind::Call(callee, _)
                 if callee.function().is_some_and(|name| self.program.function(name).is_some()))
-            });
-        Ok(vec![match fixes_type(&value, called) {
+        });
+        // A counter whose type is open leaves open what is computed from it,
+        // and a method needs the type.
+        let open = var.init.as_ref().is_some_and(|init| {
+            init.any(&mut |part| matches!(part.kind, ExprKind::Var(read) if self.untyped.contains(&read)))
+        });
+        Ok(vec![match !open && fixes_type(&value, called) {
             true => parse_quote!(let #mutability #name = #value;),
             false => parse_quote!(let #mutability #name: #ty = #value;),
         }])
@@ -497,6 +504,9 @@ impl Lower<'_> {
                 false => parse_quote!(_),
             };
             let (start, bound) = (self.typed(&start)?, self.expr(&bound)?);
+            if !fixes_type(&start, false) && !fixes_type(&bound, false) {
+                self.untyped.insert(var);
+            }
             let range: syn::Expr = match inclusive {
                 true => parse_quote!(#start..=#bound),
                 false => parse_quote!(#start..#bound),
@@ -872,23 +882,86 @@ fn continues(body: &[Stmt]) -> bool {
     })
 }
 
-/// Whether the value alone gives a `let` its type, so that the type needs
-/// no annotation: a record literal, a cast, a literal with a suffix, or,
-/// where `called` says that it calls a function of the program, a call.
+/// Whether the value alone gives a `let` that holds no pointer its type, so
+/// that the type needs no annotation: a record literal, a cast, a literal
+/// with a suffix or of one type only, a comparison, a conversion by a
+/// number type's own function, a name, a field or an element of a value
+/// that is fixed, a method whose result the receiver fixes, arithmetic on
+/// a fixed operand, as a literal beside it takes its type, though the
+/// count of a shift gives the left side none, or, where `called` says that
+/// it calls a function of the program, a call.
 fn fixes_type(value: &syn::Expr, called: bool) -> bool {
+    let fixed = |value: &syn::Expr| fixes_type(value, false);
     match value {
         syn::Expr::Struct(_) | syn::Expr::Cast(_) => true,
         syn::Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
             syn::Lit::Int(int) => !int.suffix().is_empty(),
             syn::Lit::Float(float) => !float.suffix().is_empty(),
+            syn::Lit::Byte(_) | syn::Lit::Bool(_) => true,
             _ => false,
         },
         syn::Expr::Unary(syn::ExprUnary {
             op: syn::UnOp::Neg(_),
             expr,
             ..
-        }) => matches!(**expr, syn::Expr::Lit(_)) && fixes_type(expr, false),
-        syn::Expr::Call(_) => called,
+        }) if matches!(**expr, syn::Expr::Lit(_)) => fixed(expr),
+        syn::Expr::Unary(unary) => fixed(&unary.expr),
+        syn::Expr::Call(call) => called || converts(&call.func),
+        syn::Expr::Paren(inner) => fixes_type(&inner.expr, called),
+        syn::Expr::Binary(binary) => match binary.op {
+            syn::BinOp::Eq(_)
+            | syn::BinOp::Ne(_)
+            | syn::BinOp::Lt(_)
+            | syn::BinOp::Le(_)
+            | syn::BinOp::Gt(_)
+            | syn::BinOp::Ge(_)
+            | syn::BinOp::And(_)
+            | syn::BinOp::Or(_) => true,
+            syn::BinOp::Shl(_) | syn::BinOp::Shr(_) => fixed(&binary.left),
+            _ => fixed(&binary.left) || fixed(&binary.right),
+        },
+        syn::Expr::Path(path) => !path.path.is_ident("None"),
+        syn::Expr::Field(field) => fixed(&field.base),
+        syn::Expr::Index(index) => fixed(&index.expr),
+        syn::Expr::MethodCall(call) => match call.method.to_string().as_str() {
+            "len" | "is_nan" | "is_some" | "is_none" | "is_empty" | "contains" => true,
+            "abs" | "powf" | "sqrt" | "floor" | "ceil" | "to_bits" | "wrapping_add"
+            | "wrapping_sub" | "wrapping_mul" | "wrapping_neg" => fixed(&call.receiver),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether `function` is a number type's own conversion, as `i32::from`
+/// and `f32::from_bits` are.
+fn converts(function: &syn::Expr) -> bool {
+    let syn::Expr::Path(path) = function else {
+        return false;
+    };
+    let segments: Vec<String> = path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [ty, function] => {
+            matches!(function.as_str(), "from" | "from_bits")
+                && matches!(
+                    ty.as_str(),
+                    "i8" | "i16"
+                        | "i32"
+                        | "i64"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "usize"
+                        | "f32"
+                        | "f64"
+                )
+        }
         _ => false,
     }
 }

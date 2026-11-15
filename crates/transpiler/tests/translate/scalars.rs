@@ -168,9 +168,9 @@ int main(int argc, char *argv[]) {
         &[
             "let limit = parse_int(&args[1]) as i32;",
             "let mut total: i32 = 0;",
-            "let label: &str = \"total\";",
+            "let label = \"total\";",
             "for i in 0..limit {",
-            "let square: i32 = i * i;",
+            "let square = i * i;",
             "let mut j: i32 = 0;",
             "let mut last: i32 = 0;",
         ],
@@ -354,7 +354,7 @@ int main(void) {
             "max_width: i32,",
             "total_lines: i32,",
             "fn count_line(globals: &mut Globals, line_info: &mut LineInfo, line_width_: i32) -> i32 {",
-            "let x_: i32 = line_width_;",
+            "let x_ = line_width_;",
             "let line_width: i32 = 2;",
             "let _unused_value: i32 = 3;",
             "fn httpstatus(good_g2_b: i32) -> i32 {",
@@ -843,6 +843,53 @@ int main(int argc, char *argv[]) {
             "println!(\"{} {}\", b as i8 as i32, s as u8 as i32);",
             "wide <<= shift;",
             "println!(\"{} {} {}\", n as i16 as u64, 1 << shift, wide);",
+        ],
+    );
+}
+
+#[test]
+fn a_local_whose_value_has_one_type_has_no_annotation() {
+    let rust = check(
+        "fixed",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+int main(int argc, char *argv[]) {
+    int x = atoi(argv[1]);
+    int n = x & 31;
+    long shifted = 1L << (n + 32);
+    long wide = 5;
+    int y = 2 * x;
+    double base = x;
+    double p = pow(base, 2.0);
+    const char *word = "word";
+    char c = 'a';
+    int less = y < x;
+    printf("%ld %ld %d %f %s %c %d\n", shifted, wide, y, p, word, c, less);
+    for (int i = 0; i < 4; i++) {
+        int d = i - 2;
+        printf("%d\n", abs(d));
+    }
+    return 0;
+}
+"#,
+        &[&["3"], &["-7"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let n = x & 31;",
+            "let shifted: i64 = 1 << n + 32;",
+            "let wide: i64 = 5;",
+            "let y = 2 * x;",
+            "let base = x as f64;",
+            "let p = base.powf(2.0);",
+            "let word = \"word\";",
+            "let c = b'a';",
+            "let less = i32::from(y < x);",
+            "let d: i32 = i - 2;",
         ],
     );
 }

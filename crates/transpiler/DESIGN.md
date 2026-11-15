@@ -234,7 +234,7 @@ member converts on its way in and out (R33):
 | C | Rust |
 | --- | --- |
 | `union { float flt; uint32_t num; } u;` | `u: u32` |
-| `u.flt = x;` as the first use of `u` | `let u: u32 = x.to_bits();` |
+| `u.flt = x;` as the first use of `u` | `let u = x.to_bits();` |
 | `u.flt = x;`, `u.num = n;`, `u.i = k;` | `u = x.to_bits();`, `u = n;`, `u = k as u32;` |
 | `u.flt`, `u.num`, `u.i` | `f32::from_bits(u)`, `u`, `u as i32` |
 | `u.num ^= 1;`, `p->flt` | `u ^= 1;`, `f32::from_bits(*p)` |
@@ -453,9 +453,8 @@ What two reviews of the passing translations found that no rule writes as
 Rust would, most frequent first. Each needs the proof named with it, and
 keeps C's promotions, checked arithmetic and the input it consumes:
 
-- **Types that inference gives.** `let n: i64 = parse_int(…)` and `let
-  wide: i64 = n as i64 * k as i64`: a call of a helper, and an operation
-  on values whose types are fixed.
+- **Types that inference gives.** `let n: i64 = parse_int(…)`: a call of
+  a helper.
 - **A value from an expression instead of a variable set later.** `let mut
   x = 0;` and then a store in a branch or after a read, where `let x =
   if …` or `scan_int().map_or(0, …)` says it. Needs every store and read
@@ -521,11 +520,6 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 
 What a third review found beside these, most frequent first:
 
-- **Types that a method or a literal fixes.** `let result: f64 =
-  base.powf(exponent)`, `let in_: u32 = flt.to_bits()`, `let data: &str =
-  "string"`, `let mut y: i32 = 2 * x`: the method's signature, the text or
-  a typed operand fixes the type as a record or a cast does. An annotation
-  that gives a literal its width or `into()` its target stays.
 - **The limits of a type.** `(-2147483647 - 1) as i64` is
   `i64::from(i32::MIN)`, from the constant's value and type alone; an `f32`
   constant is the shortest text that gives the same bits. Neither needs

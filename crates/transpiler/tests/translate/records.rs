@@ -314,7 +314,7 @@ int main(int argc, char *argv[]) {
             "let p = at(parse_int(&args[1]) as i32);",
             "let n = twice(p.y);",
             "let k: i32 = 5;",
-            "let wide: i64 = n as i64 * k as i64;",
+            "let wide = n as i64 * k as i64;",
         ],
     );
 }

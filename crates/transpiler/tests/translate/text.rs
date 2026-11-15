@@ -678,9 +678,9 @@ int main(int argc, char **argv) {
     assert_lines(
         &rust,
         &[
-            "let r: f64 = x.powf(y);",
+            "let r = x.powf(y);",
             "if r.is_nan() && (!x.is_nan() && !y.is_nan()) {",
-            "let s: f64 = x.sqrt();",
+            "let s = x.sqrt();",
         ],
     );
     // A constant argument is decided, and a constant base has a type.
@@ -704,7 +704,7 @@ int main(int argc, char **argv) {
         &[&["2"], &["400"], &["-400"], &["inf"], &["-inf"], &["nan"]],
         "",
     );
-    assert_lines(&rust, &["let r: f64 = 10.0f64.powf(x);"]);
+    assert_lines(&rust, &["let r = 10.0f64.powf(x);"]);
     let refused = |name, c: &str| translate(name, c).unwrap_err();
     let program = |lines: &str| {
         format!(
