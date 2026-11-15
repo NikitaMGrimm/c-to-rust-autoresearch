@@ -112,6 +112,8 @@ pub struct Facts {
     /// variables after the variable itself was used meanwhile, and first
     /// reads a local owner after its memory went to another owner.
     in_use: HashMap<FuncId, (Option<u32>, Option<u32>)>,
+    /// The local pointers whose use `in_use` finds.
+    borrowers: HashSet<VarId>,
     /// False for the facts before the first round, which know nothing.
     settled: bool,
 }
@@ -219,6 +221,11 @@ impl Facts {
     /// rejects the borrow that the pointer is.
     pub fn in_use(&self, function: FuncId) -> Option<u32> {
         self.in_use.get(&function).and_then(|found| found.0)
+    }
+
+    /// Whether `in_use` finds a use of this local pointer.
+    pub fn in_use_by(&self, pointer: VarId) -> bool {
+        self.borrowers.contains(&pointer)
     }
 
     /// Where the function first reads a local owner after it gave its
@@ -644,6 +651,7 @@ impl<'a> Walk<'a> {
                     })
             })
             .collect();
+        let mut borrowers = HashSet::new();
         let in_use = program
             .functions
             .iter()
@@ -654,6 +662,7 @@ impl<'a> Walk<'a> {
                     program,
                     found: None,
                     moved: None,
+                    borrowers: &mut borrowers,
                 };
                 walk.stmts(&function.body, &mut Some(Order::default()));
                 (id, (walk.found, walk.moved))
@@ -661,6 +670,7 @@ impl<'a> Walk<'a> {
             .collect();
         Facts {
             in_use,
+            borrowers,
             pointers: self.pointers,
             mutated: self.mutated,
             through: self.through,
@@ -1318,6 +1328,7 @@ struct InUse<'a> {
     program: &'a Program,
     found: Option<u32>,
     moved: Option<u32>,
+    borrowers: &'a mut HashSet<VarId>,
 }
 
 impl InUse<'_> {
@@ -1520,6 +1531,7 @@ impl InUse<'_> {
         let borrows = &mut order.borrows;
         if let Some((_, true)) = borrows.get(&var) {
             self.found.get_or_insert(at);
+            self.borrowers.insert(var);
         }
         for (pointer, (targets, touched)) in borrows.iter_mut() {
             if targets.contains(&var)

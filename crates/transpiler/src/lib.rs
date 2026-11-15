@@ -124,7 +124,10 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
         facts = facts::Facts::of(&program);
     }
     normalise::cursors(&mut program, &facts);
-    let facts = facts::Facts::of(&program);
+    let mut facts = facts::Facts::of(&program);
+    if normalise::alias(&mut program, &facts) {
+        facts = facts::Facts::of(&program);
+    }
     normalise::narrow(&mut program, &facts);
     let facts = facts::Facts::of(&program);
     let file = lower::program(&program, &facts)?;
@@ -157,7 +160,10 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
             facts = facts::Facts::of(&program);
         }
         normalise::cursors(&mut program, &facts);
-        let facts = facts::Facts::of(&program);
+        let mut facts = facts::Facts::of(&program);
+        if normalise::alias(&mut program, &facts) {
+            facts = facts::Facts::of(&program);
+        }
         normalise::narrow(&mut program, &facts);
         let facts = facts::Facts::of(&program);
         lower::listed(&program, &facts, &mut listing);

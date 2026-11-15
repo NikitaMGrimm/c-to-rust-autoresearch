@@ -104,37 +104,59 @@ fn a_program_that_a_rule_would_get_wrong_is_refused() {
 
 /// A local pointer to a variable of the function is a borrow of it, so the
 /// variable may not be stored to while the pointer is used later, nor read
-/// while a pointer that is stored through is.
+/// while a pointer that is stored through is. A pointer that may name
+/// another place than its one address stays such a borrow.
 #[test]
 fn a_variable_used_while_a_pointer_to_it_is_in_use_is_refused() {
     let refused = |name, c| translate(name, c).unwrap_err();
     assert_eq!(
         refused(
-            "borrowed_record",
-            "struct point { int row; int col; };\nint main(void) {\n    struct point at;\n    struct point *here;\n    here = &at;\n    at.row = 4;\n    here->col = 5;\n    return here->row + here->col;\n}\n"
+            "borrowed_twice",
+            "int main(void) {\n    int low = 1, high = 2;\n    int *at = &low;\n    low = 3;\n    *at += 1;\n    at = &high;\n    return *at + low;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_index",
+            "int main(void) {\n    int slots[3] = {1, 2, 3}, which = 2;\n    int *slot = &slots[which];\n    slots[2] = 7;\n    return *slot - 7;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_branch",
+            "int main(int argc, char **argv) {\n    int level = 2;\n    int *raise;\n    if (argc > 0) raise = &level; else raise = &level;\n    level = 3;\n    return *raise - 3;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 6"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_hidden",
+            "int main(void) {\n    int mark = 2;\n    int *seen = &mark;\n    mark = 3;\n    {\n        int mark = 4;\n        return *seen + mark - 7;\n    }\n}\n"
         ),
         "unsupported: a variable that is used while a pointer to it is in use, at line 7"
     );
     assert_eq!(
         refused(
-            "borrowed_rows",
-            "int main(void) {\n    int cells[3][2], (*rows)[2] = cells;\n    int *corner = &cells[2][1];\n    cells[2][1] = 6;\n    return rows[2][1] + *corner - 12;\n}\n"
-        ),
-        "unsupported: a variable that is used while a pointer to it is in use, at line 5"
-    );
-    assert_eq!(
-        refused(
-            "borrowed_loop",
-            "int main(void) {\n    int total = 0, step = 1;\n    int *into = &total;\n    for (int i = 0; i < 3; i++) {\n        *into += i;\n        total += step;\n    }\n    return total;\n}\n"
-        ),
-        "unsupported: a variable that is used while a pointer to it is in use, at line 5"
-    );
-    assert_eq!(
-        refused(
-            "borrowed_read",
-            "int main(void) {\n    int level = 2;\n    int *raise = &level;\n    *raise = 3;\n    int seen = level;\n    *raise = seen + 1;\n    return level;\n}\n"
+            "borrowed_beside",
+            "void put(int *to, int n) { *to = n; }\nint main(void) {\n    int depth = 1;\n    int *down = &depth;\n    depth = 2;\n    put(down, depth);\n    return depth - 2;\n}\n"
         ),
         "unsupported: a variable that is used while a pointer to it is in use, at line 6"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_beside_again",
+            "void put(int *to, int n) { *to = n; }\nint main(void) {\n    int depth = 1;\n    int *down = &depth;\n    depth = 2;\n    put(&*down, depth);\n    return depth - 2;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 6"
+    );
+    assert_eq!(
+        refused(
+            "borrowed_address",
+            "int main(void) {\n    int depth = 1;\n    int *down = &depth;\n    int **again = &down;\n    depth = 3;\n    **again += 1;\n    return *down - 4;\n}\n"
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 7"
     );
 }
 

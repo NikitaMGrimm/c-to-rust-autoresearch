@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, voids, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, voids, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, places, join, ends, found 
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `places` replaces a global pointer that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `places` replaces a global pointer that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -158,7 +158,15 @@ refuses with the reason instead:
   the address from another pointer, or through a narrowing, is not
   followed. A copy of a local pointer that owns or is stored through
   borrows that pointer in the same way: `q = p; p->n += 1; p = p->next;`
-  with a later read of `q` is refused;
+  with a later read of `q` is refused. Where such a pointer gets one value
+  only, in its declaration or a statement of its block before anything
+  reads it, and that value is the address of a place that stays the same
+  place (a variable that is no pointer, a field of one, an element at a
+  constant index, or such an array as a pointer), `normalise::alias` first
+  names the place at each use of the pointer and leaves the pointer out
+  (R61). It leaves a pointer whose address is taken, and one used where a
+  variable with the name of the place hides it, since the Rust names
+  follow the C names;
 - an owner, a local or a global, that is read after its memory went to
   another owner, a field, a global, a local or a parameter, and before
   anything stored to it (`Facts::moved`), in the same order. A `free` is
@@ -522,6 +530,14 @@ place:
   second result of the call (see Cursors above). An end in `argv[i]` for an
   `i` that changes waits for the same rule, which needs the argument in a
   variable of its own.
+- **A pointer beside the variable it names.** A local pointer that only
+  names one fixed place is that place (R61). One that names a place through
+  another pointer, `&q->f`, or at an index that changes, `&a[i]`, or that
+  holds two places in turn, is still refused where the variable is used
+  while the pointer is: it needs the place split from the borrow, or the
+  pointer as an index beside the array as for a cursor. A pointer that
+  gets its address from another pointer is not followed by
+  `Facts::in_use`, so Rust's borrow checker rejects what it misses.
 - **Cursors that may be NULL.** A cursor is an index (see Cursors above). One
   that NULL reaches, or that a library function returns (`strchr`,
   `memchr`, `strstr`), should be an `Option<usize>` from `position`; a
@@ -744,6 +760,9 @@ become a fact and a refusal:
 - A function that takes a record out of a list through a local, as `n =
   p->next; p->next = n->next; return n;`, is translated and does not
   compile: the local borrows the field that is then stored to.
+- A local pointer to a global, or to a `static` local, is a borrow of it
+  that the analysis does not follow: `int *p = &x; x = 2;` with a later
+  read of `*p`, for a global `x`, is translated and does not compile.
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.

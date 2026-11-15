@@ -1327,3 +1327,24 @@ Entry format, newest last:
 - Motivation: programs outside the development set grow an array with
   `realloc`; no development program needs it alone
 - Changes: R8's slots owned only memory from `malloc` and `calloc`
+
+## R61: a local pointer that only names one place
+
+- C: a local pointer whose address is not taken, that gets one value, in
+  its declaration or in a statement of the block that declares it before
+  anything reads it, and that value is the address of a place that stays
+  the same place: a variable that is no pointer, a field of one, an element
+  at a constant index, or such an array used as a pointer, `T *p = &x;`,
+  `int *e = &m[1][2];`, `char *c = buf;`, `int (*r)[4] = rows;`
+- Rust: every use of the pointer names the place, `*p` is `x`, `p->f` is
+  `x.f`, `p[i]` is `buf[i]`, `f(p)` is `f(&mut x)`; the pointer and its
+  store are left out
+- Needs: `Facts::in_use_by`; only a pointer that `Facts::in_use` would
+  refuse is rewritten, so a borrow that compiles stays a borrow
+- Refused: a pointer stored to twice, in a branch or a loop, moved, a
+  parameter or with its address taken, one to a place through another
+  pointer or at an index that is no constant, and one used where a variable
+  with the name of the place hides it, stay refused by R7's reason
+- Motivation: programs outside the development set use a variable beside a
+  pointer to it; no development program needs it
+- Changes: `normalise::alias` runs after `cursors`, and the facts after it

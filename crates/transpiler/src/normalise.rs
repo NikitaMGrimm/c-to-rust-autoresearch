@@ -35,11 +35,16 @@
 //! `cursors`, R24, makes a pointer that walks an array an index beside the
 //! array; it is in a file of its own.
 //!
+//! `alias`, R61, makes a local pointer that only ever names one place,
+//! and that Rust would reject as a borrow, that place; it is in a file of
+//! its own.
+//!
 //! `narrow`, R10, names the pointer that a test has found not to be NULL.
 //! C tests `p` and goes on using `p`; Rust opens an `Option` once and uses
 //! what was in it, as `if let Some(p) = p` and
 //! `let Some(p) = p else { return; }` do.
 
+mod alias;
 mod cursors;
 mod ends;
 mod errno;
@@ -48,6 +53,7 @@ mod same;
 mod unions;
 mod voids;
 
+pub use alias::alias;
 pub use cursors::{cursors, steps_before};
 pub use ends::ends;
 pub use found::{SEARCHES, found, is_search};

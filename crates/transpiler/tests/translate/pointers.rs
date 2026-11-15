@@ -453,3 +453,60 @@ int main(int argc, char **argv) {
     assert_eq!(refused("neighbours-none", "i", "i + 0"), reason);
     assert_eq!(refused("neighbours-effect", "i++", "i + 1"), reason);
 }
+
+/// R61: a local pointer that only ever holds the address of one place, and
+/// that Rust would reject as a borrow beside the place, is that place.
+#[test]
+fn a_pointer_that_only_names_one_place_is_that_place() {
+    let rust = check(
+        "one_place",
+        r#"
+#include <stdio.h>
+struct span { int from; int to; };
+struct frame { struct span inner; int depth; };
+void widen(struct span *s) { s->to += 10; }
+int main(void) {
+    struct span whole;
+    struct span *w;
+    w = &whole;
+    whole.from = 2;
+    w->to = 5;
+    widen(w);
+    struct frame f = {{1, 2}, 3};
+    int *depth = &f.inner.to;
+    f.inner.to = 8;
+    *depth += f.depth;
+    int cells[2][3] = {{0, 1, 2}, {3, 4, 5}};
+    int *corner = &cells[1][2];
+    int (*rows)[3] = cells;
+    cells[1][2] = 9;
+    *corner += rows[0][1];
+    char word[4] = "abc";
+    char *letters = word;
+    word[0] = 'x';
+    letters[2] = 'z';
+    int total = 0;
+    int *into = &total;
+    for (int i = 0; i < 3; i++) {
+        *into += i;
+        total *= 2;
+    }
+    printf("%d %d %d %d %s %d\n", w->from, whole.to, *depth, rows[1][2], word, *into);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "whole.to = 5;",
+            "widen(&mut whole);",
+            "f.inner.to += f.depth;",
+            "cells[1][2] += cells[0][1];",
+            "word[2] = b'z';",
+            "total += i;",
+        ],
+    );
+}
