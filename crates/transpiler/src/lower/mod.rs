@@ -43,6 +43,8 @@ enum Helper {
     ParseFloatChecked,
     Random,
     RandomNumbers,
+    HexFloat,
+    ExactDecimal,
     FormatE,
     FormatG,
     PeekByte,
@@ -77,6 +79,8 @@ impl Helper {
             Helper::ParseInt
             | Helper::ParseUint
             | Helper::Nan
+            | Helper::HexFloat
+            | Helper::ExactDecimal
             | Helper::FormatE
             | Helper::CopyText
             | Helper::StoreText
@@ -100,13 +104,22 @@ impl Helper {
             Helper::TextOf | Helper::CopyString | Helper::AppendAtMost => &[Helper::UntilNul],
             Helper::AppendString => &[Helper::UntilNul, Helper::CopyString],
             Helper::NanF32 | Helper::NanF64 => &[Helper::Nan],
-            Helper::ParseFloatPrefix => &[Helper::NanF32, Helper::NanF64],
+            Helper::ParseFloatPrefix => &[
+                Helper::NanF32,
+                Helper::NanF64,
+                Helper::HexFloat,
+                Helper::ExactDecimal,
+            ],
             Helper::ParseIntPrefix => &[Helper::ParseInt],
             Helper::ParseUintPrefix => &[Helper::ParseUint],
             Helper::ParseFloat => &[Helper::ParseFloatPrefix],
             Helper::ParseIntChecked => &[Helper::ParseIntPrefix],
             Helper::ParseUintChecked => &[Helper::ParseUintPrefix],
-            Helper::ParseFloatChecked => &[Helper::ParseFloatPrefix],
+            Helper::ParseFloatChecked => &[
+                Helper::ParseFloatPrefix,
+                Helper::HexFloat,
+                Helper::ExactDecimal,
+            ],
             Helper::FormatG => &[Helper::FormatE],
             Helper::StoreTextWithin => &[Helper::StoreTextCut],
         }
@@ -195,18 +208,19 @@ impl Helper {
                 }
             },
             Helper::ParseFloat => parse_quote! {
-                /// The number at the start of `text` as C's `strtod` reads a
-                /// decimal number. It is 0 without a number.
-                fn parse_float<T: std::str::FromStr + Default + Nan>(text: &str) -> T {
+                /// The number at the start of `text` as C's `strtod` reads it.
+                /// It is 0 without a number.
+                fn parse_float<T: std::str::FromStr + Default + Float>(text: &str) -> T {
                     parse_float_prefix(text).0
                 }
             },
             Helper::ParseFloatPrefix => parse_quote! {
-                /// The number at the start of `text` as C's `strtod` reads a
-                /// decimal number: white space, a sign, then digits with a
-                /// point and an exponent, or `inf` or `nan`, and the index in
-                /// `text` where it ends. It is 0 and 0 without a number.
-                fn parse_float_prefix<T: std::str::FromStr + Default + Nan>(text: &str) -> (T, usize) {
+                /// The number at the start of `text` as C's `strtod` reads it:
+                /// white space, a sign, then digits with a point and an
+                /// exponent, the same in hexadecimal after `0x`, or `inf` or
+                /// `nan`, and the index in `text` where it ends. It is 0 and
+                /// 0 without a number.
+                fn parse_float_prefix<T: std::str::FromStr + Default + Float>(text: &str) -> (T, usize) {
                     let trimmed = text.trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c));
                     let skipped = text.len() - trimmed.len();
                     let bytes = trimmed.as_bytes();
@@ -254,6 +268,12 @@ impl Helper {
                         }
                         return (value, skipped + end);
                     }
+                    if starts(end, "0x") {
+                        if let Some((_, kept, exponent, length)) = hex_float::<T>(&bytes[end + 2..]) {
+                            let exact = format!("{}{}", &trimmed[..end], exact_decimal(kept, exponent));
+                            return (exact.parse().unwrap_or_default(), skipped + end + 2 + length);
+                        }
+                    }
                     let whole = digits(end);
                     end += whole;
                     let fraction = match bytes.get(end) {
@@ -277,14 +297,20 @@ impl Helper {
                 }
             },
             Helper::Nan => parse_quote! {
-                /// A NaN with `payload` in its lowest bits, where glibc's
-                /// `strtod` keeps the number of `nan(number)`.
-                trait Nan {
+                /// What glibc's `strtod` needs of a type: its least
+                /// exponent and digits, as `f64`'s constants of these names
+                /// say, and a NaN with `payload` in its lowest bits, where it
+                /// keeps the number of `nan(number)`.
+                trait Float {
+                    const MIN_EXP: i32;
+                    const MANTISSA_DIGITS: u32;
                     fn nan(negative: bool, payload: u64) -> Self;
                 }
             },
             Helper::NanF32 => parse_quote! {
-                impl Nan for f32 {
+                impl Float for f32 {
+                    const MIN_EXP: i32 = f32::MIN_EXP;
+                    const MANTISSA_DIGITS: u32 = f32::MANTISSA_DIGITS;
                     fn nan(negative: bool, payload: u64) -> f32 {
                         let bits = f32::NAN.to_bits() | payload as u32 & ((1 << 22) - 1);
                         f32::from_bits(bits | u32::from(negative) << 31)
@@ -292,7 +318,9 @@ impl Helper {
                 }
             },
             Helper::NanF64 => parse_quote! {
-                impl Nan for f64 {
+                impl Float for f64 {
+                    const MIN_EXP: i32 = f64::MIN_EXP;
+                    const MANTISSA_DIGITS: u32 = f64::MANTISSA_DIGITS;
                     fn nan(negative: bool, payload: u64) -> f64 {
                         let bits = f64::NAN.to_bits() | payload & ((1 << 51) - 1);
                         f64::from_bits(bits | u64::from(negative) << 63)
@@ -320,23 +348,150 @@ impl Helper {
             },
             Helper::ParseFloatChecked => parse_quote! {
                 /// As `parse_float_prefix`, and whether glibc's `strtod` sets
-                /// `errno` to `ERANGE`: a number that is infinite or, with a
-                /// digit that is not 0, below `smallest`, the least normal
-                /// number of `T`. The words `inf` and `nan` are no error.
-                fn parse_float_checked<T: std::str::FromStr + Default + Nan + Copy + Into<f64>>(
+                /// `errno` to `ERANGE`: a number that is infinite, or one that
+                /// is inexact and below the least normal number after
+                /// rounding to the digits of `T` with no bound on the
+                /// exponent. The words `inf` and `nan` are no error.
+                fn parse_float_checked<T: std::str::FromStr + Default + Float + Copy + Into<f64>>(
                     text: &str,
-                    smallest: f64,
                 ) -> (T, usize, bool) {
                     let (value, end) = parse_float_prefix::<T>(text);
-                    let number = &text[..end];
-                    let word = number.contains(['n', 'N']);
-                    let digit = number
-                        .bytes()
-                        .take_while(|byte| !matches!(byte, b'e' | b'E'))
-                        .any(|byte| (b'1'..=b'9').contains(&byte));
+                    let number = text[..end]
+                        .trim_start_matches(|c| c == ' ' || ('\t'..='\r').contains(&c))
+                        .trim_start_matches(['+', '-']);
+                    if number.contains(['n', 'N']) {
+                        return (value, end, false);
+                    }
+                    let (exact, kept) = match number.as_bytes() {
+                        [b'0', b'x' | b'X', rest @ ..] => hex_float::<T>(rest)
+                            .map(|(mantissa, kept, exponent, _)| {
+                                (exact_decimal(mantissa, exponent), exact_decimal(kept, exponent))
+                            })
+                            .unwrap_or_default(),
+                        _ => (number.to_string(), number.to_string()),
+                    };
+                    // The place of the first digit that is not 0, and the
+                    // digits from there without the 0s at the end, which
+                    // order numbers as their values.
+                    let significant = |text: &str| {
+                        let (mantissa, power) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
+                        let power: i64 = power
+                            .parse()
+                            .unwrap_or(if power.starts_with('-') { -1 << 40 } else { 1 << 40 });
+                        let whole = mantissa.split('.').next().unwrap_or_default().len() as i64;
+                        let all: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+                        let leading = (all.len() - all.trim_start_matches('0').len()) as i64;
+                        (power + whole - 1 - leading, all.trim_matches('0').to_string())
+                    };
+                    let read = significant(&exact);
+                    let digits = T::MANTISSA_DIGITS;
+                    let tiny = exact_decimal(
+                        (1 << (digits + 1)) - 1,
+                        i64::from(T::MIN_EXP) - 2 - i64::from(digits),
+                    );
                     let wide: f64 = value.into();
-                    let range = !word && (wide.is_infinite() || digit && wide.abs() < smallest);
+                    let inexact = significant(&format!("{:.800e}", wide.abs())) != significant(&kept);
+                    let range = wide.is_infinite() || !read.1.is_empty() && read < significant(&tiny) && inexact;
                     (value, end, range)
+                }
+            },
+            Helper::HexFloat => parse_quote! {
+                /// The hexadecimal number at the start of `bytes`, after its
+                /// `0x`, as C's `strtod` reads it: digits with a point, then
+                /// maybe `p` and a power of two. It is `mantissa *
+                /// 2^exponent`, where the mantissa keeps the leading bits and,
+                /// in its lowest, whether a lower one was set; the mantissa
+                /// that glibc rounds to `T`; and the length. It is `None`
+                /// without a digit.
+                fn hex_float<T: Float>(bytes: &[u8]) -> Option<(u128, u128, i64, usize)> {
+                    let digits = |from: usize, radix: u32| {
+                        bytes[from.min(bytes.len())..]
+                            .iter()
+                            .take_while(|byte| char::from(**byte).is_digit(radix))
+                            .count()
+                    };
+                    let whole = digits(0, 16);
+                    let point = bytes.get(whole) == Some(&b'.');
+                    let fraction = if point { digits(whole + 1, 16) } else { 0 };
+                    if whole + fraction == 0 {
+                        return None;
+                    }
+                    let mut end = whole + usize::from(point) + fraction;
+                    let (mut mantissa, mut exponent, mut lower) = (0u128, 0i64, false);
+                    for (index, byte) in bytes[..end].iter().filter(|byte| **byte != b'.').enumerate() {
+                        let digit = char::from(*byte).to_digit(16).unwrap_or(0);
+                        if mantissa >> 60 == 0 {
+                            mantissa = mantissa << 4 | u128::from(digit);
+                            exponent -= 4 * i64::from(index >= whole);
+                        } else {
+                            lower |= digit != 0;
+                            exponent += 4 * i64::from(index < whole);
+                        }
+                    }
+                    if matches!(bytes.get(end), Some(b'p' | b'P')) {
+                        let sign = usize::from(matches!(bytes.get(end + 1), Some(b'+' | b'-')));
+                        let power = digits(end + 1 + sign, 10);
+                        if power > 0 {
+                            let value = bytes[end + 1 + sign..][..power]
+                                .iter()
+                                .fold(0, |value, byte| (value * 10 + i64::from(byte - b'0')).min(1 << 20));
+                            exponent += if bytes[end + 1] == b'-' { -value } else { value };
+                            end += 1 + sign + power;
+                        }
+                    }
+                    let mantissa = mantissa << 1 | u128::from(lower);
+                    let bits = i64::from(128 - mantissa.leading_zeros());
+                    // Of a number below the least normal one, glibc drops
+                    // the bit after the digits of `T` before it rounds.
+                    let after = bits - 1 - i64::from(T::MANTISSA_DIGITS);
+                    let kept = match exponent - 1 + bits - 1 < i64::from(T::MIN_EXP) - 1 && after > 0 {
+                        true => mantissa & !(1 << after),
+                        false => mantissa,
+                    };
+                    Some((mantissa, kept, exponent - 1, end))
+                }
+            },
+            Helper::ExactDecimal => parse_quote! {
+                /// `mantissa * 2^exponent` as its exact decimal text, which
+                /// Rust's `parse` rounds once, as C does. Far beyond any
+                /// float it is a text that is infinite, or 0 and not exact.
+                fn exact_decimal(mantissa: u128, exponent: i64) -> String {
+                    let bits = i64::from(128 - mantissa.leading_zeros());
+                    if mantissa == 0 {
+                        return "0".to_string();
+                    } else if exponent + bits > 1100 {
+                        return "1e999".to_string();
+                    } else if exponent + bits < -1100 {
+                        return "1e-999".to_string();
+                    }
+                    // Digits in base 10^9, the lowest first; `2^-n` is
+                    // `5^n * 10^-n`.
+                    let mut limbs = Vec::new();
+                    let mut rest = mantissa;
+                    while rest > 0 {
+                        limbs.push((rest % 1_000_000_000) as u64);
+                        rest /= 1_000_000_000;
+                    }
+                    let factor = if exponent > 0 { 2 } else { 5 };
+                    for _ in 0..exponent.unsigned_abs() {
+                        let mut carry = 0;
+                        for limb in &mut limbs {
+                            let product = *limb * factor + carry;
+                            *limb = product % 1_000_000_000;
+                            carry = product / 1_000_000_000;
+                        }
+                        if carry > 0 {
+                            limbs.push(carry);
+                        }
+                    }
+                    let mut text = limbs.last().map_or_else(String::new, u64::to_string);
+                    for limb in limbs.iter().rev().skip(1) {
+                        text += &format!("{limb:09}");
+                    }
+                    if exponent < 0 {
+                        text += &format!("e{exponent}");
+                    }
+                    text
                 }
             },
             Helper::FormatE => parse_quote! {

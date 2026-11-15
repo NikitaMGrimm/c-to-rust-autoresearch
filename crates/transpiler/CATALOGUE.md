@@ -306,9 +306,13 @@ Entry format, newest last:
 
 - C: `strtod` and `strtof` with a NULL end pointer, and `atof`, of text
 - Rust: `parse_float::<f64>(&args[1])` or `::<f32>`, a helper that finds
-  what `strtod` reads as a decimal number (white space, a sign, digits with
-  a point and an exponent, `inf`, `nan`) and parses it with the standard
-  library, which rounds as C does; 0 without a number
+  what `strtod` reads (white space, a sign, digits with a point and an
+  exponent, the same in hexadecimal after `0x` with an exponent `p` of two,
+  `inf`, `nan`) and parses it with the standard library, which rounds as C
+  does; a hexadecimal number as its exact decimal text (`hex_float`,
+  `exact_decimal`), without the bit after the type's digits where it is
+  below the least normal number, which glibc drops there; 0 without a
+  number
 - Needs: nothing
 - Motivation: `g2_016_divide_by_zero_float` was refused for `atof`, and
   `g2_ldexp_q2` and `g2_pow43` for `strtof`, which the benchmark's own
@@ -628,7 +632,7 @@ Entry format, newest last:
   `let (d, end) = parse_float_prefix::<f64>(&args[1]);`, helpers that also
   return the index where the number ends, 0 when the text starts with
   none; `parse_float_prefix` reads `nan(chars)` to its `)` and keeps a
-  number among the chars in the NaN's lowest bits, as glibc does (`Nan`,
+  number among the chars in the NaN's lowest bits, as glibc does (`Float`,
   a trait of `f32` and `f64`), and `parse_float` is its first result. The store of the first value is
   dropped. Refused: a read of the end before the first call or after such
   a store, a store of it inside a larger expression, another base
@@ -647,11 +651,13 @@ Entry format, newest last:
   statements after the call in its block and in the branches of an `if`
   there, up to the next call that may set it
 - Rust: `let (n, end, range) = parse_int_checked(&args[1]);`, and
-  `parse_uint_checked`, `parse_float_checked::<f64>(text, f64::MIN_POSITIVE)`,
+  `parse_uint_checked`, `parse_float_checked::<f64>(text)`,
   helpers that also return whether glibc sets `ERANGE`: an integer beyond
   `i64`, digits beyond `u64` (a `-` before them is no error), a `double`
-  that is infinite from digits or, with a digit that is not 0, below the
-  least normal number of its type. The reads are `range`, `!range` and
+  that is infinite from digits, or one that is inexact and whose text is
+  below the least normal number of its type after rounding to the type's
+  digits with no bound on the exponent; both found by comparing exact
+  decimal digits. The reads are `range`, `!range` and
   `false` for any other number, the store is dropped, and a call whose
   `errno` nothing reads keeps two results. Refused, with `a read of `errno`
   that is not one call's error`: a read without the store before the call

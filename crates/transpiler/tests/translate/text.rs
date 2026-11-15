@@ -579,8 +579,8 @@ int main(int argc, char **argv) {
             "if range {",
             "let (u, _, range) = parse_uint_checked(&args[2]);",
             "let bad = range as i32;",
-            "let (d, end, range) = parse_float_checked::<f64>(&args[3], f64::MIN_POSITIVE);",
-            "let (f, _, range) = parse_float_checked::<",
+            "let (d, end, range) = parse_float_checked::<f64>(&args[3]);",
+            "let (f, _, range) = parse_float_checked::<f32>(&args[3]);",
         ],
     );
     let refused = |name, c: &str| translate(name, c).unwrap_err();
@@ -779,4 +779,103 @@ int main(int argc, char **argv) {
         "",
     );
     assert_lines(&rust, &["value = T::nan(bytes[0] == b'-', payload);"]);
+}
+
+#[test]
+fn strtod_reads_hexadecimal_numbers_and_reports_an_underflow_as_glibc_does() {
+    // Hexadecimal numbers round once to the type, also where they are
+    // subnormal; an underflow is an error only where it is inexact and
+    // below the least normal number after rounding with no bound on the
+    // exponent.
+    let rust = check(
+        "hex_float",
+        r#"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    char *end;
+    union { double f; unsigned long u; } wide;
+    union { float f; unsigned u; } narrow;
+    errno = 0;
+    double d = strtod(argv[1], &end);
+    printf("%d [%s] ", errno == ERANGE, end);
+    wide.f = d;
+    printf("%lx ", wide.u);
+    errno = 0;
+    float f = strtof(argv[1], &end);
+    printf("%d [%s] ", errno == ERANGE, end);
+    narrow.f = f;
+    printf("%x ", narrow.u);
+    wide.f = atof(argv[1]);
+    printf("%lx\n", wide.u);
+    return 0;
+}
+"#,
+        &[
+            &["0x1p3"],
+            &["0X1P-3"],
+            &["-0x1.8p1"],
+            &["+0xA.bp+2"],
+            &[" 0x.8"],
+            &["0xFfp-0x"],
+            &["0x"],
+            &["0x."],
+            &["-0xg"],
+            &["0x1p"],
+            &["0x1p+"],
+            &["0x1P-z"],
+            &["0x1."],
+            &["0x123456789abcdef0123456789p-40"],
+            &["0x0000000000000000000000000000001.8p0"],
+            &["0x.000000000000000000000000000000000001p+148"],
+            &["0x1.00000000000008p0"],
+            &["0x1.00000000000018p0"],
+            &["0x1.000000000000080000000000000000001p0"],
+            &["0x1.000001p0"],
+            &["0x1.000003p0"],
+            &["0x1.0000010000000000000000000001p0"],
+            &["0x1p-1074"],
+            &["0x1p-1030"],
+            &["0x1p-1075"],
+            &["0x1.8p-1075"],
+            &["0x1p-1076"],
+            &["0x1p-149"],
+            &["0x1p-150"],
+            &["0x1.000001p-150"],
+            &["0x1.fffffffffffff8p-1023"],
+            &["0x1.fffffffffffffp-1023"],
+            &["0x1.fffffep-127"],
+            &["0x1.ffffffp-127"],
+            &["0x1.000001p-149"],
+            &["0x1.00000000000008p-1063"],
+            &["0x1.00000000000018p-1063"],
+            &["0x1p1024"],
+            &["-0x1.fffffffffffffp1023"],
+            &["0x1.fffffffffffff8p1023"],
+            &["0x1p128"],
+            &["0x1.ffffffp127"],
+            &["0x1p99999999999999999999"],
+            &["-0x1p-99999999999999999999"],
+            &["0x0p99999"],
+            &["2.2250738585072012e-308"],
+            &["2.2250738585072011e-308"],
+            &["2.2250738585072014e-308"],
+            &["2.2250738585072013e-308"],
+            &["4.9406564584124654e-324"],
+            &["1e-400"],
+            &["0e-400"],
+            &["1.17549435e-38"],
+            &["1.1754943e-38"],
+            &["1.17549430e-38"],
+            &["1.1754942e-38"],
+            &["1.4e-45"],
+            &["1e-310"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["let (d, end, range) = parse_float_checked::<f64>(&args[1]);"],
+    );
 }

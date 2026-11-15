@@ -303,7 +303,7 @@ call returns the error beside its value:
 
 | C | Rust, or the refusal |
 | --- | --- |
-| `errno = 0; n = strtol(text, &end, 10); if (errno == ERANGE)` | `let (n, end, range) = parse_int_checked(text);` and `if range`; `range` is whether the number was beyond its type, which is all that `strtol`, `strtoul`, `strtod` and their like report in base 10 (R37); `parse_uint_checked`, and `parse_float_checked::<f64>(text, f64::MIN_POSITIVE)`, whose second argument is the least normal number of the type |
+| `errno = 0; n = strtol(text, &end, 10); if (errno == ERANGE)` | `let (n, end, range) = parse_int_checked(text);` and `if range`; `range` is whether the number was beyond its type, which is all that `strtol`, `strtoul`, `strtod` and their like report in base 10 (R37); `parse_uint_checked`, and `parse_float_checked::<f64>(text)`, for which `range` is also an inexact number below the least normal one of the type after rounding to its digits with no bound on the exponent, as glibc reports an underflow |
 | `errno == ERANGE`, `errno != 0`, `errno`, `errno == 0`, `!errno` after such a call | `range`, `range`, `range`, `!range`, `!range` |
 | `errno == EDOM`, `errno == EINVAL` after such a call | `false`: the call never reports it |
 | `errno = 0; r = pow(x, y);` and the same tests, also for `sqrt`, `log`, `exp` and the other functions of `math.h` with a rule | `let r = x.powf(y);` and a test of the result as glibc makes it: `EDOM` where the result is NaN and no argument is, `ERANGE` where it is infinite and the arguments are finite, or zero for `pow` and `exp` where an exact result would not be (R38: `pow` and `sqrt`; `log` and `exp` have no rule yet); the result must be a `double` variable and the arguments variables or constants, which nothing stores to before the read |
@@ -521,11 +521,6 @@ become a fact and a refusal:
   bytes through. `text_of` prints bytes that are not UTF-8 as U+FFFD.
 - A conversion from a floating-point number to an integer saturates in Rust
   where C's behaviour is undefined, and a NaN prints differently.
-- `parse_float` reads decimal numbers only: `strtod` also reads
-  hexadecimal ones (`0x1p3`), of which this reads the `0`.
-- `parse_float_checked` takes every subnormal result for a range error;
-  glibc reports one only where it is inexact, which a decimal text of a
-  subnormal number is unless it has hundreds of digits.
 - `read_line` takes an error of the read for the end of the input: after
   some bytes it returns them, where `fgets` returns NULL.
 - `&args[i]` stops the program where `i` is `argc`, and C reads NULL
@@ -547,10 +542,6 @@ become a fact and a refusal:
   not know which array a local points into. A call that takes the pointer
   to store through and the array itself, as `char *p = s; memmove(p + 1,
   s, 3);` does, is translated and does not compile.
-- `parse_float_checked` tells an underflow from the number that was read,
-  after rounding. A text below the least normal number that rounds up to
-  it, such as `2.2250738585072012e-308`, is a range error for `strtod` and
-  none here.
 
 ## The listing
 

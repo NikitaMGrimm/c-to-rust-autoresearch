@@ -220,11 +220,7 @@ impl Lower<'_> {
                     }
                     true => {
                         self.helper(Helper::ParseFloatChecked);
-                        let smallest: syn::Expr = match call.ty {
-                            Type::Float { bits: 32 } => parse_quote!(f64::from(f32::MIN_POSITIVE)),
-                            _ => parse_quote!(f64::MIN_POSITIVE),
-                        };
-                        parse_quote!(parse_float_checked::<#ty>(#text, #smallest))
+                        parse_quote!(parse_float_checked::<#ty>(#text))
                     }
                 }
             }
