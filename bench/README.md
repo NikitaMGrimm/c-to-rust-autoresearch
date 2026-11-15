@@ -227,6 +227,41 @@ solution tried was left out.
 | Solutions that parse a number beyond `int` | 2 |
 | Families without a program in 10 solutions | 7 |
 
+## Practice pool
+
+The development set is small, and a driver that has passed most of it has
+little left to steer by. A practice pool gives it more programs to read and
+to list refusals of: single-file C programs from a public source that is
+neither TRACTOR nor CodeNet. The pool is no benchmark set. No gate evaluates
+it, no result is reported on it, and it is not in this repository, since its
+sources have licences of their own.
+
+`loop/cargo run -p bench --bin pool -- TAG SOURCE_DIR POOL_DIR` copies each
+C file under `SOURCE_DIR` to `POOL_DIR/gN_TAG_PATH.c` when it is a program
+that runs without arguments and input and that run passes the same C checks
+as the benchmarks. `PATH` is the file's path in the source, and the group
+comes from the intake tool's feature detection. Before anything of a
+program runs, its object files, built as the reference builds them, may
+need no symbol beside a fixed list of the C library's, which reach only
+memory, standard input and the standard streams, and its text may not name
+assembly, nor may an object file define a symbol that configures a
+sanitizer. That leaves out the library's functions for the network, other
+processes, files and the terminal, and those for the clock and `getenv`
+too, so that a run repeats. It is a filter for sources that were not
+written against it, not a sandbox: assembly behind pasted tokens, an
+instruction from a compiler's intrinsic, such as a read of the processor's
+time stamp, and `main`'s third parameter pass it. The
+evaluator runs C programs without a sandbox, so take a pool only from a
+source that you would run so. The collection itself runs through
+`loop/cargo`, with both directories in the checkout.
+
+`cargo run -p bench --bin near-copies -- PRIVATE_DIR --pool POOL_DIR` then
+deletes the pool's programs that are near-copies of a validation, held-out
+or transfer program, and those that have the name of a private program or
+variant. It prints how many, also where it fails, and writes nothing to
+`PRIVATE_DIR`; the pool must lie outside it. A driver gets the pool only
+after this.
+
 ## Regenerating
 
 ```sh

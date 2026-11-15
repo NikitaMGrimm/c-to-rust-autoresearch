@@ -77,7 +77,7 @@ the right one, and deleting code is welcome. A new dependency needs a reason.
 | `crates/transpiler/` | The transpiler, the only code the loop changes |
 | `crates/eval/src/` | Evaluator library: `spec`, `reference`, `translate`, `run`, `sandbox`, `evaluate`, `idioms`, `files`, and `commits` for the gate and `transfer` |
 | `crates/eval/src/main.rs`, `src/bin/gate.rs`, `src/bin/transfer.rs` | The `eval` command, the loop's gate, and the transfer set's evaluation after a run |
-| `crates/bench/` | Builds the sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies` |
+| `crates/bench/` | Builds the sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies`, and a practice `pool` |
 | `crates/transcripts/` | Reads Claude Code transcripts: model `usage` and the loop's `audit` |
 | `bench/` | The dev programs, and how all sets were made |
 | `loop/` | Instructions for the loop agent and for a driver, the setup of their checkouts, the seal, the judging of a commit, the GitHub step and unattended runs |
