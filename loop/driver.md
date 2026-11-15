@@ -51,7 +51,8 @@ own as tests.
    weak spots and the list of what is not built in `DESIGN.md`, and
    `local/rounds.md`, the gate's results so far, which the first judging
    writes, say what is missing. Prefer what unblocks the most, and what
-   later steps will build on.
+   later steps will build on. Build a construct as a family, as the next
+   section says, not as the one shape a development program has.
 2. Make one step, in the stage where the design puts it:
    - a **rule**: one C construct gets a translation, or an earlier rule
      covers more. Add its entry to `crates/transpiler/CATALOGUE.md`, in the
@@ -80,40 +81,62 @@ own as tests.
    rises, and a refactoring or a fix when it does not drop; in both cases the
    validation score may not drop. It prints the development results and its
    decision. After a rejection, change the commit and judge again, or go back
-   with `git reset --hard run/RUN`. Judge each commit by itself unless
-   several belong together: a rule that passes no development program by
-   itself is rejected, so when a program needs several rules, commit each
-   and judge them as one.
+   with `git reset --hard run/RUN`. One judging is one construct family: a
+   rule that passes no development program by itself is rejected, so commit
+   the rules of a family one by one and judge them as one. Do not put two
+   families into one judging, nor a fix that belongs to neither: the gate
+   then cannot tell which of them changed the score.
+
+## A construct family
+
+A rule built for the shape that one development program has passes that
+program and little else. Before the first rule of a construct, write its
+family into `DESIGN.md` from what C allows, not from what the development
+programs use: the positions it takes (a value, a target, a condition, an
+argument, a field), its types, its edge values (NULL, the end of an array,
+an empty text, the limits of a number), a side effect inside it, and two
+names for one memory. Each shape gets a rule or a refusal.
+
+Before a family is judged, write small C programs of your own for its
+shapes, with their specs, under `local/probes/FAMILY/`, and run them
+through the evaluator (`cargo run -p eval -- local/probes/FAMILY --quiet`).
+A probe passes or is refused; what a rule would translate wrongly it
+refuses, with a test. Keep the probes, and run all of them again at the end
+of a stretch.
 
 ## Workers
 
-A batch of rules that follow one pattern you have already built, such as ten
-library functions, can go to workers: `delegate_task` with Claude Opus 5.5,
-each in its own worktree. Give each a brief that stands alone: the rule, the
-place in the design, the test it must add, and the two sections above about
-the sandbox and the private programs, word for word. Read each diff yourself,
-bring what is good onto your branch, and have it judged. Decisions about the
-design stay with you.
+Rules whose design you have written into `DESIGN.md` go to workers, as do
+rules that follow a pattern you have already built, such as ten library
+functions: `delegate_task` with Claude Opus 5.5 at medium effort, each in its
+own worktree. Give each a brief that stands alone: the rule, the place in the
+design, the test it must add, the probes it must write, and the sections
+above about the sandbox and the private programs, word for word. Read each
+diff yourself, run its probes on your branch, bring what is good onto it, and
+have it judged. Decisions about the design stay with you.
 
 ## The end of a stretch
 
 A stretch is about fifteen kept commits, or what the owner's message says.
 At its end:
 
-1. **Adversarial review.** `delegate_task` with GPT 6.1 Sol at high effort,
+1. **Differential testing.** `delegate_task` with GPT 6.1 Sol at high effort,
    read-only: it looks for translations that compile and behave differently
    from the C program, by writing small C programs against the rules of this
-   stretch, and reports each with a program that shows it. Check every
-   finding yourself. Each real one becomes a fix with a test, judged like any
-   other step.
+   stretch, and reports each with a program that shows it. Call the task
+   differential testing of a translator in its brief; a brief that asks for
+   an attack was stopped by the provider. Check every finding yourself. Each
+   real one becomes a fix with a test, judged like any other step.
 2. **Idiom review.** A second read-only review reads the translations of the
    development programs that pass and names the patterns that a Rust
    programmer would not write. They go on the list in `DESIGN.md` of what to
    build next; they are not judged.
 3. **Report and stop.** Tell the owner what was kept and rejected, the
-   development scores, the refusal reasons that remain, what the reviews
-   found, and what you would do next. The owner has the transcripts audited
-   and reads the validation results before the next stretch.
+   development scores by group, for each family its shapes and how many
+   probes pass and are refused, what the workers built, the refusal reasons
+   that remain, what the reviews found, and what you would do next. The owner
+   has the transcripts audited and reads the validation results before the
+   next stretch.
 
 Stop and report before the end of a stretch when the gate fails with an
 error, when a step needs a change outside the transpiler, or when you would
