@@ -157,6 +157,20 @@ pub fn cast(value: Expr, ty: syn::Type) -> Expr {
     })
 }
 
+/// `field: value` in a record literal, or `field` alone where the value is
+/// the variable of that name.
+pub fn field_value(field: &str, value: Expr) -> syn::FieldValue {
+    let member = syn::Member::Named(ident(field));
+    let named =
+        matches!(&value, Expr::Path(path) if path.qself.is_none() && path.path.is_ident(field));
+    syn::FieldValue {
+        attrs: Vec::new(),
+        member,
+        colon_token: (!named).then(Default::default),
+        expr: value,
+    }
+}
+
 pub fn field(base: Expr, field: &str) -> Expr {
     Expr::Field(syn::ExprField {
         attrs: Vec::new(),

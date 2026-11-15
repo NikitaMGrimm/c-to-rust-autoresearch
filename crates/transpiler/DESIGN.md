@@ -360,9 +360,6 @@ keeps C's promotions, checked arithmetic and the input it consumes:
   fills the buffer as a whole and reads it as a whole: a `String`, as the
   **Text** entry above says, with the fact that no byte of it is read or
   stored by itself.
-- **A field named twice.** `Node { id: id, value: value }` where the value
-  is the variable of the field's name: `Node { id, value }`. Needs only
-  the two Rust names after `names` has chosen them.
 - **A search that returns an element.** A cursor that a function returns
   or hands on is the rest of the array from there, `&a[p..]`, and the
   caller reads `found[0].value`, since the cursor may be at the end of the

@@ -261,3 +261,26 @@ int main(void) {
         ],
     );
 }
+
+#[test]
+fn a_field_set_from_the_variable_of_its_name_is_named_once() {
+    let rust = check(
+        "field_shorthand",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct node { int id; int value; int weight; };
+int main(int argc, char *argv[]) {
+    int id = atoi(argv[1]);
+    int value = id * 2;
+    int other = id + 1;
+    struct node n = {id, value, other};
+    printf("%d %d %d\n", n.id, n.value, n.weight);
+    return 0;
+}
+"#,
+        &[&["3"]],
+        "",
+    );
+    assert_lines(&rust, &["let n: Node = Node { id, value, weight: other };"]);
+}

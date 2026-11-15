@@ -585,12 +585,13 @@ impl Lower<'_> {
             let slot = Slot::Field(id, index);
             let ty = self.field_type(slot, &field.ty)?;
             let zero = self.zero_of(&field.ty, Some(slot), 0)?;
-            let field = rust::ident(self.names.field(id, index));
+            let name = self.names.field(id, index);
+            zeros.push(rust::field_value(name, zero));
+            let field = rust::ident(name);
             fields.push(
                 syn::parse::Parser::parse2(syn::Field::parse_named, quote::quote!(#field: #ty))
                     .expect("a field"),
             );
-            zeros.push(parse_quote!(#field: #zero));
         }
         let ty = Type::Record(id);
         let copy = self.is_copy(&ty).then(|| quote::quote!(Copy,));
@@ -650,7 +651,7 @@ impl Lower<'_> {
                     syn::parse::Parser::parse2(syn::Field::parse_named, quote::quote!(#name: #ty))
                         .expect("a field"),
                 );
-                values.push(parse_quote!(#name: #value));
+                values.push(rust::field_value(self.names.var(global), value));
             } else if var.ty.is_pointer() {
                 return unsupported(
                     format!("the global pointer `{}` that never changes", var.name),

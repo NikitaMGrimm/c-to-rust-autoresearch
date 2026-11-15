@@ -209,8 +209,7 @@ impl Lower<'_> {
                         }
                         None => self.zero_of(&field.ty, slot, init.at)?,
                     };
-                    let field = rust::ident(self.names.field(*id, index));
-                    values.push(parse_quote!(#field: #value));
+                    values.push(rust::field_value(self.names.field(*id, index), value));
                 }
                 Ok(parse_quote!(#name { #(#values),* }))
             }
