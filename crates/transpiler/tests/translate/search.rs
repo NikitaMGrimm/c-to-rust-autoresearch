@@ -243,3 +243,130 @@ int main(int argc, char *argv[]) {
         assert_eq!(refused(name, body), place(6), "{name}");
     }
 }
+
+#[test]
+fn a_function_that_returns_what_a_search_found_is_a_search() {
+    let rust = check(
+        "found_returned",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+char *find(const char *buffer, size_t size, char target) {
+    if (!buffer) return NULL;
+    return (char *)memchr(buffer, target, size);
+}
+char *find_text(const char *text, char target) {
+    return find(text, strlen(text), target);
+}
+char *copy(const char *text) {
+    char *buffer = malloc(strlen(text) + 1);
+    if (buffer) strcpy(buffer, text);
+    return buffer;
+}
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    char c = (char)atoi(argv[1]);
+    char fixed[9] = "abcdefgh";
+    char *at = find(fixed, 4, c);
+    if (at) {
+        *at = '_';
+        printf("%d %s\n", (int)(at - fixed), fixed);
+    }
+    char *in_text = find_text(fixed, c);
+    if (in_text) puts(in_text);
+    char *buffer = copy("look for the p in here");
+    char *found = find(buffer, strlen(buffer), c);
+    if (found) {
+        printf("at %d: %c\n", (int)(found - buffer), *found);
+    } else {
+        puts("none");
+    }
+    free(buffer);
+    buffer = copy("then a p here");
+    found = find(buffer, strlen(buffer), c);
+    if (found) printf("then at %d\n", (int)(found - buffer));
+    free(buffer);
+    return 0;
+}
+"#,
+        &[&["112"], &["122"], &["97"], &["101"], &["104"], &["0"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn find(buffer: &[u8], size: u64, target: u8) -> Option<usize> {",
+            "buffer.iter().take(size as usize).position(|&found| found == target)",
+            "find(text, until_nul(text).len() as u64, target)",
+            "let at = find(&fixed, 4, c);",
+            "fixed[at] = b'_';",
+            "println!(\"{}\", text_of(&fixed[in_text..]));",
+            "found = find(&buffer, until_nul(&buffer).len() as u64, c);",
+            "println!(\"then at {}\", found as i64 as i32);",
+            "if let Some(found) = found {",
+        ],
+    );
+    let refused = |name: &str, function: &str, body: &str| {
+        let c = format!(
+            "#include <stdio.h>\n#include <string.h>\n{function}\nint main(int argc, char *argv[]) {{\n    char one[4] = \"a,b\";\n    char two[4] = \"c,d\";\n{body}\n    return argc;\n}}\n"
+        );
+        translate(name, &c).unwrap_err()
+    };
+    let find = "char *find(const char *s, int c) { return strchr(s, c); }";
+    for (name, function, body) in [
+        // The result is used as a pointer where no test holds.
+        (
+            "returned_untested",
+            find,
+            "    char *p = find(one, ',');\n    puts(p ? p : two);",
+        ),
+        (
+            "returned_in_test",
+            find,
+            "    if (find(one, ',')) puts(two);",
+        ),
+        (
+            "returned_kept",
+            find,
+            "    char *(*search)(const char *, int) = find;\n    char *p = search(one, ',');\n    if (p) puts(two);",
+        ),
+        // The array is another one where the place is used.
+        (
+            "returned_base_stored",
+            find,
+            "    char *s = one;\n    s = one;\n    char *p = find(s, ',');\n    s = two;\n    if (p) puts(p);",
+        ),
+        (
+            "returned_base_stored_under",
+            find,
+            "    char *s = one;\n    s = one;\n    char *p = find(s, ',');\n    if (p) { s = two; puts(p); }\n    puts(s);",
+        ),
+        // The place does not count from the argument.
+        (
+            "returned_offset",
+            "char *find(const char *s, int c) { return strchr(s + 1, c); }",
+            "    char *p = find(one, ',');\n    if (p) puts(p);",
+        ),
+        (
+            "returned_moved",
+            "char *find(const char *s, int c) { s++; return strchr(s, c); }",
+            "    char *p = find(one, ',');\n    if (p) puts(p);",
+        ),
+        (
+            "returned_second",
+            "char *find(int c, const char *s) { return strchr(s, c); }",
+            "    char *p = find(',', one);\n    if (p) puts(p);",
+        ),
+        (
+            "returned_other",
+            "char *find(char *s, int c) { if (c == 0) return s; return strchr(s, c); }",
+            "    char *p = find(one, ',');\n    if (p) puts(p);",
+        ),
+    ] {
+        assert_eq!(
+            refused(name, function, body),
+            "unsupported: the result of `find`: a place that a search found, used as a pointer: no rule yet",
+            "{name}"
+        );
+    }
+}

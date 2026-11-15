@@ -1385,6 +1385,8 @@ impl Lower<'_> {
     /// The value a function returns for `return value`.
     fn returned(&mut self, value: &Expr) -> R<syn::Expr> {
         match (self.function, value.ty.is_pointer()) {
+            // R51: a function of the program that is a search.
+            _ if value.ty == Type::Found => self.init(&Type::Found, None, value),
             (Some(function), true) => {
                 let repr = self.repr(Slot::Return(function), value.at)?;
                 self.pointer(value, repr)

@@ -804,6 +804,32 @@ Entry format, newest last:
 - Motivation: `g3_envy` reads where a colon was found, `g5_findrep` stores
   through what `memchr` found
 - Changes: extends R40
+## R51: a function that returns what a search found
+
+- C: a function of the program whose every `return` gives NULL or what
+  `strchr`, `strrchr`, `memchr`, `strstr`, `strpbrk` or another such
+  function found in its first parameter, which the function never stores
+  to: `char *find(const char *b, size_t n, char c) { if (!b) return NULL;
+  return memchr(b, c, n); }`; and its result kept in a local as R40 and R47
+  keep a search's: `p = find(buffer, n, c); if (p) { at = p - buffer; }`
+- Rust: the function returns `Option<usize>`, the place counted from its
+  argument: `return None;`, and the search itself as R40 writes it. The
+  caller's local is the `Option<usize>` of R40 and an index beside the
+  argument where its test holds (R47)
+- Needs: `normalise::found` names such functions in `Program::searches`
+  before it types the locals, and runs again without one whose result is
+  used in another way anywhere. The array of R47 may now be a local pointer
+  that the program stores to, where the test of the place follows its
+  search at once and the branch does not store to the pointer
+- Refused, as before, with `a place that a search found, used as a
+  pointer`: a result that is tested without a local, used where no test
+  holds or after `if (!p) return;`, or called through a pointer to the
+  function; a function that searches an offset of its parameter, another
+  parameter than the first, moves the parameter or also returns another
+  pointer; a store to the searched pointer between the search and the use
+- Motivation: `g5_charinbuf` wraps `memchr` in a function and takes the
+  position from the result
+- Changes: extends R40 and R47
 ## R42: pointers to functions
 
 - C: a pointer to a function, `R (*)(A, B)`, also through a `typedef` of

@@ -15,6 +15,10 @@ impl Lower<'_> {
             return unsupported("a search with no rule", at);
         };
         let name = callee.function().unwrap_or_default();
+        // R51: a search of the program's own gives the place itself.
+        if self.program.function(name).is_some() {
+            return self.call(call, callee, args);
+        }
         if let Some((text, letter)) = self.text_and_char(name, args)? {
             let method = if name == "strrchr" { "rfind" } else { "find" };
             return Ok(rust::method(text, method, [letter]));

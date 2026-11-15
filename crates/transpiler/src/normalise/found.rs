@@ -15,11 +15,190 @@ pub const SEARCHES: [&str; 5] = ["strchr", "strrchr", "memchr", "strstr", "strpb
 pub fn is_search(program: &Program, expr: &Expr) -> bool {
     matches!(&expr.uncast().kind, ExprKind::Call(callee, _)
     if callee.function().is_some_and(|name| {
-        SEARCHES.contains(&name) && program.function(name).is_none()
+        (SEARCHES.contains(&name) && program.function(name).is_none())
+            || program.searches.iter().any(|search| search == name)
     }))
 }
 
 pub fn found(program: &mut Program) {
+    // R51: the program's functions that may be searches themselves. One
+    // whose result is used as a pointer somewhere is none, which shows
+    // only when the locals have their types, so the stage runs again
+    // without it.
+    program.searches.clear();
+    loop {
+        // A function that returns what another of them found is one too.
+        let searches = candidates(program);
+        if searches == program.searches {
+            break;
+        }
+        program.searches = searches;
+    }
+    loop {
+        let vars = program.vars.clone();
+        let functions: Vec<(Type, Vec<Stmt>)> = program
+            .functions
+            .iter()
+            .map(|function| (function.ret.clone(), function.body.clone()))
+            .collect();
+        run(program);
+        let strays = strays(program);
+        if strays.is_empty() {
+            return;
+        }
+        program.vars = vars;
+        for (function, (ret, body)) in program.functions.iter_mut().zip(functions) {
+            (function.ret, function.body) = (ret, body);
+        }
+        program.searches.retain(|name| !strays.contains(name));
+    }
+}
+
+/// The value of a `return` that is NULL, or a search in the variable.
+fn finds_in(program: &Program, value: &Expr, param: VarId) -> Option<bool> {
+    let value = value.uncast();
+    match &value.kind {
+        ExprKind::Null => Some(false),
+        ExprKind::Call(_, args) if is_search(program, value) => {
+            matches!(args.first()?.uncast().kind, ExprKind::Var(var) if var == param)
+                .then_some(true)
+        }
+        _ => None,
+    }
+}
+
+/// R51: the functions that return a place in their first parameter or
+/// NULL: every `return` gives NULL or what a search of the library in
+/// that parameter found, and nothing changes the parameter, so that the
+/// place counts from where the caller's argument points.
+fn candidates(program: &Program) -> Vec<String> {
+    let mut names = Vec::new();
+    for function in &program.functions {
+        let Some(&param) = function.params.first() else {
+            continue;
+        };
+        if !function.ret.is_pointer() || !program.vars[param].ty.is_pointer() {
+            continue;
+        }
+        let is_param = |expr: &Expr| matches!(expr.kind, ExprKind::Var(var) if var == param);
+        let changed = crate::c::any_expr(
+            &function.body,
+            &program.vars,
+            &mut |expr| match &expr.kind {
+                ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => {
+                    is_param(target)
+                }
+                ExprKind::AddrOf(inner) => is_param(inner),
+                _ => false,
+            },
+        );
+        let (mut all, mut any) = (true, false);
+        each_stmt(&function.body, &mut |stmt| {
+            if let Stmt::Return(Some(value)) = stmt {
+                match finds_in(program, value, param) {
+                    Some(search) => any |= search,
+                    None => all = false,
+                }
+            }
+        });
+        if !changed && all && any {
+            names.push(function.name.clone());
+        }
+    }
+    names
+}
+
+/// The searches of the program whose result is used otherwise than as the
+/// value of a local that is a place, or as the result of another search.
+fn strays(program: &Program) -> Vec<String> {
+    let mut strays = Vec::new();
+    for name in &program.searches {
+        let calls = |expr: &Expr| matches!(&expr.uncast().kind, ExprKind::Call(callee, _) if callee.function() == Some(name));
+        let (mut named, mut placed) = (0, 0);
+        for function in &program.functions {
+            crate::c::any_expr(&function.body, &program.vars, &mut |expr| {
+                named += usize::from(expr.function() == Some(name));
+                false
+            });
+            each_stmt(&function.body, &mut |stmt| {
+                let value = match stmt {
+                    Stmt::Decl(var) if program.vars[*var].ty == Type::Found => {
+                        program.vars[*var].init.as_ref()
+                    }
+                    Stmt::Expr(Expr {
+                        kind:
+                            ExprKind::Assign {
+                                op: None,
+                                target,
+                                value,
+                            },
+                        ..
+                    }) if target.ty == Type::Found => Some(&**value),
+                    Stmt::Return(Some(value)) if value.ty == Type::Found => Some(value),
+                    _ => None,
+                };
+                placed += usize::from(value.is_some_and(calls));
+            });
+        }
+        if named != placed {
+            strays.push(name.clone());
+        }
+    }
+    strays
+}
+
+fn each_stmt(stmts: &[Stmt], visit: &mut impl FnMut(&Stmt)) {
+    for stmt in stmts {
+        visit(stmt);
+        match stmt {
+            Stmt::Block(body)
+            | Stmt::While(_, body)
+            | Stmt::DoWhile(body, _)
+            | Stmt::Switch(_, body) => each_stmt(body, visit),
+            Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => {
+                each_stmt(then, visit);
+                each_stmt(other, visit);
+            }
+            Stmt::For { init, body, .. } => {
+                each_stmt(init, visit);
+                each_stmt(body, visit);
+            }
+            Stmt::LetSome { otherwise, .. } => each_stmt(otherwise, visit),
+            _ => {}
+        }
+    }
+}
+
+/// Gives each `return` of a search of the program the type of a place.
+fn returns(stmts: &mut [Stmt]) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return(Some(value)) => {
+                *value = value.uncast().clone();
+                value.ty = Type::Found;
+            }
+            Stmt::Block(body)
+            | Stmt::While(_, body)
+            | Stmt::DoWhile(body, _)
+            | Stmt::Switch(_, body)
+            | Stmt::For { body, .. } => returns(body),
+            Stmt::If(_, then, other) | Stmt::IfSome { then, other, .. } => {
+                returns(then);
+                returns(other);
+            }
+            Stmt::LetSome { otherwise, .. } => returns(otherwise),
+            _ => {}
+        }
+    }
+}
+
+fn run(program: &mut Program) {
+    for function in 0..program.functions.len() {
+        if program.searches.contains(&program.functions[function].name) {
+            program.functions[function].ret = Type::Found;
+            returns(&mut program.functions[function].body);
+        }
+    }
     for function in 0..program.functions.len() {
         let mut body = std::mem::take(&mut program.functions[function].body);
         let mut locals = Vec::new();
@@ -33,6 +212,7 @@ pub fn found(program: &mut Program) {
                 program,
                 var,
                 base: None,
+                moving: false,
             };
             let init_ok = declared.init.as_ref().is_none_or(|init| check.value(init));
             // A pointer that only ever holds NULL is no search's.
@@ -50,11 +230,12 @@ pub fn found(program: &mut Program) {
                 continue;
             }
             // R47: used as a pointer only where a test found it.
-            let Some(base) = base_of(program, var, &body) else {
+            let Some((base, moving)) = base_of(program, var, &body) else {
                 continue;
             };
             let check = Check {
                 base: Some(base),
+                moving,
                 ..check
             };
             if check.stmts(&body) {
@@ -110,6 +291,9 @@ struct Check<'a> {
     /// The array that every search of the variable searches, where the
     /// variable may be used as a place in it under a test (R47).
     base: Option<VarId>,
+    /// Whether the program stores other pointers in `base`: the place is
+    /// then used only under a test that follows its search at once.
+    moving: bool,
 }
 
 impl Check<'_> {
@@ -129,7 +313,31 @@ impl Check<'_> {
     }
 
     fn stmts(&self, stmts: &[Stmt]) -> bool {
-        stmts.iter().all(|stmt| self.stmt(stmt))
+        stmts.iter().enumerate().all(|(index, stmt)| {
+            let tests = matches!(stmt, Stmt::If(cond, ..) if self.tested(cond).is_some());
+            self.stmt(stmt)
+                && (!self.moving || !tests || index > 0 && self.searches(&stmts[index - 1]))
+        })
+    }
+
+    /// Whether the statement stores a search in the variable.
+    fn searches(&self, stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Decl(var) if *var == self.var => {
+                let init = self.program.vars[*var].init.as_ref();
+                init.is_some_and(|init| is_search(self.program, init))
+            }
+            Stmt::Expr(Expr {
+                kind:
+                    ExprKind::Assign {
+                        op: None,
+                        target,
+                        value,
+                    },
+                ..
+            }) => self.is_var(target) && is_search(self.program, value),
+            _ => false,
+        }
     }
 
     fn stmt(&self, stmt: &Stmt) -> bool {
@@ -220,11 +428,14 @@ impl Check<'_> {
     }
 
     /// Whether the statements, which run where the variable was found, use
-    /// it only as a place: nothing stores to it or takes its address.
+    /// it only as a place: nothing stores to it or to the pointer it counts
+    /// from, or takes its address.
     fn placed(&self, stmts: &[Stmt]) -> bool {
+        let is_base =
+            |expr: &Expr| matches!(expr.kind, ExprKind::Var(var) if Some(var) == self.base);
         !crate::c::any_expr(stmts, &self.program.vars, &mut |expr| match &expr.kind {
             ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => {
-                self.is_var(target)
+                self.is_var(target) || is_base(target)
             }
             ExprKind::AddrOf(inner) => self.is_var(inner),
             _ => false,
@@ -272,7 +483,11 @@ fn retype(body: &mut [Stmt], vars: &mut [Var], var: VarId) {
 /// The array that every search stored in the variable searches: a local
 /// array, or a pointer that nothing changes after its declaration, so that
 /// it means the same memory wherever the place is used.
-fn base_of(program: &Program, var: VarId, body: &[Stmt]) -> Option<VarId> {
+///
+/// A local pointer that the program does store to is the base as well, and
+/// the second result says so: the place is then good only until the next
+/// store.
+fn base_of(program: &Program, var: VarId, body: &[Stmt]) -> Option<(VarId, bool)> {
     let searched = |value: &Expr| match &value.uncast().kind {
         ExprKind::Call(_, args) if is_search(program, value) => {
             let array = args.first()?.uncast();
@@ -312,15 +527,19 @@ fn base_of(program: &Program, var: VarId, body: &[Stmt]) -> Option<VarId> {
     let is_base = |expr: &Expr| matches!(expr.kind, ExprKind::Var(named) if named == base);
     let changed = crate::c::any_expr(body, &program.vars, &mut |expr| match &expr.kind {
         ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => is_base(target),
-        ExprKind::AddrOf(inner) => is_base(inner),
         _ => false,
     });
-    let fixed = match program.vars[base].ty {
-        Type::Array(..) => true,
-        Type::Pointer(_) => !changed && !program.vars[base].kind.is_global(),
-        _ => false,
+    let escapes = crate::c::any_expr(
+        body,
+        &program.vars,
+        &mut |expr| matches!(&expr.kind, ExprKind::AddrOf(inner) if is_base(inner)),
+    );
+    let moving = match program.vars[base].ty {
+        Type::Array(..) => false,
+        Type::Pointer(_) if !escapes && !program.vars[base].kind.is_global() => changed,
+        _ => return None,
     };
-    (base != var && fixed && bases.iter().all(|other| *other == Some(base))).then_some(base)
+    (base != var && bases.iter().all(|other| *other == Some(base))).then_some((base, moving))
 }
 
 /// R47: writes each `if` that tests the variable as a `Stmt::IfSome`, and
@@ -331,6 +550,7 @@ fn narrow(stmts: &mut [Stmt], program: &mut Program, var: VarId, base: &Expr) {
             program,
             var,
             base: None,
+            moving: false,
         };
         match stmt {
             Stmt::If(cond, then, other) if check.tested(cond).is_some() => {

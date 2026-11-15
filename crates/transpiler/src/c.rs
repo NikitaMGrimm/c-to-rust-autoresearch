@@ -20,6 +20,9 @@ pub struct Program {
     pub globals: Vec<VarId>,
     /// The program's own functions that have a body, in source order.
     pub functions: Vec<Function>,
+    /// The names of the program's functions that return a place in their
+    /// first argument or NULL, as the library's searches do (R51).
+    pub searches: Vec<String>,
 }
 
 impl Program {

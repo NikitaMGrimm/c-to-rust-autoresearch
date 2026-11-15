@@ -275,10 +275,11 @@ a cursor on that argument (see Cursors) that may be absent, an
 | `strpbrk(s, set)` | `find_any(s.as_bytes(), set.as_bytes())`, a helper, for text and bytes |
 | the result only tested: `if (strchr(s, c))`, `strchr(s, c) != NULL`, `== NULL`, `!strstr(s, t)`, also inside `&&`, `\|\|` and `?:` | `.is_some()`, `.is_none()`; `s.contains('x')` for text |
 | kept in a local that is only tested for NULL | `let found: Option<usize> = …;` and `found.is_some()`: `normalise::found` gives the local `Type::Found` |
-| kept in a local and used where the test holds: `if (p) { *p = 0; n = p - s; puts(p + 1); }`, and the `else` of `if (!p)` | `if let Some(p) = p { s[p] = 0; n = p as i64; println!("{}", text_of(&s[p + 1..])); }` (R47): an index beside `s`, which stays usable. `s` is an array or a pointer that nothing assigns again |
+| kept in a local and used where the test holds: `if (p) { *p = 0; n = p - s; puts(p + 1); }`, and the `else` of `if (!p)` | `if let Some(p) = p { s[p] = 0; n = p as i64; println!("{}", text_of(&s[p + 1..])); }` (R47): an index beside `s`, which stays usable. `s` is an array, a pointer that nothing assigns again, or a local pointer that is not assigned between the search, the test that follows it at once and the uses |
 | used outside such a branch, under `&&` or `\|\|`, stored to or moved there, or from searches of two arrays or of an offset | refused: `a place that a search found, used as a pointer: no rule yet` |
 | the search goes on from the result: `p = strchr(p + 1, c)`, `for (s = in; (s = strchr(s, c)); s++)` | refused with the same reason. It should be the search of the rest, `find_byte(&s[p + 1..], c).map(\|at\| p + 1 + at)` |
-| returned, handed on or stored in a record: `return memchr(b, c, n);` | refused with the same reason. It should be the rest of the array from there, `….map(\|at\| &b[at..])`, an `Option<&[u8]>` |
+| returned by a function of the program for its first parameter: `char *find(const char *b, …) { …; return memchr(b, c, n); }`, with the result kept in a local as above | the function returns `Option<usize>` and its call is a search like the library's (R51) |
+| returned otherwise, handed on or stored in a record | refused with the same reason. It should be the rest of the array from there, `….map(\|at\| &b[at..])`, an `Option<&[u8]>` |
 | the first argument is itself NULL, an argument of the program or a result of `getenv` | NULL is refused (undefined in C); the others are text |
 | `c` beyond a `char` (`strchr(s, 300)`) | `c as u8`, as C converts it |
 | a store through the result when the argument is `const` text | refused as any store to text |
