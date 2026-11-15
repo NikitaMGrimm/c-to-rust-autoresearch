@@ -159,3 +159,128 @@ int main(int argc, char **argv) {
         "unsupported: an `assert` where a value is needed, at line 4"
     );
 }
+
+#[test]
+fn a_statement_expression_is_a_block() {
+    let rust = check(
+        "block-value",
+        r#"
+#include <stdio.h>
+static int twice(int a) { return a * 2; }
+static int square(int a) { return ({ int b = a + 3; b * b; }); }
+int main(int argc, char **argv) {
+    int x = ({ int y = twice(argc); y + 1; });
+    int z = twice(({ int t = argc + 1; t; })) + ({ int u = argc; u * 10; });
+    int n = ({ int a = ({ int b = argc; b + 1; }); a * 2; });
+    if (({ int t = argc % 2; t == 0; }))
+        printf("even\n");
+    int k = argc + 3, steps = 0;
+    while (({ k--; k > 0; }))
+        steps++;
+    printf("%d %d %d %d %d\n", x, z, n, square(argc), steps);
+    return 0;
+}
+"#,
+        &[&[], &["a"], &["a", "b"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["let y: i32 = twice(args.len() as i32);", "y + 1", "b * b"],
+    );
+}
+
+#[test]
+fn a_statement_expression_is_a_scope_and_stores_to_outer_variables() {
+    let rust = check(
+        "block-scope",
+        r#"
+#include <stdio.h>
+int main(int argc, char **argv) {
+    int x = 1;
+    int y = ({ int x = 5 + argc; x + 1; }) + x;
+    int w = ({ x = argc + 2; x * 2; });
+    int r = ({ int found = -1; for (int i = 0; i < 10; i++) { if (i * argc > 4) { found = i; break; } } found; });
+    int a = argc;
+    ({ a += argc; a + 1; });
+    printf("%d %d %d %d %d\n", x, y, w, r, a);
+    return 0;
+}
+"#,
+        &[&[], &["a"], &["a", "b", "c"]],
+        "",
+    );
+    assert_lines(&rust, &["let x = 5 + args.len() as i32;", "break;"]);
+}
+
+#[test]
+fn a_statement_expression_that_leaves_or_gives_a_pointer_is_refused() {
+    let refused = |name, body: &str| {
+        translate(
+            name,
+            &format!("int main(int argc, char **argv) {{\n{body}\n}}\n"),
+        )
+        .unwrap_err()
+    };
+    let cases = [
+        (
+            "block-return",
+            "int r = ({ if (argc > 1) return 9; argc; }); return r;",
+            "a `return`",
+        ),
+        (
+            "block-break",
+            "int s = 0; for (int i = 0; i < 5; i++) s += ({ if (i == argc) break; i; }); return s;",
+            "a `break`",
+        ),
+        (
+            "block-continue",
+            "int s = 0; for (int i = 0; i < 5; i++) s += ({ if (i == argc) continue; i; }); return s;",
+            "a `continue`",
+        ),
+        (
+            "block-goto",
+            "int s = ({ if (argc > 1) goto out; 3; }); return s;\nout: return 0;",
+            "a `goto`",
+        ),
+    ];
+    for (name, body, jump) in cases {
+        assert_eq!(
+            refused(name, body),
+            format!("unsupported: a jump out of a statement expression, {jump}, at line 2")
+        );
+    }
+    let cases = [
+        (
+            "block-pointer",
+            "int a[2] = {1, 2}; int *p = ({ int *q = a; q + 1; }); return *p;",
+            "a statement expression that gives a pointer",
+        ),
+        (
+            "block-record",
+            "struct pt { int x; } p = ({ struct pt q = {argc}; q; }); return p.x;",
+            "a statement expression that gives a record",
+        ),
+        (
+            "block-static",
+            "return ({ static int c = 3; c + argc; });",
+            "a `static` local in a statement expression",
+        ),
+        (
+            "block-unset",
+            "return ({ int *p; p = &argc; *p; });",
+            "a pointer without a first value in a statement expression",
+        ),
+        (
+            "block-void",
+            "argc > 1 ? ({ argc = 0; (void)0; }) : (void)0; return argc;",
+            "a statement expression without a value",
+        ),
+    ];
+    for (name, body, reason) in cases {
+        assert_eq!(
+            refused(name, body),
+            format!("unsupported: {reason}, at line 2")
+        );
+    }
+}

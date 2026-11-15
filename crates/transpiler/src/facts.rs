@@ -803,6 +803,22 @@ impl<'a> Walk<'a> {
                     self.zero(element, None);
                 }
             }
+            // R35: the statements of a statement expression run as those
+            // of the function do.
+            ExprKind::Block { stmts, value } => {
+                self.stmts(stmts);
+                if let Some(value) = value {
+                    self.expr(value);
+                }
+                return;
+            }
+            ExprKind::Init { var, value } => {
+                let ty = &program.vars[*var].ty;
+                let slot = ty.is_pointer().then_some(Slot::Var(*var));
+                // The declaration before it has no first value.
+                self.unset.retain(|(unset, _)| unset != var);
+                self.init(ty, slot, value);
+            }
             ExprKind::Cond(cond, then, other) => {
                 self.expr(cond);
                 let truth = self.known.truth(program, cond);

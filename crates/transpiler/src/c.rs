@@ -312,6 +312,20 @@ pub enum ExprKind {
         cond: Box<Expr>,
         message: String,
     },
+    /// A statement expression, `({ stmts; value; })`: the statements, and
+    /// the value of the last of them if it is an expression.
+    Block {
+        stmts: Vec<Stmt>,
+        value: Option<Box<Expr>>,
+    },
+    /// The first value of a variable that a statement expression declares,
+    /// as the statement after its `Stmt::Decl`. It is an expression there,
+    /// rather than the variable's `init`, so that the walks over
+    /// expressions reach it.
+    Init {
+        var: VarId,
+        value: Box<Expr>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -511,7 +525,8 @@ impl Expr {
             | ExprKind::Cast(inner)
             | ExprKind::Bits(inner)
             | ExprKind::Member { base: inner, .. }
-            | ExprKind::Assert { cond: inner, .. } => vec![inner],
+            | ExprKind::Assert { cond: inner, .. }
+            | ExprKind::Init { value: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)
             | ExprKind::Index(left, right)
@@ -523,6 +538,12 @@ impl Expr {
             ExprKind::Cond(cond, then, other) => vec![cond, then, other],
             ExprKind::Call(callee, args) => std::iter::once(&**callee).chain(args).collect(),
             ExprKind::InitList(items) => items.iter().collect(),
+            ExprKind::Block { stmts, value } => {
+                let mut inside = Vec::new();
+                stmt_exprs(stmts, &mut inside);
+                inside.extend(value.as_deref());
+                inside
+            }
         }
     }
 
@@ -542,16 +563,17 @@ impl Expr {
     }
 
     /// Whether evaluating the expression changes nothing: it has no
-    /// assignment, no call and no `assert`, which may end the program.
+    /// assignment, no call, no `assert`, which may end the program, and no
+    /// statements of a statement expression.
     pub fn is_pure(&self) -> bool {
-        !self.any(&mut |expr| {
-            matches!(
-                expr.kind,
-                ExprKind::Assign { .. }
-                    | ExprKind::IncDec { .. }
-                    | ExprKind::Call(..)
-                    | ExprKind::Assert { .. }
-            )
+        !self.any(&mut |expr| match &expr.kind {
+            ExprKind::Block { stmts, .. } => !stmts.is_empty(),
+            ExprKind::Assign { .. }
+            | ExprKind::IncDec { .. }
+            | ExprKind::Call(..)
+            | ExprKind::Assert { .. }
+            | ExprKind::Init { .. } => true,
+            _ => false,
         })
     }
 
@@ -570,6 +592,142 @@ impl Expr {
             _ => None,
         }
     }
+}
+
+/// The expressions of the statements, outermost first and in evaluation
+/// order, without those inside them: what a statement expression holds,
+/// for `children`. Its declarations have their first values as `Init`.
+fn stmt_exprs<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Expr>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Expr(expr) | Stmt::Return(Some(expr)) => out.push(expr),
+            Stmt::Block(body) => stmt_exprs(body, out),
+            Stmt::If(cond, then, other) => {
+                out.push(cond);
+                stmt_exprs(then, out);
+                stmt_exprs(other, out);
+            }
+            Stmt::While(cond, body) | Stmt::Switch(cond, body) => {
+                out.push(cond);
+                stmt_exprs(body, out);
+            }
+            Stmt::DoWhile(body, cond) => {
+                stmt_exprs(body, out);
+                out.push(cond);
+            }
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                stmt_exprs(init, out);
+                out.extend(cond);
+                stmt_exprs(body, out);
+                out.extend(step);
+            }
+            Stmt::IfSome {
+                source,
+                then,
+                other,
+                ..
+            } => {
+                out.push(source);
+                stmt_exprs(then, out);
+                stmt_exprs(other, out);
+            }
+            Stmt::LetSome {
+                source, otherwise, ..
+            } => {
+                out.push(source);
+                stmt_exprs(otherwise, out);
+            }
+            Stmt::Parse { call, start, .. } => {
+                out.push(call);
+                out.extend(start.iter().map(|(start, _)| start));
+            }
+            Stmt::Decl(_)
+            | Stmt::Return(None)
+            | Stmt::Case(_)
+            | Stmt::Default
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Goto(_)
+            | Stmt::Label(_) => {}
+        }
+    }
+}
+
+fn stmt_exprs_mut<'a>(stmts: &'a mut [Stmt], out: &mut Vec<&'a mut Expr>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Expr(expr) | Stmt::Return(Some(expr)) => out.push(expr),
+            Stmt::Block(body) => stmt_exprs_mut(body, out),
+            Stmt::If(cond, then, other) => {
+                out.push(cond);
+                stmt_exprs_mut(then, out);
+                stmt_exprs_mut(other, out);
+            }
+            Stmt::While(cond, body) | Stmt::Switch(cond, body) => {
+                out.push(cond);
+                stmt_exprs_mut(body, out);
+            }
+            Stmt::DoWhile(body, cond) => {
+                stmt_exprs_mut(body, out);
+                out.push(cond);
+            }
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                stmt_exprs_mut(init, out);
+                out.extend(cond);
+                stmt_exprs_mut(body, out);
+                out.extend(step);
+            }
+            Stmt::IfSome {
+                source,
+                then,
+                other,
+                ..
+            } => {
+                out.push(source);
+                stmt_exprs_mut(then, out);
+                stmt_exprs_mut(other, out);
+            }
+            Stmt::LetSome {
+                source, otherwise, ..
+            } => {
+                out.push(source);
+                stmt_exprs_mut(otherwise, out);
+            }
+            Stmt::Parse { call, start, .. } => {
+                out.push(call);
+                out.extend(start.iter_mut().map(|(start, _)| start));
+            }
+            Stmt::Decl(_)
+            | Stmt::Return(None)
+            | Stmt::Case(_)
+            | Stmt::Default
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Goto(_)
+            | Stmt::Label(_) => {}
+        }
+    }
+}
+
+/// Whether the statements hold a statement expression with statements of
+/// its own, at any depth. A rewrite that cannot be right for a statement
+/// inside an expression leaves a function that holds one as it is.
+pub fn holds_statements(stmts: &[Stmt], vars: &[Var]) -> bool {
+    any_expr(
+        stmts,
+        vars,
+        &mut |expr| matches!(&expr.kind, ExprKind::Block { stmts, .. } if !stmts.is_empty()),
+    )
 }
 
 /// Whether the test holds for an expression in the statements, at any depth.
@@ -643,7 +801,8 @@ impl Expr {
             | ExprKind::Cast(inner)
             | ExprKind::Bits(inner)
             | ExprKind::Member { base: inner, .. }
-            | ExprKind::Assert { cond: inner, .. } => vec![inner],
+            | ExprKind::Assert { cond: inner, .. }
+            | ExprKind::Init { value: inner, .. } => vec![inner],
             ExprKind::Binary(_, left, right)
             | ExprKind::Comma(left, right)
             | ExprKind::Index(left, right)
@@ -655,6 +814,12 @@ impl Expr {
             ExprKind::Cond(cond, then, other) => vec![cond, then, other],
             ExprKind::Call(callee, args) => std::iter::once(&mut **callee).chain(args).collect(),
             ExprKind::InitList(items) => items.iter_mut().collect(),
+            ExprKind::Block { stmts, value } => {
+                let mut inside = Vec::new();
+                stmt_exprs_mut(stmts, &mut inside);
+                inside.extend(value.as_deref_mut());
+                inside
+            }
         }
     }
 

@@ -1101,3 +1101,25 @@ Entry format, newest last:
   as the result and every operand of a function
 - Changes: narrows R7's refusal of two arguments that point into the same
   memory
+## R35: a statement expression
+
+- C: Clang's statement expression `({ stmts; value; })` with a value of an
+  integer, floating-point, `_Bool` or enumeration type, in any position of
+  a value, nested, or as a statement of its own, with or without a value;
+  inside it declarations, expression statements, `if`, loops and `switch`
+- Rust: a block `{ stmts; value }` in the same position, and a block
+  statement `{ stmts; }` for one whose value nothing reads; one without
+  statements is its value. The block is a scope, as in C. A declaration
+  inside has its first value as `c::ExprKind::Init` after it, so that the
+  walks over expressions reach it, and is `let` with that value
+- Needs: the analysis reads the statements inside as those of the
+  function; `cursors`, `ends` and `narrow` leave a function that holds one
+  with statements as it is
+- Refused: a value that is a pointer, a record, an array or a function; no
+  value where one is needed; `return`, `goto`, a label, and a `break`,
+  `continue` or `case` that leaves the statement expression; a `static`
+  local, an array of variable length and a pointer without a first value
+  inside
+- Motivation: the development programs `g5_hm_geti`, `g5_intput`,
+  `g5_sh_puts` and `g5_str_put` expand macros into statement expressions
+- Changes: R34 reads its own expansion first
