@@ -6,7 +6,9 @@ use std::process::Command;
 
 /// Wraps agent-written code: no network, a read-only file system except
 /// `writable`, and a hidden home directory, where the private benchmarks and
-/// credentials live, except `readable`. Paths must be absolute. /run is
+/// credentials live, except `readable`. The temporary directory is hidden
+/// too: the evaluator's scratch directories there hold copies of the private
+/// programs and the translations of other programs. Paths must be absolute. /run is
 /// hidden too: the sockets of the user's systemd and D-Bus, Docker and WSL's
 /// interop there would each start a process outside the sandbox.
 pub(crate) fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) -> Command {
@@ -15,6 +17,12 @@ pub(crate) fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) ->
     command.args(["--tmpfs", "/tmp", "--tmpfs", "/run"]);
     if let Some(home) = std::env::var_os("HOME") {
         command.arg("--tmpfs").arg(home);
+    }
+    // TMPDIR may put the temporary directory elsewhere than /tmp.
+    let temp = std::env::temp_dir();
+    let temp = temp.canonicalize().unwrap_or(temp);
+    if temp != Path::new("/tmp") {
+        command.arg("--tmpfs").arg(temp);
     }
     for path in readable {
         command.arg("--ro-bind").arg(path).arg(path);

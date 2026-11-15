@@ -208,7 +208,9 @@ pub fn evaluate_all(
     Ok(records)
 }
 
-/// Evaluates one C program, using `work` as its scratch directory.
+/// Evaluates one C program, using `work` as its scratch directory. `work`
+/// gets a copy of the program, so it must be where the sandbox hides it:
+/// under the temporary directory or the home directory.
 pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
     let start = Instant::now();
     let name = c_file
@@ -273,7 +275,8 @@ fn stages(
         }
     };
     // The compiler and the transpiler read a copy under a fixed name, so that
-    // no command line names the program.
+    // no command line names the program. The sandbox hides the copy from
+    // every translation, as it hides the program.
     let source = work.join("c/program.c");
     if let Err(err) = std::fs::copy(c_file, &source) {
         return (Stage::CInvalid, format!("cannot copy the program: {err}"));
@@ -297,11 +300,7 @@ fn stages(
     }
 
     let rust_file = rust_dir.join("translation.rs");
-    let translated = translate(&record.name, &source, translator, &rust_file);
-    // Gone before the translation is compiled or run: a scratch directory
-    // outside /tmp and the home directory is not hidden from them.
-    let _ = std::fs::remove_file(&source);
-    if let Err(detail) = translated {
+    if let Err(detail) = translate(&record.name, &source, translator, &rust_file) {
         return (Stage::TranspileFail, detail);
     }
     let compiled = compile(&rust_file, &rust_program);

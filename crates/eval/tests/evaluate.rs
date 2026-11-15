@@ -316,7 +316,12 @@ fn the_process_list_never_names_the_program() {
                 for process in std::fs::read_dir("/proc").unwrap().flatten() {
                     let command = std::fs::read(process.path().join("cmdline")).unwrap_or_default();
                     let cwd = std::fs::read_link(process.path().join("cwd")).unwrap_or_default();
-                    if names(&command) || names(cwd.as_os_str().as_encoded_bytes()) {
+                    let environment =
+                        std::fs::read(process.path().join("environ")).unwrap_or_default();
+                    if names(&command)
+                        || names(cwd.as_os_str().as_encoded_bytes())
+                        || names(&environment)
+                    {
                         let command = String::from_utf8_lossy(&command).replace('\0', " ");
                         seen.insert(format!("{command} in {}", cwd.display()));
                     }
