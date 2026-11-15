@@ -680,6 +680,7 @@ int main(int argc, char **argv) {
         &[
             "let r = x.powf(y);",
             "if r.is_nan() && (!x.is_nan() && !y.is_nan()) {",
+            "} else if x.is_finite() && y.is_finite() && (r.is_infinite() || r == 0.0 && x != 0.0)",
             "let s = x.sqrt();",
         ],
     );

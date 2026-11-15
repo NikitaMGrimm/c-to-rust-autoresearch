@@ -535,9 +535,6 @@ What a third review found beside these, most frequent first:
   is only tested is a `bool`. Needs every store and read of it.
 - **A test before a loop with the same test.** `if s[at] != 0 { while s[at]
   != 0 { … } }` where nothing is between them and the test has no effect.
-- **A test that is written twice in what `errno` after `pow` becomes**:
-  `base.is_finite() && exponent.is_finite()` belongs before the two cases
-  it holds for.
 
 ## Known weak spots
 

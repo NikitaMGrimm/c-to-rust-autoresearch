@@ -733,9 +733,10 @@ Entry format, newest last:
   takes; a store to `r`, `x` or `y` ends what the reads may follow
 - Rust: the call as before, `x.powf(y)`, and each read a test of the
   values as glibc reports: for `pow`, `EDOM` where `r` is NaN and neither
-  argument is, `ERANGE` where `r` is infinite and both are finite, or `r`
-  is zero and `x` is finite and not zero and `y` finite; for `sqrt`, `EDOM`
-  where `x` is below zero. `r.is_nan() && (!x.is_nan() && !y.is_nan())`;
+  argument is, `ERANGE` where both are finite and `r` is infinite, or `r`
+  is zero and `x` is not; for `sqrt`, `EDOM` where `x` is below zero.
+  `r.is_nan() && (!x.is_nan() && !y.is_nan())`, `x.is_finite() &&
+  y.is_finite() && (r.is_infinite() || r == 0.0 && x != 0.0)`;
   a test of a constant is decided. Refused, as R37 refuses a read: a
   result that is converted, an argument that is an expression, a read
   after a store to one of them; `log`, `exp` and the other functions of

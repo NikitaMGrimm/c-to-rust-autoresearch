@@ -487,11 +487,11 @@ impl Errno<'_> {
                                 test("isnan", &result),
                                 and(not(test("isnan", x)), not(test("isnan", y))),
                             ),
-                            or(
-                                and(test("isinf", &result), finite.clone()),
-                                and(
-                                    and(compare(BinOp::Eq, &result), finite),
-                                    compare(BinOp::Ne, x),
+                            and(
+                                finite,
+                                or(
+                                    test("isinf", &result),
+                                    and(compare(BinOp::Eq, &result), compare(BinOp::Ne, x)),
                                 ),
                             ),
                         )
