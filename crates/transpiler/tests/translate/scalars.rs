@@ -686,3 +686,56 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn div_is_a_record_of_the_quotient_and_the_remainder() {
+    let rust = check(
+        "div",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+static ldiv_t halves(long n) { return ldiv(n, 2); }
+int main(int argc, char *argv[]) {
+    if (argc != 3) return 2;
+    int x = atoi(argv[1]), y = atoi(argv[2]);
+    div_t result = div(x, y);
+    div_t copy = result;
+    copy.rem += 1;
+    long big = atol(argv[1]);
+    ldiv_t wide = ldiv(big * 100000L, 7L - y);
+    lldiv_t wider = lldiv(-9000000000LL, (long long)y);
+    printf("%d %d %d\n", result.quot, result.rem, copy.rem);
+    ldiv_t half = halves(x);
+    div_t third = div(x + 1, 3);
+    printf("%ld %ld %ld\n", wide.quot, wide.rem, half.rem);
+    printf("%lld %lld %d\n", wider.quot, wider.rem, third.quot);
+    return 0;
+}
+"#,
+        &[
+            &["7", "2"],
+            &["-7", "2"],
+            &["7", "-2"],
+            &["-7", "-2"],
+            &["0", "5"],
+        ],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "struct DivT {",
+            "quot: i32,",
+            "struct LdivT {",
+            "let result = DivT { quot: x / y, rem: x % y };",
+        ],
+    );
+    assert_eq!(
+        translate(
+            "div_effect",
+            "#include <stdio.h>\n#include <stdlib.h>\nint main(void) {\n    int n = 7;\n    div_t d = div(n++, 2);\n    printf(\"%d\\n\", d.quot + n);\n    return 0;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: `div` of a value with a side effect: no rule yet, at line 5"
+    );
+}

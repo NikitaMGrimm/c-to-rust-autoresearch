@@ -238,7 +238,13 @@ impl Reader<'_> {
             self.tags.insert(tag, id);
         }
         self.records.insert(text(decl, "id").to_owned(), id);
-        if !own || decl["completeDefinition"] != true {
+        // The library's `div_t` and its like are read too: `div` has a rule.
+        let members = children(decl)
+            .iter()
+            .filter(|member| kind(member) == "FieldDecl")
+            .map(|member| text(member, "name"));
+        let quotient = !own && members.eq(["quot", "rem"]);
+        if !(own || quotient) || decl["completeDefinition"] != true {
             return Ok(());
         }
         // Records are found by tag, so a tag has one meaning in the whole
@@ -246,7 +252,7 @@ impl Reader<'_> {
         if !self.defined.insert(id) {
             return unsupported(format!("the tag `{name}` with two meanings"), decl);
         }
-        self.program.records[id].own = true;
+        self.program.records[id].own = own;
         for member in children(decl) {
             match kind(member) {
                 "FieldDecl" => {

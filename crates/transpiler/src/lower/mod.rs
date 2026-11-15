@@ -682,6 +682,9 @@ struct Lower<'a> {
     /// exit code.
     exits: bool,
     nesting: Vec<Nest>,
+    /// The library's records that the translation names: `div_t` and its
+    /// like.
+    quotients: std::cell::RefCell<BTreeSet<usize>>,
     /// Where a listing collects the refusals, which then do not end the
     /// translation.
     listing: Option<&'a mut Listing>,
@@ -700,6 +703,7 @@ impl<'a> Lower<'a> {
             argv: None,
             exits: false,
             nesting: Vec::new(),
+            quotients: Default::default(),
             listing,
         }
     }
@@ -791,6 +795,9 @@ pub fn program(program: &Program, facts: &Facts) -> R<syn::File> {
         items.push(parse_quote!(const #name: i32 = #value;));
     }
     items.extend(constants);
+    for id in lower.quotients.take() {
+        items.extend(lower.record(id)?);
+    }
     items.extend(records);
     items.extend(state.map(|(item, _)| item));
     items.extend(functions);

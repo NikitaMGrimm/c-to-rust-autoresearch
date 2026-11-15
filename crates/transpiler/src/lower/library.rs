@@ -157,6 +157,29 @@ impl Lower<'_> {
                 self.parse_float(text, &call.ty, at)
             }
             ("atof", [text]) => self.parse_float(text, &call.ty, at),
+            // R44: the quotient and the remainder as a record. C divides
+            // towards zero, as Rust does.
+            ("div" | "ldiv" | "lldiv", [number, by]) => {
+                let Type::Record(record) = call.ty else {
+                    return unsupported(
+                        format!("this call of the library's `{name}`: no rule yet"),
+                        at,
+                    );
+                };
+                if !number.is_pure() || !by.is_pure() {
+                    return unsupported(
+                        format!("`{name}` of a value with a side effect: no rule yet"),
+                        at,
+                    );
+                }
+                let ty = self.ty(&call.ty, at)?;
+                let (number, by) = (self.expr(number)?, self.expr(by)?);
+                let quot = rust::ident(self.names.field(record, 0));
+                let rem = rust::ident(self.names.field(record, 1));
+                let quotient = rust::binary(number.clone(), "/", by.clone());
+                let remainder = rust::binary(number, "%", by);
+                Ok(parse_quote!(#ty { #quot: #quotient, #rem: #remainder }))
+            }
             ("atoi", [text]) => Ok(rust::cast(self.parse_int(text)?, parse_quote!(i32))),
             ("atol" | "atoll", [text]) => self.parse_int(text),
             _ => unsupported(

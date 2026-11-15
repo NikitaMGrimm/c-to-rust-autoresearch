@@ -33,8 +33,13 @@ impl Lower<'_> {
             }
             Type::Record(id) => {
                 let record = &self.program.records[*id];
-                if !record.own {
+                // R44: `div_t` is a record of the translation, written
+                // where the program names it.
+                if !record.own && record.fields.is_empty() {
                     return unsupported(format!("the library's `{}`", record.name), at);
+                }
+                if !record.own {
+                    self.quotients.borrow_mut().insert(*id);
                 }
                 let name = rust::ident(self.names.record(*id));
                 parse_quote!(#name)

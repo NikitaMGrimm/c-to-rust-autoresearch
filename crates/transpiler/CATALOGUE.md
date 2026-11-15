@@ -735,3 +735,20 @@ Entry format, newest last:
 - Motivation: `g1_007_errno_pow` tests `errno` after `pow`
 - Changes: extends R37; a constant on which `pow`, `sqrt` and their like
   call a method has its type, `10.0f64.powf(x)`, which Rust does not infer
+
+## R44: `div`
+
+- C: `div(x, y)`, `ldiv` and `lldiv`, and their results `div_t`, `ldiv_t`
+  and `lldiv_t` with the members `quot` and `rem`, as a local, a
+  parameter, a result or a field
+- Rust: `DivT { quot: x / y, rem: x % y }`, a record that the translation
+  writes once where the program names the type, `struct DivT { quot: i32,
+  rem: i32 }` with `Clone`, `Copy` and `Default`. C divides towards zero, as
+  Rust does. A division by zero and `INT_MIN / -1`, undefined in C, stop
+  the program. Refused: an argument with a side effect, which the two
+  divisions would repeat
+- Needs: the front end reads the members of a record from a header whose
+  members are `quot` and `rem`
+- Motivation: `g1_022_stdlib_div` was refused for a member of a record from
+  a header
+- Changes: nothing
