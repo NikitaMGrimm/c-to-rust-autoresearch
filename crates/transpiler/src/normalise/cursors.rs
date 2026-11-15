@@ -1031,3 +1031,217 @@ pub(super) fn as_index(number: &Expr, program: &Program) -> Expr {
         at: number.at,
     }
 }
+
+/// Where a function steps a cursor before the start of its array, if the
+/// statements show that it does: the index is known to be 0 where it is
+/// stepped back, or it is tested for being before the start, which only
+/// such a step decides. C leaves the step undefined and compiled C runs
+/// on, where an index of Rust stops the program. The index is followed
+/// through statements that run one after the other; a loop, a label or
+/// a statement that this walk does not read forgets it.
+pub fn steps_before(program: &Program, body: &[Stmt]) -> Option<u32> {
+    let mut steps = Steps {
+        program,
+        known: HashMap::new(),
+        found: None,
+    };
+    steps.stmts(body);
+    steps.found
+}
+
+struct Steps<'a> {
+    program: &'a Program,
+    known: HashMap<VarId, i128>,
+    found: Option<u32>,
+}
+
+impl Steps<'_> {
+    fn cursor(&self, place: &Expr) -> Option<VarId> {
+        match place.kind {
+            ExprKind::Var(var) if place.ty == Type::Index => Some(var),
+            _ => None,
+        }
+    }
+
+    fn value(&self, index: &Expr) -> Option<i128> {
+        if let Some(value) = index.constant(self.program) {
+            return Some(value);
+        }
+        match &index.kind {
+            ExprKind::Var(var) => self.known.get(var).copied(),
+            ExprKind::Cast(inner) => self.value(inner),
+            ExprKind::Binary(BinOp::Add, left, right) => {
+                Some(self.value(left)? + self.value(right)?)
+            }
+            ExprKind::Binary(BinOp::Sub, left, right) => {
+                Some(self.value(left)? - self.value(right)?)
+            }
+            _ => None,
+        }
+    }
+
+    fn set(&mut self, var: VarId, value: Option<i128>, at: u32) {
+        match value {
+            Some(value) if value < 0 => {
+                self.found.get_or_insert(at);
+                self.known.remove(&var);
+            }
+            Some(value) => {
+                self.known.insert(var, value);
+            }
+            None => {
+                self.known.remove(&var);
+            }
+        }
+    }
+
+    /// Keeps what two paths agree on.
+    fn join(&mut self, other: HashMap<VarId, i128>) {
+        self.known
+            .retain(|var, value| other.get(var) == Some(value));
+    }
+
+    fn expr(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Assign { op, target, value } => {
+                self.expr(value);
+                let Some(var) = self.cursor(target) else {
+                    self.expr(target);
+                    return;
+                };
+                let old = self.known.get(&var).copied();
+                let new = match op {
+                    None => self.value(value),
+                    Some((BinOp::Add, _)) => old.zip(self.value(value)).map(|(old, by)| old + by),
+                    Some((BinOp::Sub, _)) => old.zip(self.value(value)).map(|(old, by)| old - by),
+                    Some(_) => None,
+                };
+                self.set(var, new, expr.at);
+            }
+            ExprKind::IncDec {
+                target, increment, ..
+            } => match self.cursor(target) {
+                Some(var) => {
+                    let by = if *increment { 1 } else { -1 };
+                    let new = self.known.get(&var).map(|old| old + by);
+                    self.set(var, new, expr.at);
+                }
+                None => self.expr(target),
+            },
+            ExprKind::Binary(BinOp::And | BinOp::Or, left, right) => {
+                self.expr(left);
+                let before = self.known.clone();
+                self.expr(right);
+                self.join(before);
+            }
+            ExprKind::Cond(test, then, other) => {
+                self.expr(test);
+                let before = self.known.clone();
+                self.expr(then);
+                let after = std::mem::replace(&mut self.known, before);
+                self.expr(other);
+                self.join(after);
+            }
+            ExprKind::Binary(op, left, right) if op.is_comparison() => {
+                let start = |index: &Expr| {
+                    index.ty == Type::Index && matches!(index.kind, ExprKind::Int(0))
+                };
+                let before = match (left.ty == Type::Index, right.ty == Type::Index) {
+                    (true, _) if start(right) => matches!(op, BinOp::Ge | BinOp::Lt),
+                    (_, true) if start(left) => matches!(op, BinOp::Le | BinOp::Gt),
+                    _ => false,
+                };
+                if before {
+                    self.found.get_or_insert(expr.at);
+                }
+                self.expr(left);
+                self.expr(right);
+            }
+            ExprKind::Block { stmts, value } => {
+                self.stmts(stmts);
+                if let Some(value) = value {
+                    self.expr(value);
+                }
+            }
+            _ => {
+                for child in expr.children() {
+                    self.expr(child);
+                }
+            }
+        }
+    }
+
+    fn stmts(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            self.stmt(stmt);
+        }
+    }
+
+    /// The statements of a loop run again, from any of its states.
+    fn repeated(&mut self, run: impl FnOnce(&mut Self)) {
+        self.known.clear();
+        run(self);
+        self.known.clear();
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        let leaves = |stmts: &[Stmt]| {
+            matches!(
+                stmts.last(),
+                Some(Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Goto(_))
+            )
+        };
+        match stmt {
+            Stmt::Expr(expr) | Stmt::Return(Some(expr)) => self.expr(expr),
+            Stmt::Decl(var) => {
+                let declared = &self.program.vars[*var];
+                if let Some(init) = &declared.init {
+                    self.expr(init);
+                    if declared.ty == Type::Index {
+                        let value = self.value(init);
+                        self.set(*var, value, init.at);
+                    }
+                }
+            }
+            Stmt::Block(stmts) => self.stmts(stmts),
+            Stmt::If(test, then, other) => {
+                self.expr(test);
+                let before = self.known.clone();
+                self.stmts(then);
+                let after = std::mem::replace(&mut self.known, before);
+                self.stmts(other);
+                match (leaves(then), leaves(other)) {
+                    (true, _) => {}
+                    (false, true) => self.known = after,
+                    (false, false) => self.join(after),
+                }
+            }
+            Stmt::While(test, body) | Stmt::DoWhile(body, test) => self.repeated(|steps| {
+                steps.expr(test);
+                steps.stmts(body);
+            }),
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                self.stmts(init);
+                self.repeated(|steps| {
+                    for expr in cond.iter().chain(step) {
+                        steps.expr(expr);
+                    }
+                    steps.stmts(body);
+                });
+            }
+            Stmt::Switch(value, body) => {
+                self.expr(value);
+                self.repeated(|steps| steps.stmts(body));
+            }
+            Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Return(None) => {}
+            // A jump may arrive at a label, and the other statements hold
+            // statements that this walk does not read.
+            _ => self.known.clear(),
+        }
+    }
+}

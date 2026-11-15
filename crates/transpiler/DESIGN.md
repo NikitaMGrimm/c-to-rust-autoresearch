@@ -226,7 +226,12 @@ to C, before the pointers are analysed:
 
 An index is a `usize`, and its arithmetic is Rust's: stepping before the
 array is undefined in C and stops the program in Rust, and the end of the
-array is a valid index for both. An offset that is signed and not a constant
+array is a valid index for both. Compiled C runs on after such a step, so
+a function is refused where its statements show one
+(`normalise::steps_before`): the index is known to be 0 where it is
+stepped back, followed through the statements that run one after the
+other, or the cursor is tested for being before the start of its array,
+as in `for (p = end - 1; p >= a; p--)`, which only such a step decides. An offset that is signed and not a constant
 is added with `wrapping_add_signed`, which gives the same index whenever
 C's result is inside the array. Two pointers into different arrays have no
 order in C, and their comparison stays refused.
@@ -701,9 +706,10 @@ become a fact and a refusal:
 - A pointer into the middle of an array that is no cursor is the rest of
   the array from there (`&a[1..]`), so an index or a step back before it
   (`p[-1]`) stops the program where C reads the element.
-- A cursor that steps one before its array, as the last `p--` of
-  `for (p = end - 1; p >= a; p--)` does, stops the program there. C leaves
-  that undefined, the sanitizers do not report it, and compiled C runs on.
+- A cursor that steps one before its array stops the program there. C
+  leaves that undefined, the sanitizers do not report it, and compiled C
+  runs on. It is refused where the statements show it (see Cursors), and
+  not where the index is 0 only for some inputs, or after a loop.
 - `%c`, `%s` of a program argument and `argv` assume ASCII; C passes any
   bytes through. `text_of` prints bytes that are not UTF-8 as U+FFFD.
 - A conversion from a floating-point number to an integer saturates in Rust

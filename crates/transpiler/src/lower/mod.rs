@@ -1415,6 +1415,9 @@ impl Lower<'_> {
                 );
             }
         }
+        if let Some(at) = crate::normalise::steps_before(self.program, stmts) {
+            self.listed(unsupported("a cursor that steps before its array", at))?;
+        }
         if let Some(at) = self.function.and_then(|id| self.facts.in_use(id)) {
             self.listed(unsupported(
                 "a variable that is used while a pointer to it is in use",

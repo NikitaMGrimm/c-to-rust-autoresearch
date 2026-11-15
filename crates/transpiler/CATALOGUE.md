@@ -455,7 +455,11 @@ Entry format, newest last:
   offset that is no constant is added with `wrapping_add_signed`. Left as
   they are, and so refused: pointers that walk no single array, whose
   array is named by an expression that may come to mean other memory, or
-  whose address is taken; a comparison of pointers into two arrays
+  whose address is taken; a comparison of pointers into two arrays.
+  Refused: a function whose statements step a cursor before the start of
+  its array, where the index is known to be 0, or test whether it is
+  before the start (`p >= a`), which compiled C runs through and an index
+  of Rust does not
 - Needs: the rewrite `normalise::cursors` and `Type::Index`; the analysis
   counts text that a library function reads as an array
 - Motivation: `g3_maxnmin` was refused for `++` on a pointer, `g3_jumpnode`

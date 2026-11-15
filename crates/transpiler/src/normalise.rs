@@ -48,7 +48,7 @@ mod same;
 mod unions;
 mod voids;
 
-pub use cursors::cursors;
+pub use cursors::{cursors, steps_before};
 pub use ends::ends;
 pub use found::{SEARCHES, found, is_search};
 pub use same::same;

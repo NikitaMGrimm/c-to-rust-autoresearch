@@ -228,3 +228,61 @@ fn a_pointer_that_walks_no_single_array_is_refused() {
         "unsupported: `++` or `--` on a pointer: no rule yet, at line 4"
     );
 }
+
+#[test]
+fn a_cursor_that_steps_before_its_array_is_refused() {
+    let refused = |name, body: &str| {
+        let c = format!(
+            "#include <stdio.h>\nint main(void) {{\n    int a[3] = {{4, 5, 6}};\n    int sum = 0;\n{body}    printf(\"%d\\n\", sum);\n    return 0;\n}}\n"
+        );
+        translate(name, &c).unwrap_err()
+    };
+    // The last `p--` leaves the pointer before `a`, and only that ends
+    // the loop.
+    assert_eq!(
+        refused("down", "    for (int *p = a + 2; p >= a; p--) sum += *p;\n"),
+        "unsupported: a cursor that steps before its array, at line 5"
+    );
+    // The second step back is from the first element.
+    assert_eq!(
+        refused(
+            "twice",
+            "    int *p = &a[1];\n    sum += *(p--);\n    sum += *(p--);\n"
+        ),
+        "unsupported: a cursor that steps before its array, at line 7"
+    );
+    assert_eq!(
+        refused(
+            "by_two",
+            "    int *p = a;\n    p++;\n    if (sum == 0) p -= 2;\n    p += 2;\n    sum += *p;\n"
+        ),
+        "unsupported: a cursor that steps before its array, at line 7"
+    );
+}
+
+#[test]
+fn a_cursor_that_steps_back_inside_its_array_stays() {
+    let rust = check(
+        "back",
+        r#"
+#include <stdio.h>
+int main(void) {
+    int a[3] = {4, 5, 6};
+    int sum = 0;
+    int *p = &a[2];
+    sum += *(p--);
+    sum += *(p--);
+    sum += *p;
+    for (int *q = a + 3; q > a;) {
+        q--;
+        sum += *q;
+    }
+    printf("%d\n", sum);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["let mut p: usize = 2;", "q -= 1;"]);
+}
