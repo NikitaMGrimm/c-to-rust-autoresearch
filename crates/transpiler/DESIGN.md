@@ -514,8 +514,6 @@ keeps C's promotions, checked arithmetic and the input it consumes:
   array. Where the return is under the loop's test `p < end`, the cursor
   is an element, `&a[p]`, and the caller reads `found.value`. Needs the
   range that the test proves, up to the return.
-- **Two ranges for one.** `b[1..][..2]` for a copy of a count from an
-  offset (R29) is `b[1..3]` where both are constants.
 
 What a third review found beside these, most frequent first:
 

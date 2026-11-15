@@ -658,7 +658,28 @@ impl Lower<'_> {
             },
             _ => false,
         };
-        let slice = self.slice(pointer.uncast(), write)?;
+        // `b[1..3]` rather than `b[1..][..2]` where both are constants.
+        let pointer = pointer.uncast();
+        let offset = match &pointer.kind {
+            ExprKind::Binary(BinOp::Add, left, right) => match left.ty.is_pointer() {
+                true => Some((&**left, &**right)),
+                false => Some((&**right, &**left)),
+            },
+            ExprKind::AddrOf(place) => match &place.kind {
+                ExprKind::Index(base, index) => Some((&**base, &**index)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let (Some((base, start)), Ok(count @ 0..)) = (offset, count)
+            && let Some(start @ 0..) = start.constant(self.program)
+            && let Some(end) = start.checked_add(count)
+        {
+            let slice = self.slice(base, write)?;
+            let range = rust::range(rust::int(start, ""), rust::int(end, ""));
+            return Ok(rust::index(slice, range));
+        }
+        let slice = self.slice(pointer, write)?;
         Ok(match (whole, count) {
             (true, _) => slice,
             (false, Ok(count @ 0..)) => rust::index(slice, rust::until(rust::int(count, ""))),

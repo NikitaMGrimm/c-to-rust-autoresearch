@@ -105,6 +105,7 @@ int main(int argc, char *argv[]) {
     struct buffer d = {3, "xyz"};
     memcpy(b, a, sizeof(a));
     memcpy(b + 1, a + 3, 2 * sizeof(int));
+    memcpy(b + argc, a + 1, 2 * sizeof(int));
     copy_ints(b + 4, a, argc);
     memcpy(y, x, sizeof(double) * 3);
     printf("%d ", backup.count);
@@ -135,7 +136,8 @@ int main(int argc, char *argv[]) {
             "to[..n as usize].copy_from_slice(&from[..n as usize]);",
             "values.copy_within(..(length - by) as usize, by as usize);",
             "b.copy_from_slice(&a);",
-            "b[1..][..2].copy_from_slice(&a[3..][..2]);",
+            "b[1..3].copy_from_slice(&a[3..5]);",
+            "b[args.len() as i32 as usize..][..2].copy_from_slice(&a[1..3]);",
             "y.copy_from_slice(&x);",
             "backup = now;",
             "list[0] = backup;",

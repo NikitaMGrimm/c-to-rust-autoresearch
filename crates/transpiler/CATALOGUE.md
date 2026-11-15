@@ -515,7 +515,8 @@ Entry format, newest last:
   element's size or `count * sizeof(element)`; `sizeof` of the element's
   own type is one element also for a record with bit-fields, whose size the
   translation does not compute
-- Rust: `b[1..][..2].copy_from_slice(&a[3..][..2])`, with the whole array
+- Rust: `b[i..][..2].copy_from_slice(&a[3..5])`, with one range where the
+  offset and the count are constants and the whole array
   where the count is its length, `b.copy_from_slice(&a)`, and
   `&b"text\0"[..3]` for a string literal; `backup = now` and
   `c.data[i as usize] = s[0]` for one element where a side points to one;

@@ -123,7 +123,7 @@ int main(void) {
         &[
             "while read_line(&mut line) {",
             "if !read_line(&mut rest[..4]) {",
-            "read_line(&mut rest[3..][..29]);",
+            "read_line(&mut rest[3..32]);",
         ],
     );
 }

@@ -280,7 +280,7 @@ int main(int argc, char *argv[]) {
         &rust,
         &[
             "source[..19].fill(b'x');",
-            "source[10..][..3].fill((args.len() as i32 + 48) as u8);",
+            "source[10..13].fill((args.len() as i32 + 48) as u8);",
             "copy_text(&mut target[..count as usize], &source);",
             "copy_text(&mut small, b\"ab\\0\");",
             "copy_text(&mut small[..3], b\"abcdefgh\\0\");",
