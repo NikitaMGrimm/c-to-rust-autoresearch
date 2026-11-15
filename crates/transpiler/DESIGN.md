@@ -519,9 +519,6 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 
 What a third review found beside these, most frequent first:
 
-- **A helper's fallback for what cannot happen.** `format_e` and `format_g`
-  read the exponent of Rust's own `{:e}` with `unwrap_or`; `expect` says
-  that the text always has one.
 - **A function's value as `return` in both branches of its last `if`**, or
   as a local that the last statement only returns: the `if` and the
   expression are the value.

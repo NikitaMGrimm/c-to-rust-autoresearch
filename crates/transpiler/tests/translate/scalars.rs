@@ -314,6 +314,8 @@ int main(int argc, char *argv[]) {
             "format_g(narrow as f64, 9),",
             "format_e(wide, 0),",
             "fn format_g(value: f64, precision: usize) -> String {",
+            "let exponent: i32 = exponent.parse().expect(\"an exponent is an integer\");",
+            "let power: i32 = exponent.parse().expect(\"an exponent is an integer\");",
         ],
     );
 }

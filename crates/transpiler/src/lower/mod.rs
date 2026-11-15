@@ -505,8 +505,8 @@ impl Helper {
                         return format!("{sign}{name}");
                     }
                     let text = format!("{value:.precision$e}");
-                    let (digits, exponent) = text.split_once('e').unwrap_or((&text, "0"));
-                    let exponent: i32 = exponent.parse().unwrap_or(0);
+                    let (digits, exponent) = text.split_once('e').expect("a finite number has an exponent");
+                    let exponent: i32 = exponent.parse().expect("an exponent is an integer");
                     let sign = if exponent < 0 { '-' } else { '+' };
                     format!("{digits}e{sign}{:02}", exponent.abs())
                 }
@@ -526,7 +526,7 @@ impl Helper {
                         true => digits.trim_end_matches('0').trim_end_matches('.').to_owned(),
                         false => digits.to_owned(),
                     };
-                    let power: i32 = exponent.parse().unwrap_or(0);
+                    let power: i32 = exponent.parse().expect("an exponent is an integer");
                     if power < -4 || power >= precision as i32 {
                         return format!("{}e{exponent}", trimmed(digits));
                     }
