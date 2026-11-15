@@ -1198,3 +1198,33 @@ Entry format, newest last:
 - Changes: R3 refused them (`` `continue` in a `do` loop ``, `` `continue`
   in a `for` loop that is not a count ``)
 
+## R56: records and enumerations without a tag
+
+- C: a record, a union or an enumeration without a tag, as the type of a
+  variable, local or global, of several variables of one declaration
+  (`struct { int x; } a, b;`), of an array, a pointer or a field
+  (`struct s { struct { int a; } in; }`), and an anonymous member of a
+  record (C11), `struct s { int kind; struct { int a; int b; }; }`
+- Rust: the record is a `struct` named after the variable or field that
+  is the first to have it, in camel case (`Point`); where the name is
+  taken, a field's record takes the name of the record that holds it in
+  front (`ShapeOrigin`) and a variable's an `_` (`Cell_`). A record, with
+  a tag or without, that would have a name of Rust's prelude gets an `_`
+  as well (`Box_`, `Option_`), since it would hide that type. An anonymous
+  member is a field named `anonymous` whose type is the record, and a use
+  of one of its members goes through it, `v.anonymous.a`, as Clang writes
+  the use. Two records without a tag that look the same are two types. A
+  union is translated as R33 translates one with a tag, an enumeration as
+  R2 does, and the rules for records apply from there
+- Needs: nothing
+- Refused: a type without a tag in a function's parameters or result,
+  `` a type without a tag in a function's parameters or result ``; a union
+  that is not the bits of a number, as with a tag; a type without a tag
+  that no declaration after it names, such as one inside `sizeof` or a
+  cast, as `` the type `struct (unnamed at …)` ``
+- Motivation: programs outside the development set declare variables and
+  fields of types without a tag; no development program needs it
+- Changes: the front end finds a type without a tag by the place of its
+  declaration, which replaces R33's reading of a union without a tag right
+  before the declaration that uses it, and no longer refuses a member of an
+  anonymous record

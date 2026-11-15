@@ -73,11 +73,21 @@ struct Reader<'a> {
     locals: HashMap<String, Vec<VarId>>,
     /// The names declared in each block that is open.
     scopes: Vec<Vec<String>>,
-    /// The union without a tag that was read last and that no type names
-    /// yet.
-    unnamed: Option<RecordId>,
+    /// The record or enumeration without a tag that was read last, which
+    /// the declaration after it is the first to use, and the line and
+    /// column of its declaration.
+    unnamed: Option<(Untagged, Option<u64>, u64)>,
     /// How many statement expressions the reader is in.
     in_block: usize,
+}
+
+/// A record or an enumeration without a tag. Clang names its type only with
+/// the place of its declaration, `struct (unnamed at FILE:4:2)`, which
+/// `tokens` reads as the tag `(FILE:4:2)`.
+#[derive(Clone)]
+enum Untagged {
+    Record(RecordId),
+    Enum(Type),
 }
 
 /// Whether an attribute of this kind changes where a record's members lie.
@@ -127,6 +137,16 @@ fn own(decl: &Value) -> bool {
         && [loc, &loc["spellingLoc"], &loc["expansionLoc"]]
             .iter()
             .all(|loc| loc["includedFrom"].is_null())
+}
+
+/// The line of a declaration, which Clang leaves out where it is the line
+/// of the location it printed before.
+fn line(decl: &Value) -> Option<u64> {
+    decl["loc"]["line"].as_u64()
+}
+
+fn column(decl: &Value) -> u64 {
+    decl["loc"]["col"].as_u64().unwrap_or(0)
 }
 
 fn unsupported<T>(what: impl Into<String>, node: &Value) -> R<T> {
@@ -203,6 +223,25 @@ impl Reader<'_> {
         Ok(())
     }
 
+    /// Names a record without a tag after the variable or field that is the
+    /// first to have it, or a pointer to it or an array of it. A field's
+    /// record keeps the record that holds it, for a name of both.
+    fn name_untagged(&mut self, ty: &Type, name: &str, within: Option<RecordId>) {
+        let mut ty = ty;
+        while let Type::Pointer(inner) | Type::Array(inner, _) = ty {
+            ty = inner;
+        }
+        if let Type::Record(id) = *ty
+            && let record = &mut self.program.records[id]
+            && record.name.is_empty()
+            && record.own
+        {
+            record.name = name.to_owned();
+            record.untagged = true;
+            record.within = within;
+        }
+    }
+
     /// The type of a type node, which Clang prints only below a typedef.
     fn type_node(&mut self, node: &Value) -> Result<Type, String> {
         let inner = children(node).first();
@@ -243,6 +282,8 @@ impl Reader<'_> {
                 union,
                 fields: Vec::new(),
                 own: false,
+                untagged: false,
+                within: None,
             });
             self.program.records.len() - 1
         });
@@ -274,9 +315,15 @@ impl Reader<'_> {
                     {
                         return unsupported("a member with its own alignment", member);
                     }
+                    let ty = self.ty(member)?;
+                    let field_name = match text(member, "name") {
+                        "" => "anonymous",
+                        named => named,
+                    };
+                    self.name_untagged(&ty, field_name, Some(id));
                     let field = Field {
                         name: text(member, "name").to_owned(),
-                        ty: self.ty(member)?,
+                        ty,
                         bits: children(member)
                             .first()
                             .filter(|_| member["isBitfield"] == true)
@@ -289,17 +336,17 @@ impl Reader<'_> {
                 }
                 "RecordDecl" => self.record(member, true)?,
                 "EnumDecl" => self.enumeration(member)?,
-                "IndirectFieldDecl" => {
-                    return unsupported("a member of an unnamed struct or union", member);
-                }
+                // Clang writes a use of a member of an anonymous record as
+                // a use of the record's field.
+                "IndirectFieldDecl" => {}
                 attribute if changes_layout(attribute) => {
                     return unsupported("a record that is packed or aligned", decl);
                 }
                 _ => {}
             }
         }
-        if name.is_empty() && union {
-            self.unnamed = Some(id);
+        if name.is_empty() {
+            self.unnamed = Some((Untagged::Record(id), line(decl), column(decl)));
         }
         Ok(())
     }
@@ -355,6 +402,9 @@ impl Reader<'_> {
                 }
                 self.enums.insert(tag, ty.clone());
             }
+            if text(decl, "name").is_empty() && own(decl) {
+                self.unnamed = Some((Untagged::Enum(ty.clone()), line(decl), column(decl)));
+            }
             self.enums.insert(text(decl, "id").to_owned(), ty);
         }
         Ok(())
@@ -370,6 +420,7 @@ impl Reader<'_> {
             Some(id) => id,
             None => {
                 let ty = self.ty(decl)?;
+                self.name_untagged(&ty, name, None);
                 let len = match (&ty, storage) {
                     (Type::Array(_, None), VarKind::Local) => Some(self.length(decl)?),
                     _ => None,
@@ -455,6 +506,13 @@ impl Reader<'_> {
             return Ok(());
         };
         self.reading = text(decl, "name").to_owned();
+        let spelled = text(&decl["type"], "qualType");
+        if spelled.contains("(unnamed ") || spelled.contains("(anonymous ") {
+            return unsupported(
+                "a type without a tag in a function's parameters or result",
+                decl,
+            );
+        }
         let ret = match self.ty(decl)? {
             Type::Function { ret, .. } => *ret,
             _ => return unsupported("a function without a function type", decl),
@@ -903,15 +961,44 @@ impl Reader<'_> {
 
     fn type_of(&mut self, ty: &Value, node: &Value) -> R<Type> {
         let spelled = text(ty, "qualType");
-        // A union without a tag has only the name that Clang prints for
-        // it, and the declaration right after it is the first to use it.
-        if let Some(id) = self.unnamed.take()
-            && spelled.starts_with("union (unnamed ")
-            && spelled.ends_with(')')
-        {
-            self.types
-                .entry(spelled.to_owned())
-                .or_insert(Ok(Type::Record(id)));
+        // A type without a tag has only the place of its declaration for a
+        // name, and the declaration right after it is the first to use it.
+        // The column, and the line where Clang prints it, make sure that it
+        // is that one.
+        if let Some((untagged, line, column)) = self.unnamed.clone() {
+            let places = [Some(spelled), ty["desugaredQualType"].as_str()];
+            let place = places.into_iter().flatten().find_map(|spelled| {
+                tokens(spelled)?.into_iter().find_map(|token| match token {
+                    Token::Word(word) if word.starts_with('(') => {
+                        let mut parts = word.trim_end_matches(')').rsplit(':');
+                        let (at, row) = (parts.next()?, parts.next()?);
+                        let bound = ["struct", "union"]
+                            .iter()
+                            .any(|tag| self.tags.contains_key(&format!("{tag} {word}")))
+                            || self.enums.contains_key(&format!("enum {word}"));
+                        let found = at.parse() == Ok(column)
+                            && line.is_none_or(|line| row.parse() == Ok(line));
+                        (found && !bound).then_some(word)
+                    }
+                    _ => None,
+                })
+            });
+            if let Some(place) = place {
+                self.unnamed = None;
+                match untagged {
+                    Untagged::Record(id) => {
+                        let tag = if self.program.records[id].union {
+                            "union"
+                        } else {
+                            "struct"
+                        };
+                        self.tags.insert(format!("{tag} {place}"), id);
+                    }
+                    Untagged::Enum(ty) => {
+                        self.enums.insert(format!("enum {place}"), ty);
+                    }
+                }
+            }
         }
         let mut read = self.type_str(spelled);
         if read.is_err()
@@ -1194,6 +1281,18 @@ fn tokens(spelled: &str) -> Option<Vec<Token>> {
     while let Some(first) = rest.chars().next() {
         let length = match first {
             ' ' => 1,
+            // `s::(anonymous at FILE:3:2)`: a record without a tag, by
+            // the place of its declaration, whatever record holds it.
+            ':' if rest.starts_with("::") => {
+                tokens.pop_if(|token| matches!(token, Token::Word(_)))?;
+                2
+            }
+            '(' if rest.starts_with("(unnamed ") || rest.starts_with("(anonymous ") => {
+                let (_, place) = rest.split_once(" at ")?;
+                let end = place.find(')')?;
+                tokens.push(Token::Word(format!("({})", &place[..end])));
+                rest.len() - place.len() + end + 1
+            }
             '*' | '(' | ')' | '[' | ']' | ',' => {
                 tokens.push(Token::Punct(first));
                 1

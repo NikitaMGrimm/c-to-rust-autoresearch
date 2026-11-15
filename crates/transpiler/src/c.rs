@@ -70,6 +70,12 @@ pub struct Record {
     pub fields: Vec<Field>,
     /// Whether the program's own file defines it.
     pub own: bool,
+    /// Whether C gives it no tag, so that it is named after the variable
+    /// or field that has it.
+    pub untagged: bool,
+    /// For a record without a tag that is the type of a field, the record
+    /// that holds the field.
+    pub within: Option<RecordId>,
 }
 
 #[derive(Debug)]

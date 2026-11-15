@@ -318,3 +318,196 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn a_record_without_a_tag_is_named_after_its_variable() {
+    let rust = check(
+        "untagged-vars",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct { int hits; long sum; } stats;
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct { int lo; int hi; } span = {n, n + 10}, wider, *at = &span;
+    struct { char code; int weight; } marks[3] = {{'a', 1}, {'b', 2}, {'c', 3}};
+    at->hi += 5;
+    wider = span;
+    for (int i = 0; i < 3; i++) {
+        stats.hits++;
+        stats.sum += marks[i].weight * n;
+    }
+    printf("%d %d %d %d %ld %c %zu\n", span.hi, wider.lo, wider.hi, stats.hits, stats.sum, marks[2].code,
+           sizeof(marks) / sizeof(marks[0]));
+    return 0;
+}
+"#,
+        &[&["0"], &["4"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "struct Stats {",
+            "struct Span {",
+            "struct Marks {",
+            "let mut span = Span { lo: n, hi: n + 10 };",
+            "let at: &mut Span = &mut span;",
+            "let marks: [Marks; 3] = [",
+            "let wider = span;",
+        ],
+    );
+}
+
+#[test]
+fn a_field_without_a_tag_is_named_after_the_field() {
+    let rust = check(
+        "untagged-fields",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct size { int w; };
+struct panel { struct { int x; int y; } corner; struct { int w; int h; } size; enum { FLAT, RAISED } style; };
+typedef struct { struct { unsigned short r, g, b; } tint; } brush;
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct panel p = {{n, 2}, {3, 4}, RAISED};
+    struct size s = {9};
+    brush b = {{1, 2, 3}};
+    enum { LEFT, RIGHT } side = n > 2 ? RIGHT : LEFT;
+    b.tint.g = (unsigned short)(b.tint.g + n);
+    p.size.h *= 2;
+    printf("%d %d %d %d %d %d\n", p.corner.x + p.corner.y, p.size.w * p.size.h, p.style, s.w, b.tint.g, side);
+    return 0;
+}
+"#,
+        &[&["1"], &["6"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "corner: Corner,",
+            "size: PanelSize,",
+            "struct Size {",
+            "struct Tint {",
+            "tint: Tint { r: 1, g: 2, b: 3 },",
+            "style: u32,",
+        ],
+    );
+}
+
+#[test]
+fn an_anonymous_member_is_a_field_that_holds_its_fields() {
+    let rust = check(
+        "untagged-anonymous",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct token { int kind; struct { int start; int end; }; union { float weight; unsigned bits; }; };
+static int width(const struct token *t) { return t->end - t->start; }
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    struct token a = {1, {n, n + 4}};
+    struct token b = {.kind = 2, .end = 9, .start = n};
+    a.weight = 0.5f;
+    b.end += a.kind;
+    printf("%d %d %d %08x\n", width(&a), width(&b), b.kind, a.bits);
+    return 0;
+}
+"#,
+        &[&["2"], &["-3"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "anonymous: Anonymous,",
+            "anonymous_: u32,",
+            "t.anonymous.end - t.anonymous.start",
+            "anonymous: Anonymous { start: n, end: 9 },",
+            "a.anonymous_ = f32::to_bits(0.5);",
+        ],
+    );
+}
+
+#[test]
+fn records_without_a_tag_in_two_scopes_are_two_types() {
+    let rust = check(
+        "untagged-scopes",
+        r#"
+#include <stdio.h>
+static int first(int n) { struct { int v; } cell; cell.v = n; return cell.v + 1; }
+static int second(int n) { struct { int v; } cell; cell.v = n * 3; return cell.v; }
+int main(void) {
+    printf("%d %d\n", first(2), second(5));
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut cell: Cell = Cell::default();",
+            "let mut cell: Cell_ = Cell_::default();",
+        ],
+    );
+}
+
+#[test]
+fn a_type_without_a_tag_that_has_no_rule_is_refused() {
+    let refused = |name, c| translate(name, c).unwrap_err();
+    assert_eq!(
+        refused(
+            "untagged-parameter",
+            "#include <stddef.h>\nint count(struct { int n; } *p) {\n    return p != 0;\n}\nint main(void) {\n    return count(0);\n}\n"
+        ),
+        "unsupported: a type without a tag in a function's parameters or result, at line 2"
+    );
+    assert_eq!(
+        refused(
+            "untagged-result",
+            "#include <stddef.h>\nstatic struct { int n; } *none(void) {\n    return 0;\n}\nint main(void) {\n    return none() != 0;\n}\n"
+        ),
+        "unsupported: a type without a tag in a function's parameters or result, at line 2"
+    );
+    assert_eq!(
+        refused(
+            "untagged-union",
+            "struct slot { int tag; union { int n; double d; }; };\nint main(void) {\n    struct slot s;\n    s.n = 1;\n    return s.n - 1;\n}\n"
+        ),
+        "unsupported: a union whose members are not all numbers of one size: no rule yet"
+    );
+}
+
+#[test]
+fn a_record_gets_no_name_of_the_prelude() {
+    // `struct Box` would hide the type that the allocation needs.
+    let rust = check(
+        "prelude-names",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+struct option { int chosen; };
+int main(int argc, char **argv) {
+    struct { int side; } box = { argc };
+    struct { int length; } string = { 4 }, vec = { 5 };
+    struct option some = { 6 };
+    int *held = malloc(sizeof *held);
+    *held = box.side + string.length + vec.length + some.chosen;
+    const int *maybe = argc > 1 ? held : NULL;
+    if (maybe) printf("%d %s\n", *maybe, argv[1]);
+    else printf("%d\n", *held);
+    free(held);
+    return 0;
+}
+"#,
+        &[&[], &["word"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["struct Box_ {", "struct String_ {", "struct Option_ {"],
+    );
+}

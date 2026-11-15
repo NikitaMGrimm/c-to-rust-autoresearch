@@ -112,11 +112,19 @@ pub struct Names {
 impl Names {
     pub fn new(program: &Program, facts: &Facts) -> Names {
         let mut taken: HashSet<String> = HashSet::new();
-        let records = program
-            .records
-            .iter()
-            .map(|record| unique(camel(&record.name), &record.name, &mut taken))
-            .collect();
+        // A record without a tag is named after the variable or field that
+        // has it, and a field's after the record that holds it too where
+        // that name is taken.
+        let mut records: Vec<String> = Vec::new();
+        for record in &program.records {
+            let fallback = match record.within {
+                Some(outer) => format!("{}{}", records[outer], camel(&record.name)),
+                None if record.untagged => camel(&record.name),
+                None => record.name.clone(),
+            };
+            let name = unique(camel(&record.name), &fallback, &mut taken);
+            records.push(name);
+        }
         let functions = program
             .functions
             .iter()
@@ -169,7 +177,12 @@ impl Names {
                         names.push(field.name.clone());
                         continue;
                     }
-                    let mut name = plain(&field.name);
+                    // A member without a name that is a record, as C11
+                    // allows, holds that record's fields.
+                    let mut name = match field.name.is_empty() && field.bits.is_none() {
+                        true => "anonymous".to_owned(),
+                        false => plain(&field.name),
+                    };
                     while name.is_empty()
                         || RESERVED.contains(&name.as_str())
                         || given.contains(name.as_str())
@@ -244,9 +257,38 @@ impl Names {
     }
 }
 
+/// The types and values of Rust's prelude that a translation names: a
+/// record with one of their names would hide it.
+const PRELUDE: &[&str] = &[
+    "Box",
+    "Vec",
+    "String",
+    "Option",
+    "Some",
+    "None",
+    "Result",
+    "Ok",
+    "Err",
+    "Default",
+    "Clone",
+    "Copy",
+    "Drop",
+    "Iterator",
+    "From",
+    "Into",
+    "ToString",
+    "Eq",
+    "Ord",
+    "PartialEq",
+    "PartialOrd",
+];
+
 /// The name, or the fallback with underscores added until it is free.
 fn unique(name: String, fallback: &str, taken: &mut HashSet<String>) -> String {
     let mut name = name;
+    if PRELUDE.contains(&name.as_str()) {
+        name.push('_');
+    }
     if taken.contains(&name) {
         name = fallback.to_owned();
     }

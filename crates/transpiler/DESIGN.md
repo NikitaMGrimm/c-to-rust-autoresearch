@@ -38,7 +38,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, join, ends, found -> facts
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
 | Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
-| Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
+| Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
 
 The rules are split by subject: `lower/mod.rs` (the program, records, globals,
@@ -53,7 +53,9 @@ functions, `main`), `types.rs`, `expr.rs`, `stmt.rs`, `pointer.rs`,
   Clang prints it. A documentation comment, which Clang hangs on its
   declaration, is taken out of the tree before it is read (R57). Types,
   tags and typedefs are found by name, so a program
-  that gives one name two meanings in different scopes is refused.
+  that gives one name two meanings in different scopes is refused. A record
+  or an enumeration without a tag is found by the place of its declaration,
+  which Clang prints in its type, `struct (unnamed at FILE:4:2)`.
 - A rule needs to know something about the rest of the program (is this
   pointer ever NULL, does this function change a global, is this array
   resized): a fact in `facts.rs`. A rule never searches the program itself.
