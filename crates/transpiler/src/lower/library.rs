@@ -252,6 +252,13 @@ impl Lower<'_> {
         if self.program.callers(&["rand"]).is_empty() {
             return unsupported("`srand` in a program without `rand`", at);
         }
+        // A function that runs again would start its `Random` again.
+        if !self.in_main() {
+            return unsupported(
+                format!("`{name}` in a function other than `main`: no rule yet"),
+                at,
+            );
+        }
         self.helper(Helper::Random);
         Ok(())
     }

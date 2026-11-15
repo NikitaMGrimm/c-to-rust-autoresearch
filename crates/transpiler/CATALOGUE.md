@@ -779,8 +779,9 @@ Entry format, newest last:
   `new` fills from the seed and steps 310 times. Without a first `srand`
   the function starts with `Random::new(1)`, as a C program does
 - Refused: calls in more than one function, which would share one
-  `Random`; `srand` in a program without `rand`; `rand_r`, `random` and
-  `drand48`, as before
+  `Random`, and in a function other than `main`, which would start its
+  `Random` again each time it runs; `srand` in a program without `rand`;
+  `rand_r`, `random` and `drand48`, as before
 - Motivation: `g1_016_switch_arith` was refused for `srand`
 - Changes: nothing
 

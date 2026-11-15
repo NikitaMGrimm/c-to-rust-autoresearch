@@ -802,6 +802,14 @@ int main(int argc, char *argv[]) {
         ),
         "unsupported: `rand` in more than one function: no rule yet, at line 3"
     );
+    // The sequence goes on from one call of the function to the next.
+    assert_eq!(
+        refused(
+            "rand_again",
+            "int draw(void) { return rand(); }\nint main(void) {\n    printf(\"%d\\n\", draw());\n    printf(\"%d\\n\", draw());\n    return 0;\n}\n"
+        ),
+        "unsupported: `rand` in a function other than `main`: no rule yet, at line 3"
+    );
     assert_eq!(
         refused(
             "rand_none",
