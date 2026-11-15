@@ -66,6 +66,20 @@ pub fn float(value: f64, suffix: &str) -> Expr {
     parse_quote!(#negative #literal)
 }
 
+/// An `f32` literal for `value`, which C's `float` holds: the shortest text
+/// that reads back as the same `f32`. Where Clippy would take that text for
+/// a constant written out, the digits of the `f64`, as `float` gives them.
+pub fn single(value: f64, suffix: &str) -> Expr {
+    let single = value as f32;
+    let text = format!("{:?}", single.abs());
+    if !single.is_finite() || near_constant(&text) {
+        return float(value, suffix);
+    }
+    let negative: Option<syn::Token![-]> = single.is_sign_negative().then(Default::default);
+    let literal = syn::LitFloat::new(&format!("{text}{suffix}"), Span::call_site());
+    parse_quote!(#negative #literal)
+}
+
 /// The whole numbers below this are `f64` values.
 const EXACT: u64 = 1 << 53;
 

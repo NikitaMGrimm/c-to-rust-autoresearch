@@ -47,9 +47,10 @@ Entry format, newest last:
   different functions share a name; Rust's operators for signed arithmetic, so that an
   overflow stops the program, and `wrapping_add`, `wrapping_sub` and
   `wrapping_mul` for unsigned; a floating-point literal as the shortest
-  text that reads back as the same number, and as a quotient that is the
-  same number, `314.0 / 1e2`, where the lints would take it for a constant
-  such as `PI` written out;
+  text that reads back as the same number, the same `f32` for a `float`,
+  and as a quotient that is the same number, `314.0 / 1e2`, where the
+  lints would take it for a constant such as `PI` written out; the least
+  value of a signed type, `-2147483647 - 1`, as `i32::MIN`;
   `as` for conversions, through `i8` when a
   `char` widens; a comparison as a value is `i32::from(…)`, a number as a
   test is `!= 0`; a compound assignment on a type narrower than `int` is

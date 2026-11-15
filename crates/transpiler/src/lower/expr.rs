@@ -77,6 +77,9 @@ impl Lower<'_> {
         if let Some(literal) = self.literal(expr, typed) {
             return Ok(literal);
         }
+        if let Some(limit) = self.limit(expr)? {
+            return Ok(limit);
+        }
         if expr.ty.is_pointer() {
             return unsupported("a pointer where no rule expects one", at);
         }
@@ -84,7 +87,7 @@ impl Lower<'_> {
             return unsupported("the number in `errno`, which is the platform's", at);
         }
         match &expr.kind {
-            ExprKind::Float(value) => Ok(rust::float(*value, float_suffix(&expr.ty, typed))),
+            ExprKind::Float(value) => Ok(float(*value, &expr.ty, typed)),
             ExprKind::Enumerator(index) => {
                 self.enumerators.insert(*index);
                 Ok(rust::name(self.names.enumerator(*index)))
@@ -183,7 +186,7 @@ impl Lower<'_> {
         }
         if let (Type::Float { .. }, ExprKind::Cast(inner)) = (&expr.ty, &expr.kind) {
             let value = inner.constant(self.program)?;
-            return Some(rust::float(value as f64, float_suffix(&expr.ty, typed)));
+            return Some(float(value as f64, &expr.ty, typed));
         }
         let value = expr.constant(self.program)?;
         Some(match expr.ty {
@@ -203,6 +206,25 @@ impl Lower<'_> {
             Type::Index => rust::int(value, "usize"),
             _ => return None,
         })
+    }
+
+    /// R2: the least value of a signed type, which C writes as arithmetic,
+    /// `-2147483647 - 1` for `INT_MIN`, is `i32::MIN`.
+    fn limit(&self, expr: &Expr) -> R<Option<syn::Expr>> {
+        let Type::Int { bits, signed: true } = expr.ty else {
+            return Ok(None);
+        };
+        if let ExprKind::Binary(BinOp::Sub, left, right) = &expr.kind
+            && let ExprKind::Unary(UnOp::Neg, greatest) = &left.kind
+            && let ExprKind::Int(greatest) = greatest.uncast().kind
+            && let ExprKind::Int(1) = right.uncast().kind
+            && left.ty == expr.ty
+            && greatest == (1 << (bits - 1)) - 1
+        {
+            let ty = self.ty(&expr.ty, expr.at)?;
+            return Ok(Some(parse_quote!(#ty::MIN)));
+        }
+        Ok(None)
     }
 
     /// R2: a conversion between numbers as `as`. A plain `char` is signed
@@ -231,11 +253,22 @@ impl Lower<'_> {
                 _ => f64::from(narrowed) == *value,
             };
             if same {
-                return Ok(rust::float(*value, float_suffix(to, typed)));
+                return Ok(float(*value, to, typed));
             }
         }
         if let Some(original) = round_trip(inner, to) {
             return self.value(original, typed);
+        }
+        // `From` is no `const` function, so a global's value converts with
+        // `as`.
+        if let Some(limit) = self.limit(inner)?
+            && self.function.is_some()
+            && from != to
+            && widens(from, to)
+            && to.int().is_some_and(|(_, signed)| signed)
+        {
+            let target = self.ty(to, at)?;
+            return Ok(parse_quote!(#target::from(#limit)));
         }
         // A conversion that only widens keeps the value, so the one after it
         // says the same alone: `(unsigned)(int)c` is `c as i8 as u32`.
@@ -1105,6 +1138,15 @@ fn widens(from: &Type, to: &Type) -> bool {
             (wide > bits && (wide_signed || !signed)) || (wide == bits && wide_signed == signed)
         }
         _ => false,
+    }
+}
+
+/// A floating-point literal of type `ty`: an `f32` as the shortest text of
+/// its own bits.
+fn float(value: f64, ty: &Type, typed: bool) -> syn::Expr {
+    match ty {
+        Type::Float { bits: 32 } => rust::single(value, float_suffix(ty, typed)),
+        _ => rust::float(value, float_suffix(ty, typed)),
     }
 }
 

@@ -471,9 +471,8 @@ keeps C's promotions, checked arithmetic and the input it consumes:
   nothing else in the statement reads the cursors.
 - **Statements of C in conditions.** `if !({ x -= e; x } > 0)` for a
   store in a condition.
-- **The spelling of numbers.** `0xAAAA` printed as `43690`, `INT_MIN` as
-  `-2147483647 - 1` (`i32::MIN`), an `f32` constant with all the digits of
-  its `double`. Needs the literal's text from Clang.
+- **The spelling of numbers.** `0xAAAA` printed as `43690`. Needs the
+  literal's text from Clang.
 - **A counter where the elements would do.** `while i < n { …a[i as
   usize]…; i += 1; }` as `for value in &a`, when the counter is dead after
   the loop and only indexes. Two slices walked together need lengths that
@@ -520,10 +519,6 @@ keeps C's promotions, checked arithmetic and the input it consumes:
 
 What a third review found beside these, most frequent first:
 
-- **The limits of a type.** `(-2147483647 - 1) as i64` is
-  `i64::from(i32::MIN)`, from the constant's value and type alone; an `f32`
-  constant is the shortest text that gives the same bits. Neither needs
-  Clang's text, which only the base of a literal does.
 - **A helper's fallback for what cannot happen.** `format_e` and `format_g`
   read the exponent of Rust's own `{:e}` with `unwrap_or`; `expect` says
   that the text always has one.

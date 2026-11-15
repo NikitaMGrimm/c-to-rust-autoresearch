@@ -218,17 +218,13 @@ impl Lower<'_> {
     /// A number whose method is called: a constant needs its type, which
     /// Rust does not infer for `10.0.powf(x)`.
     fn receiver(&mut self, value: &Expr) -> R<syn::Expr> {
-        let suffix = match value.ty {
-            Type::Float { bits: 32 } => "f32",
-            _ => "f64",
+        let (suffix, literal): (_, fn(f64, &str) -> syn::Expr) = match value.ty {
+            Type::Float { bits: 32 } => ("f32", rust::single),
+            _ => ("f64", rust::float),
         };
         match value.uncast().kind {
-            ExprKind::Float(number) if value.uncast().ty == value.ty => {
-                Ok(rust::float(number, suffix))
-            }
-            ExprKind::Int(number) if value.ty.int().is_none() => {
-                Ok(rust::float(number as f64, suffix))
-            }
+            ExprKind::Float(number) if value.uncast().ty == value.ty => Ok(literal(number, suffix)),
+            ExprKind::Int(number) if value.ty.int().is_none() => Ok(literal(number as f64, suffix)),
             _ => self.expr(value),
         }
     }

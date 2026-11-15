@@ -893,3 +893,42 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn the_least_value_of_a_type_and_a_float_are_written_as_rust_does() {
+    let rust = check(
+        "limits",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
+const long low = INT_MIN;
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    long wide = INT_MIN;
+    long least = LONG_MIN;
+    float f = 0.1f;
+    float pi = 3.14159265f;
+    double d = 0.1f;
+    printf("%d %d %ld %ld %ld\n", n == INT_MIN, n == INT_MAX, wide, least, low);
+    printf("%.9f %.9f %.9f\n", f * n, pi, d);
+    return 0;
+}
+"#,
+        &[&["3"], &["-2147483648"], &["2147483647"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "const LOW: i64 = i32::MIN as i64;",
+            "let wide = i64::from(i32::MIN);",
+            "let least = i64::MIN;",
+            "let f: f32 = 0.1;",
+            "let pi: f32 = 3.14159274;",
+            "let d = 0.1f32 as f64;",
+            "i32::from(n == i32::MIN),",
+            "i32::from(n == 2147483647),",
+        ],
+    );
+}
