@@ -3,6 +3,7 @@
 //! `CATALOGUE.md` lists the rules; what has none is `Unsupported`.
 
 mod expr;
+mod function;
 mod input;
 mod library;
 mod pointer;
@@ -734,18 +735,27 @@ impl Lower<'_> {
         }
         let name = rust::ident(self.names.record(id));
         let mut fields: Vec<syn::Field> = Vec::new();
-        let mut zeros: Vec<syn::FieldValue> = Vec::new();
+        // A record with a pointer to a function that holds no NULL has
+        // no zero, and `zero` refuses where one would be needed.
+        let mut zeros: Option<Vec<syn::FieldValue>> = Some(Vec::new());
         for (index, field) in record.fields.iter().enumerate() {
             let slot = Slot::Field(id, index);
             let ty = self.field_type(slot, &field.ty)?;
-            let zero = self.zero_of(&field.ty, Some(slot), 0)?;
+            let zero = match self.zero_of(&field.ty, Some(slot), 0) {
+                Ok(zero) => Some(zero),
+                Err(_) if field.ty.function().is_some() => None,
+                Err(error) => return Err(error),
+            };
             let name = self.names.field(id, index);
-            zeros.push(rust::field_value(name, zero));
             let field = rust::ident(name);
             fields.push(
                 syn::parse::Parser::parse2(syn::Field::parse_named, quote::quote!(#field: #ty))
                     .expect("a field"),
             );
+            zeros = zeros.zip(zero).map(|(mut zeros, zero)| {
+                zeros.push(rust::field_value(name, zero));
+                zeros
+            });
         }
         let ty = Type::Record(id);
         let copy = self.is_copy(&ty).then(|| quote::quote!(Copy,));
@@ -755,7 +765,7 @@ impl Lower<'_> {
             #[derive(Clone, #copy #default)]
             struct #name { #(#fields),* }
         }];
-        if !derived {
+        if let (false, Some(zeros)) = (derived, zeros) {
             items.push(parse_quote! {
                 impl Default for #name {
                     fn default() -> Self {
@@ -773,7 +783,7 @@ impl Lower<'_> {
         if !ty.is_pointer() {
             return self.ty(ty, 0);
         }
-        if !self.repr(slot, 0)?.owned {
+        if ty.function().is_none() && !self.repr(slot, 0)?.owned {
             return unsupported(
                 format!("{} borrows what it points to", self.slot_name(slot)),
                 0,
@@ -806,6 +816,9 @@ impl Lower<'_> {
                         .expect("a field"),
                 );
                 values.push(rust::field_value(self.names.var(global), value));
+            } else if var.ty.function().is_some() {
+                let ty = self.slot_type(Slot::Var(global), &var.ty, None, var.at)?;
+                constants.push(parse_quote!(const #name: #ty = #value;));
             } else if var.ty.is_pointer() {
                 return unsupported(
                     format!("the global pointer `{}` that never changes", var.name),
@@ -850,17 +863,23 @@ impl Lower<'_> {
         self.function = Some(id);
         self.exits = false;
         let access = self.facts.access(id);
-        let borrows = |lower: &Self, slot: Slot| lower.repr(slot, 0).map(|repr| !repr.owned);
+        // A pointer to a function borrows nothing.
+        let borrows = |lower: &Self, ty: &Type, slot: Slot| match ty.function() {
+            Some(_) => Ok(false),
+            None => lower.repr(slot, 0).map(|repr| !repr.owned),
+        };
         let mut borrowed = usize::from(access != Access::None);
         for &param in &function.params {
-            if program.vars[param].ty.is_pointer() && borrows(self, Slot::Var(param))? {
+            let ty = &program.vars[param].ty;
+            if ty.is_pointer() && borrows(self, ty, Slot::Var(param))? {
                 borrowed += 1;
             }
         }
         // A borrowed result with one borrowed parameter needs no lifetime.
         // With none it can only point to a constant, and with several the
         // translation does not know which, so all share one.
-        let returns_borrow = function.ret.is_pointer() && borrows(self, Slot::Return(id))?;
+        let returns_borrow =
+            function.ret.is_pointer() && borrows(self, &function.ret, Slot::Return(id))?;
         let (shared, result): (Option<syn::Lifetime>, Option<syn::Lifetime>) =
             match (returns_borrow, borrowed) {
                 (false, _) | (true, 1) => (None, None),

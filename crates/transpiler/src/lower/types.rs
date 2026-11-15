@@ -39,6 +39,8 @@ impl Lower<'_> {
                 let name = rust::ident(self.names.record(*id));
                 parse_quote!(#name)
             }
+            // R42: an element of an array of pointers to functions.
+            Type::Pointer(to) if matches!(**to, Type::Function { .. }) => self.fn_type(to, at)?,
             Type::Pointer(_) => return unsupported("a pointer where no rule expects one", at),
             Type::Function { .. } => return unsupported("a function type", at),
         })
@@ -47,7 +49,7 @@ impl Lower<'_> {
     /// Whether the type's Rust values are copied by assignment, as C's are.
     pub(super) fn is_copy(&self, ty: &Type) -> bool {
         match ty {
-            Type::Pointer(_) => false,
+            Type::Pointer(_) => ty.function().is_some(),
             Type::Array(element, _) => self.is_copy(element),
             Type::Record(id) => self.program.records[*id]
                 .fields
@@ -74,6 +76,8 @@ impl Lower<'_> {
                         ty => self.derives_default(ty),
                     })
             }
+            // A `fn` has no default.
+            Type::Pointer(_) => ty.function().is_none(),
             _ => true,
         }
     }
@@ -97,7 +101,15 @@ impl Lower<'_> {
             Type::Record(id) => {
                 let name = rust::ident(self.names.record(*id));
                 self.ty(ty, at)?;
+                // A record has `Default` only where every field has a zero.
+                for (index, field) in self.program.records[*id].fields.iter().enumerate() {
+                    let slot = field.ty.is_pointer().then_some(Slot::Field(*id, index));
+                    self.zero_of(&field.ty, slot, at)?;
+                }
                 parse_quote!(#name::default())
+            }
+            Type::Pointer(_) if ty.function().is_some() => {
+                return unsupported("a pointer to a function that starts at NULL", at);
             }
             _ => return unsupported("a variable of this type without a value", at),
         })
@@ -111,8 +123,22 @@ impl Lower<'_> {
         let repr = self.repr(slot, at)?;
         Ok(match (repr.nullable, repr.owned, repr.many) {
             (true, ..) => parse_quote!(None),
+            _ if ty.function().is_some() => {
+                return unsupported(
+                    format!(
+                        "{} starts without a value and holds no NULL",
+                        self.slot_name(slot)
+                    ),
+                    at,
+                );
+            }
             (false, true, true) => parse_quote!(Vec::new()),
-            (false, true, false) => parse_quote!(Box::default()),
+            (false, true, false) => {
+                if let Some(element) = ty.element() {
+                    self.zero(element, at)?;
+                }
+                parse_quote!(Box::default())
+            }
             (false, false, _) => {
                 return unsupported(
                     format!(
@@ -191,6 +217,7 @@ impl Lower<'_> {
                     let repr = self.repr(slot, init.at)?;
                     self.pointer(init, repr)
                 }
+                None if ty.function().is_some() => self.function_value(init, false),
                 None => unsupported("a pointer in an array", init.at),
             },
             (Type::Record(id), ExprKind::InitList(items)) => {

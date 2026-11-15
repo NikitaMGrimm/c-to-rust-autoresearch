@@ -136,6 +136,8 @@ pub enum Type {
     Function {
         ret: Box<Type>,
         params: Vec<Type>,
+        /// Also for a function without a prototype, `int ()`, whose
+        /// arguments C does not check either.
         variadic: bool,
     },
 }
@@ -148,6 +150,14 @@ pub const INT: Type = Type::Int {
 impl Type {
     pub fn is_pointer(&self) -> bool {
         matches!(self, Type::Pointer(_))
+    }
+
+    /// The function type that a pointer to a function points to.
+    pub fn function(&self) -> Option<&Type> {
+        match self {
+            Type::Pointer(to) if matches!(**to, Type::Function { .. }) => Some(to),
+            _ => None,
+        }
     }
 
     pub fn is_integer(&self) -> bool {
@@ -184,6 +194,8 @@ impl Type {
             Type::Int { bits, .. } | Type::Float { bits } => {
                 (u64::from(*bits) / 8, u64::from(*bits) / 8)
             }
+            // `sizeof` of a pointer to a function has no rule.
+            Type::Pointer(to) if matches!(**to, Type::Function { .. }) => return None,
             Type::Pointer(_) | Type::Index => (8, 8),
             Type::Array(of, len) => {
                 let (size, align) = of.layout(program)?;

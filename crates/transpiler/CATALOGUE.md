@@ -734,3 +734,30 @@ Entry format, newest last:
 - Motivation: `g1_007_errno_pow` tests `errno` after `pow`
 - Changes: extends R37; a constant on which `pow`, `sqrt` and their like
   call a method has its type, `10.0f64.powf(x)`, which Rust does not infer
+## R42: pointers to functions
+
+- C: a pointer to a function, `R (*)(A, B)`, also through a `typedef` of
+  the pointer or of the function type, and a parameter written as a
+  function; as a local, a parameter, a result, a field, a global and an
+  element of an array; its value: a function's name, `&f`, `*f`, another
+  such pointer, `c ? f : g`, a call's result; a call through it: `p(x)`,
+  `(*p)(x)`, `s.op(x)`, `ops[i](x)`, `choose(k)(x)`
+- Rust: the type `fn(A, B) -> R`, `fn(A)` for `void`, in every place; a
+  record that holds one stays `Copy` and has no `Default`; a global that
+  never changes is a `const`, an array of them a `static`; the value is
+  the function's path, and the call `p(x)`, `(s.op)(x)`,
+  `ops[i as usize](x)`, `choose(k)(x)`, the callee evaluated first
+- Needs: `Facts::pointer`, whose slots hold a pointer to a function as
+  any other pointer but get no fact from it but `nullable`; a function
+  is never NULL, and nor is an element of an array of them
+- Refused: a pointer to a function that takes or returns a pointer, a
+  comparison of two functions, a cast to another function type, to
+  `void *` or to an integer, a function without a prototype or with
+  variable arguments, the address of a library function and one handed
+  to the library, a pointer to a pointer to a function, `sizeof` of one,
+  an array of them that holds NULL, a pointer to a function that uses
+  globals, and one that may be NULL
+- Motivation: `g5_mathop` and `g5_charinbuf` call functions through
+  pointers, which were refused as `a call through a pointer`
+- Changes: R1, whose calls by name stay as they are; the front end reads
+  a function used as a value as a pointer to it

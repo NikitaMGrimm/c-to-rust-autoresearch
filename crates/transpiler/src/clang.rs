@@ -541,8 +541,22 @@ impl Reader {
             "ParenExpr" | "ConstantExpr" => return self.expr(child(0)?),
             "ImplicitCastExpr" | "CStyleCastExpr" => match text(node, "castKind") {
                 // The value stays as it is.
-                "LValueToRValue" | "NoOp" | "FunctionToPointerDecay" | "BuiltinFnToFnPtr" => {
+                "LValueToRValue" | "NoOp" | "BuiltinFnToFnPtr" => {
                     return self.expr(child(0)?);
+                }
+                // A function used as a value is a pointer to it, and `*p`
+                // used so is `p` again.
+                "FunctionToPointerDecay" => {
+                    let inner = self.expr(child(0)?)?;
+                    return Ok(match inner.kind {
+                        ExprKind::Deref(pointer) if pointer.ty.function().is_some() => *pointer,
+                        _ => Expr {
+                            // The type of a library function may be one
+                            // that only a header needs.
+                            ty: self.ty(node).unwrap_or(inner.ty.clone()),
+                            ..inner
+                        },
+                    });
                 }
                 "ArrayToPointerDecay" => ExprKind::Decay(boxed(self, 0)?),
                 "NullToPointer" => ExprKind::Null,
@@ -599,6 +613,13 @@ impl Reader {
                     "~" => ExprKind::Unary(UnOp::BitNot, operand),
                     "!" => ExprKind::Unary(UnOp::Not, operand),
                     "*" => ExprKind::Deref(operand),
+                    // `&f` is `f`, a pointer to the function.
+                    "&" if matches!(operand.kind, ExprKind::Function(_)) => {
+                        return Ok(Expr {
+                            ty: self.ty(node).unwrap_or(operand.ty.clone()),
+                            ..*operand
+                        });
+                    }
                     "&" => ExprKind::AddrOf(operand),
                     op @ ("++" | "--") => ExprKind::IncDec {
                         target: operand,
@@ -818,7 +839,8 @@ impl Reader {
                 }),
                 Token::Punct('(') => {
                     let mut params = Vec::new();
-                    let mut variadic = false;
+                    // `()` declares a function without a prototype.
+                    let mut variadic = inside.is_empty();
                     for param in inside.split(|token| *token == Token::Punct(',')) {
                         match param {
                             [] => {}
