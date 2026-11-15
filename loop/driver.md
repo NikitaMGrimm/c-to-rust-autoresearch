@@ -88,7 +88,9 @@ own as tests.
    It counts strict passes only. It keeps a rule when the development score
    rises, and a refactoring or a fix when it does not drop; in both cases the
    validation score may not drop. Where the owner's message says that the
-   run keeps steady rules, a rule is judged as a fix is. It prints the development results and its
+   run keeps steady rules, a rule is judged as a fix is, and one judging is
+   one construct family, whether or not a development program passes with
+   it; what follows about completing a program then does not hold. It prints the development results and its
    decision. After a rejection, change the commit and judge again, or go back
    with `git reset --hard run/RUN`. One judging is what completes a
    development program: a rule that passes no development program by itself

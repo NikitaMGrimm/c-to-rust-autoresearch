@@ -67,15 +67,9 @@ if [[ -d $transcripts ]]; then
     "$transcripts" >"$report"
   usage=(--usage "$report")
 fi
-# The owner may let a run keep rules that pass no new development program, by
-# this file in its state, which no script writes.
-rules=()
-if [[ -e $state/steady-rules ]]; then
-  rules=(--steady-rules)
-fi
 status=0
 cargo run -q -p eval --bin gate -- "$private" "$base" "$candidate" "${usage[@]}" \
-  --strict --run "$run" "${rules[@]}" >"$printed" || status=$?
+  --strict --run "$run" >"$printed" || status=$?
 cat "$printed"
 if ((status > 1)); then
   echo "judge stopped: the gate failed; nothing was changed" >&2
