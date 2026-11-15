@@ -551,6 +551,36 @@ become a fact and a refusal:
   it, such as `2.2250738585072012e-308`, is a range error for `strtod` and
   none here.
 
+## The listing
+
+`translate` stops at a program's first refusal. `blockers`, the second entry
+point (`transpiler --list FILE.c`), runs the same stages and goes on after
+each refusal, to say what else the program needs. It prints a line for each
+refusal: the stage (`read` for the front end, `rewrite`, `rules`), the
+function, the refusal as `translate` words it, and how often the function
+meets it. Its first line is the refusal of `translate`, and it is empty for
+a program that is translated.
+
+A stage goes on by leaving out what it refused: the front end a top-level
+declaration or a statement, the rules a record, the globals, a function's
+signature or a statement. `translate` runs the same code with no list to
+add to, where every refusal ends the translation as before.
+
+The list is a lower bound. It hides:
+
+- what the rules would refuse in a statement that the front end refused,
+  and all but the first refusal of any statement;
+- the body of a function whose parameters or result the front end refused,
+  and everything after the point where a stage panics on a program with
+  parts left out, which ends the list with a line that says so;
+- what depends on a part left out: the facts are those of the program
+  without it, so a pointer may get another type, and a conflict may
+  appear or go. A refusal that names a declaration left out earlier is
+  marked `follows`, since it may only follow from that one;
+- everything after the translation: what `rustc` rejects, and output that
+  differs from the C program's. An empty list says that the program is
+  translated, not that it passes.
+
 ## Tests
 
 `tests/translate/` holds one test per subject. `check` compiles the C program
@@ -558,4 +588,5 @@ with Clang and the translation with `rustc` (`-F unsafe_code -D warnings`,
 overflow checks on), runs both on each input and compares output and exit
 code; the test then asserts the lines that show the rule's shape, so a
 translation that passes but reads worse fails the test. `tests/dev.rs` checks
-that every development program is translated or refused, never a panic.
+that every development program is translated or refused, never a panic, and
+that its listing starts with that refusal.

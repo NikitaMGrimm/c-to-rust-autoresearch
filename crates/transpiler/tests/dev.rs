@@ -27,3 +27,21 @@ fn every_development_program_is_translated_or_refused() {
         }
     }
 }
+
+/// A listing starts with the refusal that stops the translation, and is
+/// empty for a program that is translated.
+#[test]
+fn a_listing_starts_with_the_refusal_of_the_translation() {
+    for path in dev_programs() {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let ast = transpiler::clang_ast(&path).unwrap();
+        let refusal = transpiler::translate(&ast).err();
+        let listed = transpiler::blockers(&ast);
+        let first = listed.first().map(|blocker| blocker.refusal.clone());
+        assert_eq!(first, refusal, "{name}");
+        assert!(refusal.is_some() || listed.is_empty(), "{name}");
+        for line in transpiler::blockers_file(&path).unwrap() {
+            eprintln!("{name}\t{line}");
+        }
+    }
+}

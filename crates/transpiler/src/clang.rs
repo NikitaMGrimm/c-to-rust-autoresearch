@@ -1,11 +1,11 @@
 //! The front end: builds `c::Program` from Clang's JSON syntax tree. It holds
 //! no translation rule; a construct it cannot represent is `Unsupported`.
 
-use crate::Unsupported;
 use crate::c::{
     BinOp, Enumerator, Expr, ExprKind, Field, Function, Program, Record, RecordId, Stmt, Type,
     UnOp, Var, VarId, VarKind,
 };
+use crate::{Listing, Unsupported};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -20,9 +20,35 @@ pub fn program(ast: &Value) -> R<Program> {
     Ok(reader.program)
 }
 
+/// Reads the program as `program` does, and goes on after a refusal: it
+/// adds the refusal to `listing` and leaves out the declaration or the
+/// statement that it refused.
+pub fn listed(ast: &Value, listing: &mut Listing) -> Program {
+    let mut reader = Reader {
+        listing: Some(listing),
+        ..Reader::default()
+    };
+    for decl in children(ast) {
+        if let Err(refusal) = reader.top_level(decl) {
+            let function = match kind(decl) {
+                "FunctionDecl" => text(decl, "name"),
+                _ => "",
+            };
+            reader.list(function, refusal);
+            reader.hole(decl);
+        }
+    }
+    reader.program
+}
+
 #[derive(Default)]
-struct Reader {
+struct Reader<'a> {
     program: Program,
+    /// Where a listing collects the refusals, which then do not end the
+    /// reading.
+    listing: Option<&'a mut Listing>,
+    /// The name of the function being read, for a listing.
+    reading: String,
     /// A typedef's name to its type, or to why it has none here.
     typedefs: HashMap<String, Result<Type, String>>,
     /// `struct NAME` and `union NAME` to the record.
@@ -95,7 +121,40 @@ fn unsupported<T>(what: impl Into<String>, node: &Value) -> R<T> {
     Err(Unsupported::new(what, at(node)))
 }
 
-impl Reader {
+impl Reader<'_> {
+    fn list(&mut self, function: &str, refusal: Unsupported) {
+        if let Some(listing) = &mut self.listing {
+            listing.add("read", function, refusal);
+        }
+    }
+
+    /// Notes for a listing that the declaration of `decl` was left out.
+    fn hole(&mut self, decl: &Value) {
+        if let Some(listing) = &mut self.listing
+            && matches!(kind(decl), "FunctionDecl" | "VarDecl")
+        {
+            listing.hole(text(decl, "name"));
+        }
+    }
+
+    /// Reads a statement of a block. A listing goes on without a statement
+    /// that is refused.
+    fn listed_stmt(&mut self, node: &Value, out: &mut Vec<Stmt>) -> R<()> {
+        match self.stmt(node, out) {
+            Err(refusal) if self.listing.is_some() => {
+                let function = self.reading.clone();
+                self.list(&function, refusal);
+                for decl in children(node) {
+                    if kind(node) == "DeclStmt" && !self.vars.contains_key(text(decl, "id")) {
+                        self.hole(decl);
+                    }
+                }
+                Ok(())
+            }
+            read => read,
+        }
+    }
+
     fn top_level(&mut self, decl: &Value) -> R<()> {
         match kind(decl) {
             "TypedefDecl" => self.typedef(decl)?,
@@ -377,6 +436,7 @@ impl Reader {
         else {
             return Ok(());
         };
+        self.reading = text(decl, "name").to_owned();
         let ret = match self.ty(decl)? {
             Type::Function { ret, .. } => *ret,
             _ => return unsupported("a function without a function type", decl),
@@ -409,11 +469,11 @@ impl Reader {
             self.scopes.push(Vec::new());
             let read = children(node)
                 .iter()
-                .try_for_each(|child| self.stmt(child, &mut out));
+                .try_for_each(|child| self.listed_stmt(child, &mut out));
             self.close_scope();
             read?;
         } else {
-            self.stmt(node, &mut out)?;
+            self.listed_stmt(node, &mut out)?;
         }
         Ok(out)
     }
@@ -501,12 +561,12 @@ impl Reader {
                     },
                 };
                 out.push(Stmt::Case(value));
-                self.stmt(body, out)?;
+                self.listed_stmt(body, out)?;
             }
             "DefaultStmt" => {
                 out.push(Stmt::Default);
                 if let Some(body) = part(0) {
-                    self.stmt(body, out)?;
+                    self.listed_stmt(body, out)?;
                 }
             }
             "BreakStmt" => out.push(Stmt::Break),
@@ -522,7 +582,7 @@ impl Reader {
             "LabelStmt" => {
                 out.push(Stmt::Label(text(node, "name").to_owned()));
                 if let Some(body) = part(0) {
-                    self.stmt(body, out)?;
+                    self.listed_stmt(body, out)?;
                 }
             }
             _ => out.push(Stmt::Expr(self.expr(node)?)),

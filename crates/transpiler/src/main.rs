@@ -2,11 +2,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: transpiler <input.c> [-o <output.rs>]";
+const USAGE: &str =
+    "usage: transpiler <input.c> [-o <output.rs>]\n       transpiler --list <input.c>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (input, output) = match args.as_slice() {
+        [flag, input] if flag == "--list" => return list(Path::new(input)),
         [input] => (input, None),
         [input, flag, output] if flag == "-o" => (input, Some(output)),
         _ => {
@@ -37,6 +39,25 @@ fn main() -> ExitCode {
         None => print!("{rust}"),
     }
     ExitCode::SUCCESS
+}
+
+/// Prints what the program needs that has no rule, a line for each refusal.
+fn list(input: &Path) -> ExitCode {
+    match transpiler::blockers_file(input) {
+        Ok(blockers) => {
+            for blocker in &blockers {
+                println!("{blocker}");
+            }
+            match blockers.is_empty() {
+                true => ExitCode::SUCCESS,
+                false => ExitCode::FAILURE,
+            }
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Compares device and inode, so symlinks and hard links to the input match.

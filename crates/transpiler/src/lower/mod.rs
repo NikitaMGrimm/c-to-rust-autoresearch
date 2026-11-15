@@ -10,11 +10,11 @@ mod search;
 mod stmt;
 mod types;
 
-use crate::Unsupported;
 use crate::c::{Expr, ExprKind, FuncId, Program, Stmt, Type, VarId, any_expr};
 use crate::facts::{Access, Facts, Slot};
 use crate::names::Names;
 use crate::rust;
+use crate::{Listing, Unsupported};
 use std::collections::BTreeSet;
 use syn::parse_quote;
 
@@ -682,22 +682,74 @@ struct Lower<'a> {
     /// exit code.
     exits: bool,
     nesting: Vec<Nest>,
+    /// Where a listing collects the refusals, which then do not end the
+    /// translation.
+    listing: Option<&'a mut Listing>,
+}
+
+impl<'a> Lower<'a> {
+    fn new(program: &'a Program, facts: &'a Facts, listing: Option<&'a mut Listing>) -> Self {
+        Lower {
+            program,
+            facts,
+            names: Names::new(program, facts),
+            helpers: BTreeSet::new(),
+            enumerators: BTreeSet::new(),
+            function: None,
+            argc: None,
+            argv: None,
+            exits: false,
+            nesting: Vec::new(),
+            listing,
+        }
+    }
+}
+
+/// Translates the program as `program` does, and goes on after a refusal:
+/// it adds the refusal to `listing` and leaves out the record, the
+/// signature or the statement that it refused.
+pub fn listed<'a>(program: &'a Program, facts: &'a Facts, listing: &'a mut Listing) {
+    let mut lower = Lower::new(program, facts, Some(listing));
+    for (id, record) in program.records.iter().enumerate() {
+        if record.own
+            && let Err(refusal) = lower.record(id)
+        {
+            lower.list(refusal);
+        }
+    }
+    let state = lower.globals();
+    let state = match state {
+        Ok((_, state)) => state.map(|(_, init)| init),
+        Err(refusal) => {
+            lower.list(refusal);
+            None
+        }
+    };
+    for (id, function) in program.functions.iter().enumerate() {
+        lower.function = Some(id);
+        let signature = match function.name.as_str() {
+            "main" => lower.main(id, state.as_ref()),
+            _ => lower.function(id),
+        };
+        // A listing refuses the statements one by one, so this is a
+        // refusal of the signature, which the statements come after.
+        if let Err(refusal) = signature {
+            lower.list(refusal);
+            if let Err(refusal) = lower.body(&function.body) {
+                lower.list(refusal);
+            }
+        }
+        lower.function = None;
+        (lower.argc, lower.argv) = (None, None);
+    }
+    if program.function("main").is_none() {
+        lower.list(Unsupported::new("a program without `main`", 0));
+    }
 }
 
 /// Translates the program.
 pub fn program(program: &Program, facts: &Facts) -> R<syn::File> {
-    let mut lower = Lower {
-        program,
-        facts,
-        names: Names::new(program, facts),
-        helpers: BTreeSet::new(),
-        enumerators: BTreeSet::new(),
-        function: None,
-        argc: None,
-        argv: None,
-        exits: false,
-        nesting: Vec::new(),
-    };
+    let mut lower = Lower::new(program, facts, None);
     let mut records = Vec::new();
     for (id, record) in program.records.iter().enumerate() {
         if record.own {
@@ -751,6 +803,27 @@ pub fn program(program: &Program, facts: &Facts) -> R<syn::File> {
 }
 
 impl Lower<'_> {
+    /// Adds a refusal to the listing, under the function being translated.
+    fn list(&mut self, refusal: Unsupported) {
+        let function = self
+            .function
+            .map(|id| self.program.functions[id].name.as_str());
+        if let Some(listing) = &mut self.listing {
+            listing.add("rules", function.unwrap_or_default(), refusal);
+        }
+    }
+
+    /// A listing goes on after a refusal, without what was refused.
+    fn listed(&mut self, result: R<()>) -> R<()> {
+        match result {
+            Err(refusal) if self.listing.is_some() => {
+                self.list(refusal);
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
     /// Notes that the translation calls the helper, with those it calls.
     fn helper(&mut self, helper: Helper) {
         if self.helpers.insert(helper) {
@@ -995,10 +1068,14 @@ impl Lower<'_> {
         };
         let mut body = self.stmts(rest)?;
         if let Some(value) = last {
-            if !self.in_main() {
-                body.push(syn::Stmt::Expr(self.returned(value)?, None));
-            } else if self.exits {
-                body.push(syn::Stmt::Expr(self.exit_code(value)?, None));
+            let value = match self.in_main() {
+                false => self.returned(value).map(Some),
+                true if self.exits => self.exit_code(value).map(Some),
+                true => Ok(None),
+            };
+            match value {
+                Ok(value) => body.extend(value.map(|value| syn::Stmt::Expr(value, None))),
+                Err(refusal) => self.listed(Err(refusal))?,
             }
             // A `main` without an exit code ends with `return 0`, which
             // needs no code.

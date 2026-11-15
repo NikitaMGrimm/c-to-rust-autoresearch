@@ -12,7 +12,12 @@ impl Lower<'_> {
     pub(super) fn stmts(&mut self, stmts: &[Stmt]) -> R<Vec<syn::Stmt>> {
         let mut out = Vec::new();
         for stmt in stmts {
-            self.stmt(stmt, &mut out)?;
+            let nesting = self.nesting.len();
+            let lowered = self.stmt(stmt, &mut out);
+            if lowered.is_err() {
+                self.nesting.truncate(nesting);
+            }
+            self.listed(lowered)?;
         }
         Ok(out)
     }
