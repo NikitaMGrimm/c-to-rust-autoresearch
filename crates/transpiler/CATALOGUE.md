@@ -1424,6 +1424,47 @@ Entry format, newest last:
   program needs it
 - Changes: extends R62 from global pointers to such fields
 
+## R65: a pointer to a pointer borrows the place it names
+
+- C: a parameter `T **pp`, `T` a record, a number or `char`, whose
+  arguments are `&p` for a local or a parameter `p`, `&s.f`, `&s->f`, or
+  the caller's own such parameter; in the function `*pp = e;`, `*pp` as a
+  value, `(*pp)->f`, `(*pp)[i]`, `if (*pp)`, `*pp == NULL`, `!*pp`,
+  `free(*pp)` and `*pp = (*pp)->next;`
+- Rust: `pp: &mut P` where the function stores to `*pp` or through it,
+  moves out of it or frees it, and `&P` otherwise, for the type `P` of
+  the place behind (`Option<Box<T>>`, `Vec<i32>`, `Option<Vec<u8>>`); the
+  argument `&mut p`, `&p`, or the parameter by its name; `*pp` is the
+  place `*pp` with the rules of a pointer in a field: `(*pp).take()` for a
+  move out of it, `(*pp).as_deref_mut().unwrap().f`, `(*pp).is_some()`
+- Needs: `Slot::Behind` in the analysis: the facts of the place behind
+  `pp` are equal to those of every place that an argument names (`pp =
+  &p`, `pp = qq`, `&s->f`), not ordered by a flow; a store through `*pp`
+  marks the place behind written, a store to `*pp` or a move out of it
+  `pp`; `same` (R53) leaves a `T **` parameter alone
+- Refused: a move out of `*pp` (`t = *pp`, `*to = *from`, `return *pp`)
+  whose next statement is not a store `*pp = e` that does not read
+  `*pp`: C still holds the pointer that Rust takes out, `` a move out of
+  the place behind a pointer that the next statement does not store to:
+  no rule yet ``; the place behind holds a borrow, as `const char **out` that
+  gets a literal, `` the place behind the pointer `out`: a borrow behind
+  a pointer: no rule yet ``; the address of a global's pointer as the
+  argument, `` the address of a global's pointer for a pointer to a
+  pointer: the callee would borrow the globals twice ``; another argument
+  of the call that reads a variable of the argument, `f(p, &p)`, `f(&p,
+  &p)`, `` two arguments of one call that name the same place, or a
+  place and the pointer in it: … ``; `*pp += n`, `(*pp)++`, `` a cursor
+  behind a pointer: no rule yet ``; a local, a result, a field or a
+  global of type `T **`, `pp[i]`, `pp + n`, `pp++`, a NULL argument, ``
+  a pointer to a pointer ``; `T ***`, `void **`, a pointer to a pointer
+  to a function, a cast to or from `T **`, `pp == qq`, each with its own
+  reason
+- Motivation: programs outside the development set hand the address of a
+  list's head or of an array's owner to a function that replaces it; no
+  development program needs it
+- Changes: extends R7 and R8 by the slot behind a pointer, and the test
+  for NULL, the move out with `take()` and `free` from a field to `*pp`
+
 ## R66: a read of an owner follows its memory
 
 - C: `q = p;` or `T *q = p;` where `p` and the local `q` both own what

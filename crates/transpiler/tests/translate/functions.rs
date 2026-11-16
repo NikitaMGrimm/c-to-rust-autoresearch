@@ -616,7 +616,7 @@ fn what_no_rule_holds_for_a_pointer_to_a_function_is_refused() {
         (
             "fn_pointer_to_pointer",
             "static void pick(int (**out)(int)) { *out = twice; }\nint main(void) { int (*f)(int) = square; pick(&f); return f(1); }\n",
-            "unsupported: a pointer to a pointer, at line 7",
+            "unsupported: a pointer to a pointer to a function, at line 7",
         ),
         (
             "fn_sizeof",

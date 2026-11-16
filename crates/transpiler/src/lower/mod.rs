@@ -962,6 +962,10 @@ struct Lower<'a> {
     /// The local pointer that the assignment being written moves on
     /// through itself, `p = p->next`.
     walking: Option<VarId>,
+    /// The pointer to a pointer `pp` whose place the statement after the
+    /// one being written stores to, `*pp = e;` with an `e` that does not
+    /// read `*pp`.
+    restored: Option<VarId>,
     /// The block entered at a label that is being translated (R49).
     entered: Option<Entered>,
     /// The library's records that the translation names: `div_t` and its
@@ -995,6 +999,7 @@ impl<'a> Lower<'a> {
             counters: Vec::new(),
             split: false,
             walking: None,
+            restored: None,
             entered: None,
             quotients: Default::default(),
             zeroing: Default::default(),

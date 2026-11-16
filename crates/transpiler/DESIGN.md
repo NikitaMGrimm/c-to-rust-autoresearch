@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `pointers` makes a local pointer to a pointer that only names one pointer variable that variable, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `follow` names the local that got an owner's memory where C reads the owner again, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias`, `follow` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `pointers` makes a local pointer to a pointer that only names one pointer variable that variable, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them (not for a `T **` parameter, which lends a place), `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `follow` names the local that got an owner's memory where C reads the owner again, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias`, `follow` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -115,8 +115,9 @@ Keep to these:
 
 ### Pointers
 
-A *slot* is a place that holds a pointer: a variable, a field or a function's
-result. The analysis gives each slot nine facts, and they decide its type:
+A *slot* is a place that holds a pointer: a variable, a field, a function's
+result, or the place behind a pointer to a pointer (see Pointers to
+pointers). The analysis gives each slot nine facts, and they decide its type:
 
 | Fact | Set when | Effect |
 | --- | --- | --- |
@@ -287,7 +288,7 @@ leaves `None` behind as it does in a field (`take()`), and `free(*pp)`.
 | a parameter `T **out`; the argument is `&p` for a local pointer `p`, `&s.field`, `&s->field`, `&a[i]` of an array of pointers, or the caller's own `T **` | `&mut` or `&` of what the place holds, as in the table above |
 | `*out = e;`, `*out` as a value, `(*out)->f`, `if (*out)`, `*out == NULL`, `free(*out)` | the rules for a pointer in a field, on `*out` |
 | a function that stores through `out` on every path before it reads it, with callers that pass the address of a local | a second result would say it; built as `&mut` until every caller can be rewritten |
-| the argument is the address of a global pointer | refused: the callee would hold a borrow of `Globals` beside `globals` |
+| the argument is the address of a global pointer, or of a place reached through one | refused: the callee would hold a borrow of `Globals` beside `globals` |
 | two arguments of one call that name the same place, or a place and the pointer in it, `f(p, &p)` | refused: Rust takes `p` before it lends it |
 | a local `T **pp` that only ever names one pointer variable, a local or a parameter, and is only used as `*pp` and `pp[0]` | that variable, by R61, before the analysis; `p` may change, and `*pp` reads its value of the moment as C does. `pp` stored to twice, moved, indexed at another place, compared, handed on, returned, its address taken, cast, `&s.f`, `&a[i]`, `&global`, `void **`, `T ***`, and a use where another `p` hides it stay refused |
 | a local `T **link` that moves along a list, `link = &(*link)->next;`, and is stored through at the end | `let mut link = &mut head; while link.is_some() { link = &mut link.as_mut().unwrap().next; } *link = Some(node);`: a borrow that moves down the owners. Refused until the slot behind a local that is assigned twice has a rule |
@@ -305,9 +306,21 @@ leaves `None` behind as it does in a field (`take()`), and `free(*pp)`.
 | `pp == qq`, `pp - qq` outside a cursor | refused: a comparison of two addresses |
 
 A shape that has no rule yet is refused as `a pointer to a pointer`, or as
-`a pointer in an array` for an array's elements. Built so far: none of the
-table but the end of a number (`char **end` of `strtol`, see Cursors) and
-a local `T **pp` that only names one pointer variable (R61).
+`a pointer in an array` for an array's elements. The analysis joins the
+slot behind `pp` with the place an argument or a store names: the two
+take the union of their facts each round, so that neither is ordered
+after the other. A place behind that holds a borrow (`const char **out`
+that gets a literal, `&mut &str`) needs two lifetimes and is refused as
+`a borrow behind a pointer`; an argument that reads a variable of
+another argument of the call is refused, also where both are shared
+borrows. Built so far (R65): a parameter `T **` for a record, a number or
+`char`, with the arguments `&p`, `&s.field`, `&s->field` and the
+caller's own `T **`, and inside it the rules for a pointer in a field on
+`*pp`, where a move out of `*pp` is refused unless the next statement
+stores to `*pp` again; a local `T **pp` that only names one pointer
+variable (R61); and the end of a number (`char **end` of `strtol`, see
+Cursors).
+The rest of the table is refused.
 
 ### Cursors
 
@@ -648,9 +661,10 @@ place:
   them: an output parameter that is really a result (`int parse(const
   char *s, int *out)` is `-> Option<i32>`, `T **out` that is stored
   before it is read a second result), a `T **` that is only read through
-  as the `Option<&T>` it points to, and an end of a number in `argv[i]`
-  for an `i` that changes, which needs the argument in a variable of its
-  own.
+  as the `Option<&T>` it points to, a place behind a pointer that holds a
+  borrow (`&mut &str`, which needs a lifetime for each level), and an end
+  of a number in `argv[i]` for an `i` that changes, which needs the
+  argument in a variable of its own.
 - **A pointer beside the variable it names.** A local pointer that only
   names one fixed place is that place (R61). One that names a place through
   another pointer, `&q->f`, or at an index that changes, `&a[i]`, or that

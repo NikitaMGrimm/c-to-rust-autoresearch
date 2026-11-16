@@ -5,7 +5,7 @@
 use super::pointer::Repr;
 use super::{Lower, R, unsupported};
 use crate::c::{BinOp, Expr, ExprKind, Program, Type, UnOp, VarId};
-use crate::facts::{Access, Slot, place_slot};
+use crate::facts::{Access, Slot, place_slot, to_pointer};
 use crate::normalise::is_search;
 use crate::rust;
 use syn::parse_quote;
@@ -607,7 +607,7 @@ impl Lower<'_> {
             ExprKind::Cast(inner) if inner.ty.is_pointer() || inner.ty == Type::Found => {
                 self.optional(inner)
             }
-            ExprKind::Var(_) | ExprKind::Member { .. } => {
+            ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Deref(_) => {
                 // The analysis leaves the test only of a pointer that may
                 // be NULL, and of one that may be `argv[argc]`.
                 if let Some(slot) = place_slot(pointer)
@@ -841,6 +841,9 @@ impl Lower<'_> {
             if !ty.is_pointer() || ty.function().is_some() {
                 continue;
             }
+            if to_pointer(ty) {
+                self.lend_place(position, args)?;
+            }
             let Some(memory) = pointed(arg) else {
                 continue;
             };
@@ -948,6 +951,41 @@ impl Lower<'_> {
             let (lower, upper) = #array.split_at_mut(#high_index);
             #call
         }))
+    }
+
+    /// R65: the argument for a parameter `T **` lends the place it names
+    /// for the whole call, so no other argument may read a variable of it,
+    /// and the place may not be a global's.
+    fn lend_place(&self, position: usize, args: &[Expr]) -> R<()> {
+        let program = self.program;
+        let arg = &args[position];
+        let mut vars = Vec::new();
+        arg.any(&mut |part| {
+            if let ExprKind::Var(var) = part.kind {
+                vars.push(var);
+            }
+            false
+        });
+        if vars.iter().any(|&var| program.vars[var].kind.is_global()) {
+            return unsupported(
+                "the address of a global's pointer for a pointer to a pointer: the callee would borrow the globals twice",
+                arg.at,
+            );
+        }
+        let reads = |other: &Expr| {
+            other.any(&mut |part| matches!(part.kind, ExprKind::Var(var) if vars.contains(&var)))
+        };
+        if args
+            .iter()
+            .enumerate()
+            .any(|(other, value)| other != position && reads(value))
+        {
+            return unsupported(
+                "two arguments of one call that name the same place, or a place and the pointer in it: Rust takes the pointer before it lends the place",
+                arg.at,
+            );
+        }
+        Ok(())
     }
 
     /// R54: whether the first of two addresses of elements of one array,

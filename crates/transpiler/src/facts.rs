@@ -17,6 +17,53 @@ pub enum Slot {
     Var(VarId),
     Field(RecordId, usize),
     Return(FuncId),
+    /// What a pointer to a pointer points to: the place that holds a
+    /// pointer, whose facts are those of every place it may name.
+    Behind(Outer),
+}
+
+/// A slot that holds a pointer to a pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Outer {
+    Var(VarId),
+    Field(RecordId, usize),
+    Return(FuncId),
+}
+
+impl Slot {
+    /// The slot behind this slot's pointers, one level down: a pointer
+    /// behind a pointer behind a pointer has none.
+    pub fn behind(self) -> Option<Slot> {
+        Some(Slot::Behind(match self {
+            Slot::Var(var) => Outer::Var(var),
+            Slot::Field(record, field) => Outer::Field(record, field),
+            Slot::Return(function) => Outer::Return(function),
+            Slot::Behind(_) => return None,
+        }))
+    }
+
+    /// The slot whose pointer points to this one, for a slot behind one.
+    pub fn outer(self) -> Option<Slot> {
+        match self {
+            Slot::Behind(Outer::Var(var)) => Some(Slot::Var(var)),
+            Slot::Behind(Outer::Field(record, field)) => Some(Slot::Field(record, field)),
+            Slot::Behind(Outer::Return(function)) => Some(Slot::Return(function)),
+            _ => None,
+        }
+    }
+}
+
+/// The C type of the pointers that a slot holds.
+pub fn slot_type(program: &Program, slot: Slot) -> &Type {
+    match slot {
+        Slot::Var(var) => &program.vars[var].ty,
+        Slot::Field(record, field) => &program.records[record].fields[field].ty,
+        Slot::Return(function) => &program.functions[function].ret,
+        Slot::Behind(_) => slot
+            .outer()
+            .and_then(|outer| slot_type(program, outer).element())
+            .unwrap_or(&Type::Void),
+    }
 }
 
 /// What the program does with the pointers a slot holds.
@@ -394,11 +441,12 @@ impl Facts {
             }
             ExprKind::Index(base, _) if is_argv(program, base) => vec![Source::Argument],
             ExprKind::Index(..) if pointer.ty.function().is_some() => vec![Source::Function],
-            ExprKind::Index(..) | ExprKind::Deref(_) => {
-                vec![Source::Unknown(
+            ExprKind::Index(..) | ExprKind::Deref(_) => match place_slot(pointer) {
+                Some(slot) => vec![Source::Slot(slot)],
+                None => vec![Source::Unknown(
                     "a pointer stored in an array or behind a pointer",
-                )]
-            }
+                )],
+            },
             ExprKind::Function(_) => vec![Source::Function],
             _ => vec![Source::Unknown("a pointer the analysis has no model for")],
         }
@@ -443,11 +491,24 @@ pub fn place_slot(place: &Expr) -> Option<Slot> {
     if !place.ty.is_pointer() {
         return None;
     }
-    match place.kind {
-        ExprKind::Var(var) => Some(Slot::Var(var)),
-        ExprKind::Member { record, field, .. } => Some(Slot::Field(record, field)),
+    match &place.kind {
+        ExprKind::Var(var) => Some(Slot::Var(*var)),
+        ExprKind::Member { record, field, .. } => Some(Slot::Field(*record, *field)),
+        // `*pp` and `pp[i]`, for a variable or a field `pp`.
+        ExprKind::Deref(pointer) | ExprKind::Index(pointer, _)
+            if matches!(pointer.kind, ExprKind::Var(_) | ExprKind::Member { .. }) =>
+        {
+            place_slot(pointer)?.behind()
+        }
         _ => None,
     }
+}
+
+/// Whether the pointer points to a place that holds a pointer to data.
+pub fn to_pointer(pointer: &Type) -> bool {
+    pointer
+        .element()
+        .is_some_and(|element| element.is_pointer() && element.function().is_none())
 }
 
 /// The pointer through which the place is reached, if it is reached
@@ -505,6 +566,10 @@ struct Walk<'a> {
     known: &'a Facts,
     function: Option<FuncId>,
     flows: Vec<Flow>,
+    /// The slots that are one memory: a slot behind a pointer and a place
+    /// it names, or the slots behind two pointers that one value reaches.
+    /// `None` for a place the analysis does not follow.
+    joins: Vec<(Slot, Option<Slot>)>,
     /// The local pointers declared without a value.
     unset: Vec<(VarId, Option<FuncId>)>,
     pointers: HashMap<Slot, Pointer>,
@@ -529,6 +594,7 @@ impl<'a> Walk<'a> {
             known,
             function: None,
             flows: Vec::new(),
+            joins: Vec::new(),
             unset: Vec::new(),
             pointers: HashMap::new(),
             mutated: HashSet::new(),
@@ -812,10 +878,7 @@ impl<'a> Walk<'a> {
                     match (op, place_slot(target)) {
                         (None, Some(slot)) => self.flow(value, slot),
                         // `p += n` moves within an array.
-                        (Some(_), Some(slot)) => {
-                            let moved = self.seed(slot);
-                            (moved.many, moved.bytes) = (true, true);
-                        }
+                        (Some(_), Some(slot)) => self.moves(slot),
                         (_, None) => {}
                     }
                 }
@@ -823,8 +886,7 @@ impl<'a> Walk<'a> {
             ExprKind::IncDec { target, .. } => {
                 self.write(target);
                 if let Some(slot) = place_slot(target) {
-                    let moved = self.seed(slot);
-                    (moved.many, moved.bytes) = (true, true);
+                    self.moves(slot);
                 }
             }
             ExprKind::Index(base, index) => {
@@ -931,8 +993,12 @@ impl<'a> Walk<'a> {
                     self.seed(slot).owned = true;
                 }
             }
-            // What a field owned is taken out of its record.
-            if matches!(freed.uncast().kind, ExprKind::Member { .. }) {
+            // What a field owned is taken out of its record, and what a
+            // place behind a pointer owned out of that place.
+            if matches!(
+                freed.uncast().kind,
+                ExprKind::Member { .. } | ExprKind::Deref(_)
+            ) {
                 self.write(freed.uncast());
             }
         }
@@ -1050,6 +1116,31 @@ impl<'a> Walk<'a> {
         self.pointers.entry(slot).or_default()
     }
 
+    /// Records that the slot's pointer moves within an array.
+    fn moves(&mut self, slot: Slot) {
+        let moved = self.seed(slot);
+        (moved.many, moved.bytes) = (true, true);
+        if matches!(slot, Slot::Behind(_)) {
+            moved.conflict = Some("a cursor behind a pointer: no rule yet");
+        }
+    }
+
+    /// The slot that a pointer to a pointer names: the place whose address
+    /// it is, or the slot behind the pointer it copies. `None` for any
+    /// other, NULL included, which names nothing and is not followed.
+    fn named(&self, pointer: &Expr) -> Option<Slot> {
+        let pointer = pointer.uncast();
+        match &pointer.kind {
+            // `argv` is the program's arguments, which no slot holds.
+            _ if is_argv(self.program, pointer) => None,
+            ExprKind::AddrOf(place) => place_slot(place),
+            ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Deref(_) => {
+                place_slot(pointer)?.behind()
+            }
+            _ => None,
+        }
+    }
+
     /// Records that the pointer's value goes into the slot.
     fn flow(&mut self, pointer: &Expr, to: Slot) {
         self.flow_of(pointer, to, false);
@@ -1059,8 +1150,17 @@ impl<'a> Walk<'a> {
     /// a test has found it not to be NULL.
     fn flow_of(&mut self, pointer: &Expr, to: Slot, set: bool) {
         let held = pointer.uncast();
+        // A pointer to a pointer makes the places behind both ends one.
+        if to_pointer(slot_type(self.program, to))
+            && let Some(behind) = to.behind()
+            && !matches!(held.kind, ExprKind::Null)
+        {
+            self.joins.push((behind, self.named(held)));
+        }
         let holder = match held.kind {
-            ExprKind::Member { .. } => Some(self.known.root(self.program, held)),
+            ExprKind::Member { .. } | ExprKind::Deref(_) => {
+                Some(self.known.root(self.program, held))
+            }
             ExprKind::Var(var) if self.program.vars[var].kind.is_global() => Some(Root::Var(var)),
             // `&s->items[i]`: the element is reached through the record
             // that holds the pointer to it.
@@ -1103,13 +1203,7 @@ impl<'a> Walk<'a> {
 
     /// Whether the slot's pointers point to `char`.
     fn holds_chars(&self, slot: Slot) -> bool {
-        let program = self.program;
-        let ty = match slot {
-            Slot::Var(var) => &program.vars[var].ty,
-            Slot::Field(record, field) => &program.records[record].fields[field].ty,
-            Slot::Return(function) => &program.functions[function].ret,
-        };
-        ty.element() == Some(&Type::Char)
+        slot_type(self.program, slot).element() == Some(&Type::Char)
     }
 
     /// Records a store to the place.
@@ -1117,9 +1211,13 @@ impl<'a> Walk<'a> {
         let root = self.known.root(self.program, place);
         self.write_root(&root, self.function);
         // Rust reaches what a field points to through the record, so a
-        // store through the field needs a writable record.
+        // store through the field needs a writable record, and one through
+        // `*pp` a writable `pp`.
         if let Some(pointer) = dereferenced(place)
-            && matches!(pointer.uncast().kind, ExprKind::Member { .. })
+            && matches!(
+                pointer.uncast().kind,
+                ExprKind::Member { .. } | ExprKind::Deref(_)
+            )
         {
             self.write(pointer.uncast());
         }
@@ -1158,6 +1256,7 @@ impl<'a> Walk<'a> {
     /// Spreads the facts along the flows until nothing changes.
     fn solve(&mut self) {
         let flows = std::mem::take(&mut self.flows);
+        let joins = std::mem::take(&mut self.joins);
         loop {
             let before = (
                 self.pointers.clone(),
@@ -1263,6 +1362,30 @@ impl<'a> Walk<'a> {
                 }
                 *self.seed(flow.to) = to;
             }
+            // A slot behind a pointer and the place it names are one
+            // memory, so each has every fact of the other.
+            for &(behind, named) in &joins {
+                let one = *self.seed(behind);
+                let Some(named) = named else {
+                    self.seed(behind).conflict =
+                        Some("it points to a place that the analysis does not follow");
+                    continue;
+                };
+                let other = *self.seed(named);
+                let both = Pointer {
+                    written: one.written || other.written,
+                    many: one.many || other.many,
+                    owned: one.owned || other.owned,
+                    nullable: one.nullable || other.nullable,
+                    argument: one.argument || other.argument,
+                    bytes: one.bytes || other.bytes,
+                    local: one.local || other.local,
+                    environment: one.environment || other.environment,
+                    conflict: one.conflict.or(other.conflict),
+                };
+                *self.seed(behind) = both;
+                *self.seed(named) = both;
+            }
             if before
                 == (
                     self.pointers.clone(),
@@ -1285,14 +1408,16 @@ impl<'a> Walk<'a> {
             Slot::Return(_) => {
                 pointer.conflict = Some("it points to a variable that ends with the function")
             }
-            Slot::Field(..) => {}
+            Slot::Field(..) | Slot::Behind(_) => {}
         }
     }
 
+    /// Whether what the slot holds outlives the function: also a place
+    /// behind a pointer, which may be the caller's.
     fn outlives_locals(&self, slot: Slot) -> bool {
         match slot {
             Slot::Var(var) => self.program.vars[var].kind.is_global(),
-            Slot::Field(..) | Slot::Return(_) => true,
+            Slot::Field(..) | Slot::Return(_) | Slot::Behind(_) => true,
         }
     }
 }

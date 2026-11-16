@@ -18,9 +18,11 @@ impl Lower<'_> {
             return Ok(labelled);
         }
         let mut out = Vec::new();
+        let outer = self.restored;
         let mut stmts = stmts.iter().peekable();
         while let Some(stmt) = stmts.next() {
             let nesting = self.nesting.len();
+            self.restored = None;
             // R35: a declaration in a statement expression, with its first
             // value.
             let lowered = if let Stmt::Decl(var) = stmt
@@ -29,9 +31,11 @@ impl Lower<'_> {
                 && of == var
             {
                 stmts.next();
+                self.restored = stmts.peek().and_then(|next| restores(next));
                 self.decl_with(*var, Some(value))
                     .map(|declared| out.extend(declared))
             } else {
+                self.restored = stmts.peek().and_then(|next| restores(next));
                 self.stmt(stmt, &mut out)
             };
             if lowered.is_err() {
@@ -39,6 +43,7 @@ impl Lower<'_> {
             }
             self.listed(lowered)?;
         }
+        self.restored = outer;
         Ok(out)
     }
 
@@ -1248,6 +1253,30 @@ fn declared(stmts: &[Stmt]) -> impl Iterator<Item = VarId> + '_ {
 }
 
 /// The label of the block that a `goto` to the C label leaves.
+/// The pointer `pp` of a statement `*pp = e;` whose `e` does not read
+/// `*pp`.
+fn restores(stmt: &Stmt) -> Option<VarId> {
+    let Stmt::Expr(expr) = stmt else { return None };
+    let ExprKind::Assign {
+        op: None,
+        target,
+        value,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    let ExprKind::Deref(pointer) = &target.kind else {
+        return None;
+    };
+    let ExprKind::Var(var) = pointer.kind else {
+        return None;
+    };
+    let reads = value.any(&mut |part| {
+        matches!(&part.kind, ExprKind::Deref(inner) if matches!(inner.kind, ExprKind::Var(read) if read == var))
+    });
+    (!reads).then_some(var)
+}
+
 fn block_label(label: &str) -> syn::Lifetime {
     let name = format!("'{}", crate::names::label(label));
     syn::Lifetime::new(&name, proc_macro2::Span::call_site())

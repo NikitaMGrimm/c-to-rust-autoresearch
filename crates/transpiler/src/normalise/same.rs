@@ -134,7 +134,13 @@ impl Copies {
             return;
         }
         let params = &function.params;
-        let lent = |param: &Param| param.ty.is_pointer() && param.ty.function().is_none();
+        // R65: a pointer to a pointer lends the place it names, which one
+        // call lends once; the lowering refuses it.
+        let lent = |param: &Param| {
+            param.ty.is_pointer()
+                && param.ty.function().is_none()
+                && !crate::facts::to_pointer(&param.ty)
+        };
         let mut groups: Vec<usize> = (0..args.len()).collect();
         for later in 0..args.len() {
             groups[later] = (0..later)
