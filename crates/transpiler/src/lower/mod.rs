@@ -1470,6 +1470,7 @@ impl Lower<'_> {
         self.last = None;
         let mut body = body?;
         if let Some(value) = last {
+            self.guard(value);
             let value = match self.in_main() {
                 false => self.returned(value).map(Some),
                 true if self.exits => self.exit_code(value).map(Some),
@@ -1479,6 +1480,7 @@ impl Lower<'_> {
                 Ok(value) => body.extend(value.map(|value| syn::Stmt::Expr(value, None))),
                 Err(refusal) => self.listed(Err(refusal))?,
             }
+            self.unguard();
             // A `main` without an exit code ends with `return 0`, which
             // needs no code.
         }

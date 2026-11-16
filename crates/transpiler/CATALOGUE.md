@@ -179,7 +179,7 @@ Entry format, newest last:
   local or a parameter) and before anything stored to it, since Rust moved
   it there, or took it and left `None` in the global; a field that gives
   up what it owns and is read again, by its statement (`f(s->p, s->p !=
-  NULL)`) or by a later one of the block or the value that the function
+  NULL)`, also where it is the `return` that ends the function) or by a later one of the block or the value that the function
   returns at its end, also at another index of the same array or in a
   function of the program that is called, before a store to it, for the
   same reason, but not a field that its statement reads only on the way to

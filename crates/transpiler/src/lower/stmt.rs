@@ -10,6 +10,21 @@ use crate::rust;
 use syn::parse_quote;
 
 impl Lower<'_> {
+    /// The fields that the value which the function returns at its end
+    /// reads more than once: nothing follows it, but a move out of one of
+    /// them would leave `None` for its other reads.
+    pub(super) fn guard(&mut self, value: &Expr) {
+        self.paths = read_along(value);
+        self.twice = read_twice(value);
+        let later = read_later(value, std::iter::empty(), None, self.program);
+        self.twice.extend(later);
+    }
+
+    pub(super) fn unguard(&mut self) {
+        self.paths.clear();
+        self.twice.clear();
+    }
+
     pub(super) fn stmts(&mut self, stmts: &[Stmt]) -> R<Vec<syn::Stmt>> {
         if let Some(entered) = self.entered(stmts)? {
             return Ok(entered);

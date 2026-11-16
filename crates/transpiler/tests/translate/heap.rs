@@ -612,6 +612,24 @@ fn a_field_read_on_the_way_to_the_one_that_is_moved_out_is_not_read_again() {
         &rust,
         &["drop(list.rest.as_deref_mut().unwrap().rest.take());"],
     );
+    // The value that the function returns at its end is a statement too.
+    assert!(
+        translate(
+            "returned",
+            &program("return peek(list->rest, list->rest->rest->weight);")
+        )
+        .is_ok()
+    );
+    assert!(
+        translate(
+            "returned-move",
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct link { int weight; struct link *rest; };\nint consume(struct link *at, int weight) { printf(\"%d\\n\", weight); free(at); return 0; }\nint main(void) {\n    struct link *list = calloc(1, sizeof *list);\n    list->rest = calloc(1, sizeof *list->rest);\n    list->rest->rest = calloc(1, sizeof *list->rest->rest);\n    return consume(list->rest, list->rest->rest->weight);\n}\n"
+        )
+        .unwrap_err()
+        .starts_with(
+            "unsupported: a move out of a field that is read again before it is stored to: no rule yet"
+        )
+    );
     // The same field beside the path, or the place read again later, is
     // a second read.
     for (name, end) in [
