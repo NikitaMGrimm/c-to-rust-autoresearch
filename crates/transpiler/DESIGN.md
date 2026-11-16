@@ -208,6 +208,72 @@ A local pointer that is declared without a value and never assigned counts
 as NULL: reading it is undefined in C, and `None` is a value that Rust can
 write for it.
 
+### Pointers to pointers
+
+`T **pp` is a pointer to a place that itself holds a pointer. The place is
+a slot like any other: the variable, the field or the element whose address
+`pp` holds, or the elements of the array that `pp` owns. So `pp` has two
+levels of facts. Its own say how it holds the place (`&`, `&mut`, a slice,
+a `Vec`), and those of the slot **behind** it (`Slot::Behind`) say what the
+place holds (`Option<Box<T>>`, `Vec<T>`, `&str`). An array of pointers,
+`T *a[N]`, has the same slot behind it for its elements. The Rust type is
+the two put together, and no shape gets a type that Rust would not use for
+it:
+
+| C | Rust | Why a Rust programmer writes it so |
+| --- | --- | --- |
+| `void push(struct node **head, int v)`, called as `push(&list, 1)` | `fn push(head: &mut Option<Box<Node>>, v: i32)`, `push(&mut list, 1)` | the function replaces the caller's owner, so it borrows the owner itself |
+| the same parameter where nothing is stored through it or behind it | `head: &Option<Box<Node>>` | a shared borrow of the owner; `Option<&Node>` would say it better and waits for the rewrite below |
+| `int **rows = malloc(n * sizeof(int *)); rows[i] = malloc(m * sizeof(int));` | `Vec<Vec<i32>>` | an owned table of owned rows |
+| `f(int **rows, int n)` for it | `rows: &[Vec<i32>]`, `&mut [Vec<i32>]` | a slice of the rows |
+| `struct node *buckets[8];`, `struct node **b = calloc(8, sizeof *b);` | `[Option<Box<Node>>; 8]`, `Vec<Option<Box<Node>>>` | each element is a list that may be empty |
+| `char *names[] = { "a", "b" };`, `f(char **names, int n)` | `[&str; 2]`, `names: &[&str]` | text that nothing stores to is `&str`, and an array of it a slice |
+| `int *at[2] = { &x, &y };` | `[&i32; 2]`, `[&mut i32; 2]` | borrows in an array, as far as the borrow checker lets them live |
+| `int **pp = &p;` for a local that only ever names `p` | no variable: `*pp` is `p` and `**pp` is `*p` (R61) | a second name for one variable is that variable |
+| `argv` handed to a function, `run(char **argv)` | `argv: &[String]` | the arguments are the program's `Vec<String>` |
+
+The facts of the slot behind a pointer come from flows as for any slot,
+with one difference: a pointer to a place and the place are one memory, so
+their facts are equal, not ordered. `pp = &p` joins the slot behind `pp`
+with `p`'s slot, `pp = qq` and an argument join the two slots behind, `pp =
+&s->next` joins with the field, and `pp = &a[i]`, `pp = a` join with the
+elements of `a`. `*pp = e` and `pp[i] = e` are flows into the slot behind,
+and `*pp`, `pp[i]` as values are flows out of it. What `malloc` and
+`calloc` give `pp` is memory of the heap, so the slot behind owns what it
+holds, as a field does; the zero that `calloc` leaves in an element is
+NULL.
+
+`*pp` and `pp[i]` are places that hold a pointer, as `s->next` is, and the
+rules for a pointer in a field apply to them: a test for NULL, the
+narrowing of R10, `(*pp)->field`, a store, a move out of the place, which
+leaves `None` behind as it does in a field (`take()`), and `free(*pp)`.
+
+| Shape | Rust, or the refusal |
+| --- | --- |
+| a parameter `T **out`; the argument is `&p` for a local pointer `p`, `&s.field`, `&s->field`, `&a[i]` of an array of pointers, or the caller's own `T **` | `&mut` or `&` of what the place holds, as in the table above |
+| `*out = e;`, `*out` as a value, `(*out)->f`, `if (*out)`, `*out == NULL`, `free(*out)` | the rules for a pointer in a field, on `*out` |
+| a function that stores through `out` on every path before it reads it, with callers that pass the address of a local | a second result would say it; built as `&mut` until every caller can be rewritten |
+| the argument is the address of a global pointer | refused: the callee would hold a borrow of `Globals` beside `globals` |
+| two arguments of one call that name the same place, or a place and the pointer in it, `f(p, &p)` | refused: Rust takes `p` before it lends it |
+| a local `T **pp` that only ever names one pointer variable | that variable, by R61 |
+| a local `T **link` that moves along a list, `link = &(*link)->next;`, and is stored through at the end | `let mut link = &mut head; while link.is_some() { link = &mut link.as_mut().unwrap().next; } *link = Some(node);`: a borrow that moves down the owners. Refused until the slot behind a local that is assigned twice has a rule |
+| an array of pointers, a local, a global or a field: `T *a[N]`, with or without an initialiser | `[P; N]` for the type `P` of the slot behind; an element without a value is `None`, and an array of owners is built element by element since an owner is not `Copy` |
+| `T **m` from `malloc(n * sizeof(T *))` or `calloc(n, sizeof(T *))` | `Vec<P>` of `n` elements; after `calloc` an element is NULL, so `P` is an `Option` unless every element is stored to before it is read |
+| `m[i] = malloc(…)`, `m[i][j]`, `free(m[i])`, `free(m)` | a store to the element, `m[i][j]`, `drop(take(&mut m[i]))`, `drop(m)` |
+| `t = a[i]; a[i] = a[j]; a[j] = t;` for owners | refused where a move out of an element would leave two owners; `a.swap(i, j)` is the rule to build for the exact shape |
+| a cursor over an array of pointers, `for (char **p = names; p < names + n; p++)` | an index, as for any cursor; `*p` is `names[p]` |
+| `char *names[]` of string literals; an element stored to with another literal | `[&str; N]`; a store of a literal |
+| `argv` handed on, `argv + 1`, `char **p = argv;` and `*p++` | `&args[1..]`, a cursor over `args`; `argv[i][j]` stays refused (a byte of an argument) |
+| what a pointer behind a pointer points to is itself moved: `const char **s` with `*s += n`, `(*s)++` | refused: `a cursor behind a pointer`; it should be `&mut usize` beside the text |
+| a result of type `T **`, a `T **` in a record or a global, or kept in a `static` | refused |
+| `T ***`, a pointer to a pointer to a function, `void **`, a cast between `T **` and another pointer type | refused |
+| `sizeof(T *)`, `sizeof *m` in an allocation's size | counts elements, as `sizeof(T)` does for `T *`; anywhere else it is C's 8 |
+| `pp == qq`, `pp - qq` outside a cursor | refused: a comparison of two addresses |
+
+A shape that has no rule yet is refused as `a pointer to a pointer`, or as
+`a pointer in an array` for an array's elements. Built so far: none of the
+table but the end of a number (`char **end` of `strtol`, see Cursors).
+
 ### Cursors
 
 A pointer that walks an array is not a borrow that moves. It is an index
@@ -542,12 +608,14 @@ place:
   of reading shares what is left, as in C (`lower/input.rs`, and
   `read_line` and `read_items` in `library.rs`). `getchar`, `%s` and `%f` belong
   there too. The result of `scanf` is its count wherever it is a value.
-- **Pointers to pointers and output parameters.** `T **out` that is only
-  stored through is `&mut Option<Box<T>>` or a second result. The end
-  pointer of the `strtol` family is the one case built (R21, R36), as a
-  second result of the call (see Cursors above). An end in `argv[i]` for an
-  `i` that changes waits for the same rule, which needs the argument in a
-  variable of its own.
+- **Pointers to pointers and output parameters.** See Pointers to
+  pointers above for the shapes and which of them have a rule. Beside
+  them: an output parameter that is really a result (`int parse(const
+  char *s, int *out)` is `-> Option<i32>`, `T **out` that is stored
+  before it is read a second result), a `T **` that is only read through
+  as the `Option<&T>` it points to, and an end of a number in `argv[i]`
+  for an `i` that changes, which needs the argument in a variable of its
+  own.
 - **A pointer beside the variable it names.** A local pointer that only
   names one fixed place is that place (R61). One that names a place through
   another pointer, `&q->f`, or at an index that changes, `&a[i]`, or that
