@@ -1583,9 +1583,15 @@ impl<'r> Gen<'r> {
                 0 => format!("{} <<= {};", place.text, 1 + self.below(3)),
                 1 => format!("{} >>= {};", place.text, 1 + self.below(3)),
                 _ => {
-                    let op = self.pick(&["+=", "-=", "*=", "^=", "|="]);
+                    let op = self.pick(&["+", "-", "*", "^", "|"]);
                     let e = self.expr(1);
-                    format!("{} {op} {};", place.text, bare(&e.text))
+                    // A narrow place is promoted to `int`, and a wider signed
+                    // operand makes the arithmetic signed, so it may not
+                    // overflow there; only the store back wraps.
+                    if binary(op, &place.e(), &e).is_none() {
+                        return false;
+                    }
+                    format!("{} {op}= {};", place.text, bare(&e.text))
                 }
             };
             self.line(line);
@@ -4382,6 +4388,17 @@ impl Gen<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arithmetic_on_a_promoted_unsigned_place_is_range_checked() {
+        // `unsigned char *= int` multiplies as `int`.
+        let byte = E::new("byte".to_owned(), Ty::UChar, (0, 255));
+        let wide = E::new("v".to_owned(), Ty::Int, (0, 99_980_001));
+        assert!(binary("*", &byte, &wide).is_none());
+        assert!(binary("*", &byte, &E::lit(7)).is_some());
+        let unsigned = E::new("u".to_owned(), Ty::UInt, (0, u32::MAX.into()));
+        assert!(binary("*", &unsigned, &wide).is_some());
+    }
 
     #[test]
     fn candidates_depend_on_seed_and_index_only() {
