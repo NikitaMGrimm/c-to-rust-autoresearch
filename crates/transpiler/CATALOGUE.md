@@ -182,7 +182,9 @@ Entry format, newest last:
   NULL)`) or by a later one of the block or the value that the function
   returns at its end, also at another index of the same array or in a
   function of the program that is called, before a store to it, for the
-  same reason; and a function
+  same reason, but not a field that its statement reads only on the way to
+  the one it gives up, `free(a->next->next)`, which stays what it was; and
+  a function
   that the program names and that returns an owner out of a record it
   only borrows, `return p->next;`, which would leave `None` in the record
 - Needs: `Facts::pointer` (`owned`, `many`); `Facts::truth`;

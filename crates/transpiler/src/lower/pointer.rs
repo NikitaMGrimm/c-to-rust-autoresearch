@@ -537,7 +537,10 @@ impl Lower<'_> {
             _ => false,
         };
         if let ExprKind::Member { record, field, .. } = pointer.kind
-            && self.twice.contains(&(record, field))
+            && (self.twice.contains(&(record, field))
+                || self.paths.iter().any(|&(path, reads)| {
+                    path == (record, field) && super::stmt::on_path(pointer, path) != reads
+                }))
         {
             return unsupported(
                 "a move out of a field that is read again before it is stored to: no rule yet",

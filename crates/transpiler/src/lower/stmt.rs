@@ -29,6 +29,7 @@ impl Lower<'_> {
                 Stmt::Decl(var) => self.program.vars[*var].init.as_ref(),
                 _ => None,
             };
+            self.paths = moving.map_or_else(Vec::new, read_along);
             self.twice = moving.map_or_else(Vec::new, |moving| {
                 let mut fields = read_twice(moving);
                 fields.extend(read_later(
@@ -47,6 +48,7 @@ impl Lower<'_> {
                 && of == var
             {
                 stmts.next();
+                self.paths = read_along(value);
                 self.twice = read_twice(value);
                 let later = read_later(value, stmts.clone(), self.last.as_ref(), self.program);
                 self.twice.extend(later);
@@ -76,6 +78,7 @@ impl Lower<'_> {
         self.restored = outer;
         self.restored_element = None;
         self.twice.clear();
+        self.paths.clear();
         Ok(out)
     }
 
@@ -1317,16 +1320,22 @@ fn names_once(expr: &Expr, var: VarId) -> bool {
     count == 1
 }
 
-/// The fields that the expression reads more than once. The field that a
-/// plain assignment stores to is no read.
-fn read_twice(expr: &Expr) -> Vec<(RecordId, usize)> {
-    let mut seen = Vec::new();
-    let mut twice = Vec::new();
+/// The fields that the expression reads, each with the number of its
+/// reads and with the longest path of them: the reads that lie in one
+/// another's base as in `a->next->next`. The field that a plain assignment
+/// stores to is no read.
+fn field_reads(expr: &Expr) -> Vec<((RecordId, usize), usize, usize)> {
+    let mut reads: Vec<((RecordId, usize), usize, usize)> = Vec::new();
     let mut count = |part: &Expr| {
         if let ExprKind::Member { record, field, .. } = part.kind {
-            match seen.contains(&(record, field)) {
-                true => twice.push((record, field)),
-                false => seen.push((record, field)),
+            let key = (record, field);
+            let path = on_path(part, key);
+            match reads.iter_mut().find(|(read, ..)| *read == key) {
+                Some((_, times, longest)) => {
+                    *times += 1;
+                    *longest = path.max(*longest);
+                }
+                None => reads.push((key, 1, path)),
             }
         }
         false
@@ -1348,7 +1357,47 @@ fn read_twice(expr: &Expr) -> Vec<(RecordId, usize)> {
             expr.any(&mut count);
         }
     }
-    twice
+    reads
+}
+
+/// How many reads of the field lie on the way to the place and at its end:
+/// 2 for `a->next->next`. An index is not on the way.
+pub(super) fn on_path(place: &Expr, of: (RecordId, usize)) -> usize {
+    match &place.kind {
+        ExprKind::Member {
+            base,
+            record,
+            field,
+            ..
+        } => usize::from((*record, *field) == of) + on_path(base, of),
+        ExprKind::Deref(base)
+        | ExprKind::AddrOf(base)
+        | ExprKind::Decay(base)
+        | ExprKind::Cast(base)
+        | ExprKind::Index(base, _) => on_path(base, of),
+        _ => 0,
+    }
+}
+
+/// The fields that the expression reads more than once, but for those
+/// whose reads all lie on one path (`read_along`).
+fn read_twice(expr: &Expr) -> Vec<(RecordId, usize)> {
+    field_reads(expr)
+        .into_iter()
+        .filter(|&(_, times, longest)| times > 1 && longest != times)
+        .map(|(key, ..)| key)
+        .collect()
+}
+
+/// The fields that the expression reads more than once and only along one
+/// path, with the number of those reads: the last of them names a place
+/// that the others only lead to.
+fn read_along(expr: &Expr) -> Vec<((RecordId, usize), usize)> {
+    field_reads(expr)
+        .into_iter()
+        .filter(|&(_, times, longest)| times > 1 && longest == times)
+        .map(|(key, times, _)| (key, times))
+        .collect()
 }
 
 /// The fields of the expression that a later statement of the block may
@@ -1362,6 +1411,7 @@ fn read_later<'a>(
     program: &Program,
 ) -> Vec<(RecordId, usize)> {
     let mut later = Vec::new();
+    let along = read_along(expr);
     let called = |call: &Expr| {
         matches!(&call.kind, ExprKind::Call(callee, _) if callee
             .function()
@@ -1371,6 +1421,13 @@ fn read_later<'a>(
         let ExprKind::Member { record, field, .. } = part.kind else {
             return false;
         };
+        // A read on the way to the last of a path is not moved out of.
+        if along
+            .iter()
+            .any(|&(path, reads)| path == (record, field) && on_path(part, path) < reads)
+        {
+            return false;
+        }
         let reads =
             |within: &Expr| within.any(&mut |read| called(read) || same_place(read, part, false));
         // A call in the statement itself that does not get the field may

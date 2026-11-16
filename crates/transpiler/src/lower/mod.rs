@@ -973,6 +973,10 @@ struct Lower<'a> {
     /// The fields that the statement being lowered reads more than once:
     /// a move out of one would leave `None` for the other read.
     twice: Vec<(RecordId, usize)>,
+    /// The fields that the statement being lowered reads only along one
+    /// path, `a->next->next`, with the number of those reads: a move out
+    /// of the last leaves the others what they were.
+    paths: Vec<((RecordId, usize), usize)>,
     /// The value that the function returns at its end, which reads after
     /// every statement of its body.
     last: Option<Expr>,
@@ -1012,6 +1016,7 @@ impl<'a> Lower<'a> {
             restored: None,
             restored_element: None,
             twice: Vec::new(),
+            paths: Vec::new(),
             last: None,
             entered: None,
             quotients: Default::default(),

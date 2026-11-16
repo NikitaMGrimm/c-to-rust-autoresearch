@@ -597,3 +597,38 @@ fn a_field_that_is_moved_out_and_read_again_in_one_statement_is_refused() {
         .is_ok()
     );
 }
+
+/// `a->rest->rest` reads the field `rest` twice, but the first read only
+/// leads to the second: a move out of the second leaves the first.
+#[test]
+fn a_field_read_on_the_way_to_the_one_that_is_moved_out_is_not_read_again() {
+    let program = |end: &str| {
+        format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct link {{ int weight; struct link *rest; }};\nstruct link *fresh(int weight, struct link *rest) {{\n    struct link *made = malloc(sizeof(struct link));\n    made->weight = weight;\n    made->rest = rest;\n    return made;\n}}\nint peek(struct link *at, int more) {{ return at->weight + more; }}\nint main(void) {{\n    struct link *list = fresh(1, fresh(2, fresh(3, NULL)));\n    printf(\"%d\\n\", list->rest->rest->weight);\n    {end}\n    free(list->rest);\n    free(list);\n    return 0;\n}}\n"
+        )
+    };
+    let rust = check("path", &program("free(list->rest->rest);"), &[&[]], "");
+    assert_lines(
+        &rust,
+        &["drop(list.rest.as_deref_mut().unwrap().rest.take());"],
+    );
+    // The same field beside the path, or the place read again later, is
+    // a second read.
+    for (name, end) in [
+        (
+            "beside",
+            "printf(\"%d\\n\", peek(list->rest, list->rest->rest != NULL));\n    free(list->rest->rest);\n    printf(\"%d\\n\", list->rest->rest != NULL);",
+        ),
+        (
+            "later",
+            "struct link *gone = list->rest->rest;\n    printf(\"%d\\n\", list->rest->rest != NULL);\n    free(gone);",
+        ),
+    ] {
+        assert!(
+            translate(name, &program(end)).unwrap_err().starts_with(
+                "unsupported: a move out of a field that is read again before it is stored to: no rule yet"
+            ),
+            "{name}"
+        );
+    }
+}
