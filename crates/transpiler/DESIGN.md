@@ -1010,10 +1010,18 @@ become a fact and a refusal:
 - An owner moved out of a field or a global leaves `None` behind
   (`take()`); a C program that reads the field again before storing to it
   would see NULL in Rust. A global that its own function reads again is
-  refused, and so is a field that its own statement or a later one of
-  the block reads again before a store; a field that is read after the
-  block or in the loop's next round, and a global that another function
-  reads, are not.
+  refused, and so is a field that its own statement, the `return` that
+  ends the function or a later statement of the block reads again before
+  a store. Not refused, and translated wrongly: a field that is read
+  after the block of the move, in the next round of a loop around it or
+  after a `goto`; one that the caller reads after the function moved it
+  out; one that is read under another name of its record (`s = &x;` and
+  then `x.p`, or the name that a second test `if (s)` gives the pointer);
+  one whose index variable changed before the store that seems to
+  restore it (`q = a[i].p; i++; a[i].p = NULL;`); and a global that
+  another function reads. The refusal is also wider than it must be: any
+  call of a function of the program between the move and the store
+  counts as a read.
 - A pointer into the middle of an array that is no cursor is the rest of
   the array from there (`&a[1..]`), so an index or a step back before it
   (`p[-1]`) stops the program where C reads the element. A global pointer
@@ -1088,7 +1096,9 @@ become a fact and a refusal:
 - A borrow of an element of an array of pointers that is held across a
   store to another element, `t = a[i]; a[j] = t->next;` with a later read
   of `t`, is translated and does not compile; so is a record that is
-  read through a second name (`r = s;`) while a field of it is moved out.
+  read through a second name (`r = s;`) while a field of it is moved out,
+  and a local that borrows a part of a record, `t = a->next;`, held
+  while a statement reads `a->next` by its own path.
 - A conditional that moves a local owner on one side, `take(k ? s->p :
   other)`, followed by `if (k) free(other);`, is translated and does not
   compile: the compiler does not know that the two tests agree.
