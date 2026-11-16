@@ -120,6 +120,7 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     normalise::join(&mut program);
     normalise::ends(&mut program);
     normalise::found(&mut program);
+    normalise::pointers(&mut program);
     let mut facts = facts::Facts::of(&program);
     if normalise::same(&mut program, &facts) {
         facts = facts::Facts::of(&program);
@@ -162,6 +163,7 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
         normalise::join(&mut program);
         normalise::ends(&mut program);
         normalise::found(&mut program);
+        normalise::pointers(&mut program);
         let mut facts = facts::Facts::of(&program);
         if normalise::same(&mut program, &facts) {
             facts = facts::Facts::of(&program);

@@ -1347,9 +1347,24 @@ Entry format, newest last:
   parameter or with its address taken, one to a place through another
   pointer or at an index that is no constant, and one used where a variable
   with the name of the place hides it, stay refused by R7's reason
+- C, too: a local `T **pp` with one value as above that is `&p` for a
+  pointer variable `p`, a local or a parameter, used only as `*pp` and
+  `pp[0]`, `int **pp = &p; **pp = 4; if (*pp)`, `(*pp)->f`, `*pp = e`
+- Rust, too: `*pp` and `pp[0]` are `p`, `**pp` is `*p`, `(*pp)->f` is
+  `p->f`, `*pp = e` is `p = e`, wherever `pp` is and whatever `p` holds
+  meanwhile; `pp` and its store are left out, and the older rewrite or a
+  cursor may then rewrite `p`
+- Refused, too: `pp` stored to twice, moved, indexed at another place than
+  0, compared, handed to a function, returned, cast, with its address taken
+  or a parameter; `&s.f`, `&q->f`, `&a[i]`, `&global`; `void **`, `T ***`;
+  a use where another `p` hides it: all stay refused as before. `sizeof pp`
+  and `sizeof *pp` are 8 either way
 - Motivation: programs outside the development set use a variable beside a
-  pointer to it; no development program needs it
-- Changes: `normalise::alias` runs after `cursors`, and the facts after it
+  pointer to it, or a second name for a pointer; no development program
+  needs it
+- Changes: `normalise::alias` runs after `cursors`, and the facts after it;
+  `normalise::pointers` runs after `found`, before the first analysis, and
+  shares the search for the one store with `alias`
 
 ## R63: a pointer to a function without a prototype
 

@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> follow -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends, found, pointers -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> follow -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `follow` names the local that got an owner's memory where C reads the owner again, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias`, `follow` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `pointers` makes a local pointer to a pointer that only names one pointer variable that variable, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `follow` names the local that got an owner's memory where C reads the owner again, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias`, `follow` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -166,7 +166,10 @@ refuses with the reason instead:
   names the place at each use of the pointer and leaves the pointer out
   (R61). It leaves a pointer whose address is taken, and one used where a
   variable with the name of the place hides it, since the Rust names
-  follow the C names;
+  follow the C names. A local `T **pp` whose one value is `&p` for a
+  pointer variable `p`, a local or a parameter, and that is used only as
+  `*pp` and `pp[0]`, is `p` at every use wherever it is
+  (`normalise::pointers`, R61 too), before the first analysis;
 - an owner, a local or a global, that is read after its memory went to
   another owner, a field, a global, a local or a parameter, and before
   anything stored to it (`Facts::moved`), in the same order. A `free` is
@@ -260,7 +263,7 @@ it:
 | `struct node *buckets[8];`, `struct node **b = calloc(8, sizeof *b);` | `[Option<Box<Node>>; 8]`, `Vec<Option<Box<Node>>>` | each element is a list that may be empty |
 | `char *names[] = { "a", "b" };`, `f(char **names, int n)` | `[&str; 2]`, `names: &[&str]` | text that nothing stores to is `&str`, and an array of it a slice |
 | `int *at[2] = { &x, &y };` | `[&i32; 2]`, `[&mut i32; 2]` | borrows in an array, as far as the borrow checker lets them live |
-| `int **pp = &p;` for a local that only ever names `p` | no variable: `*pp` is `p` and `**pp` is `*p` (R61) | a second name for one variable is that variable |
+| `int **pp = &p;` for a local that only ever names `p`, a local or a parameter, and is only used as `*pp` and `pp[0]` | no variable: `*pp` is `p` and `**pp` is `*p` (R61) | a second name for one variable is that variable |
 | `argv` handed to a function, `run(char **argv)` | `argv: &[String]` | the arguments are the program's `Vec<String>` |
 
 The facts of the slot behind a pointer come from flows as for any slot,
@@ -286,7 +289,7 @@ leaves `None` behind as it does in a field (`take()`), and `free(*pp)`.
 | a function that stores through `out` on every path before it reads it, with callers that pass the address of a local | a second result would say it; built as `&mut` until every caller can be rewritten |
 | the argument is the address of a global pointer | refused: the callee would hold a borrow of `Globals` beside `globals` |
 | two arguments of one call that name the same place, or a place and the pointer in it, `f(p, &p)` | refused: Rust takes `p` before it lends it |
-| a local `T **pp` that only ever names one pointer variable | that variable, by R61 |
+| a local `T **pp` that only ever names one pointer variable, a local or a parameter, and is only used as `*pp` and `pp[0]` | that variable, by R61, before the analysis; `p` may change, and `*pp` reads its value of the moment as C does. `pp` stored to twice, moved, indexed at another place, compared, handed on, returned, its address taken, cast, `&s.f`, `&a[i]`, `&global`, `void **`, `T ***`, and a use where another `p` hides it stay refused |
 | a local `T **link` that moves along a list, `link = &(*link)->next;`, and is stored through at the end | `let mut link = &mut head; while link.is_some() { link = &mut link.as_mut().unwrap().next; } *link = Some(node);`: a borrow that moves down the owners. Refused until the slot behind a local that is assigned twice has a rule |
 | an array of pointers, a local, a global or a field: `T *a[N]`, with or without an initialiser | `[P; N]` for the type `P` of the slot behind; an element without a value is `None`, and an array of owners is built element by element since an owner is not `Copy` |
 | `T **m` from `malloc(n * sizeof(T *))` or `calloc(n, sizeof(T *))` | `Vec<P>` of `n` elements; after `calloc` an element is NULL, so `P` is an `Option` unless every element is stored to before it is read |
@@ -303,7 +306,8 @@ leaves `None` behind as it does in a field (`take()`), and `free(*pp)`.
 
 A shape that has no rule yet is refused as `a pointer to a pointer`, or as
 `a pointer in an array` for an array's elements. Built so far: none of the
-table but the end of a number (`char **end` of `strtol`, see Cursors).
+table but the end of a number (`char **end` of `strtol`, see Cursors) and
+a local `T **pp` that only names one pointer variable (R61).
 
 ### Cursors
 

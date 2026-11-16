@@ -43,6 +43,10 @@
 //! and that Rust would reject as a borrow, that place; it is in a file of
 //! its own.
 //!
+//! `pointers`, R61 too, makes a local pointer to a pointer that only ever
+//! names one pointer variable that variable. It needs no facts and runs
+//! after `found`, so that the analysis and `cursors` never see it.
+//!
 //! `narrow`, R10, names the pointer that a test has found not to be NULL.
 //! C tests `p` and goes on using `p`; Rust opens an `Option` once and uses
 //! what was in it, as `if let Some(p) = p` and
@@ -59,7 +63,7 @@ mod same;
 mod unions;
 mod voids;
 
-pub use alias::alias;
+pub use alias::{alias, pointers};
 pub use cursors::{cursors, steps_before};
 pub use ends::ends;
 pub use follow::follow;

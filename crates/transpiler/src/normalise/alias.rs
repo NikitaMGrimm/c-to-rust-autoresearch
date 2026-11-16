@@ -4,7 +4,7 @@
 //! the place at every use, so every use names it instead.
 
 use super::names;
-use crate::c::{Expr, ExprKind, Program, Stmt, Var, VarId, VarKind, any_expr, each_expr_mut};
+use crate::c::{Expr, ExprKind, Program, Stmt, Type, Var, VarId, VarKind, any_expr, each_expr_mut};
 use crate::facts::Facts;
 
 /// Rewrites the pointers that `Facts::in_use` finds and that only name one
@@ -18,7 +18,10 @@ pub fn alias(program: &mut Program, facts: &Facts) -> bool {
             if var.kind != VarKind::Local || !var.ty.is_pointer() || !facts.in_use_by(pointer) {
                 continue;
             }
-            if let Some(place) = take_store(&mut body, program, pointer) {
+            let mut fits = |place: &Expr, root: VarId, block: &[Stmt]| {
+                is_address(place, program) && !beside(block, program, pointer, root)
+            };
+            if let Some(place) = take_store(&mut body, program, pointer, &mut fits) {
                 each_expr_mut(&mut body, &mut program.vars, &mut |expr| {
                     if matches!(expr.kind, ExprKind::Var(named) if named == pointer) {
                         *expr = Expr {
@@ -35,10 +38,95 @@ pub fn alias(program: &mut Program, facts: &Facts) -> bool {
     changed
 }
 
+/// Rewrites every local `T **` that only ever holds `&p`, for a local or a
+/// parameter `p` of type `T *`, and is only used as `*pp` or `pp[0]`, to
+/// `p` at each use. Every other use of `pp`, such as `pp + 1`, `f(pp)` or
+/// a comparison, leaves it as it is.
+pub fn pointers(program: &mut Program) {
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        for pointer in 0..program.vars.len() {
+            let var = &program.vars[pointer];
+            let Type::Pointer(to) = &var.ty else {
+                continue;
+            };
+            // `T ***`, `void **` and a pointer to a pointer to a function
+            // have no rule for the pointer they name either.
+            let named = match &**to {
+                Type::Pointer(named) => named,
+                _ => continue,
+            };
+            if var.kind != VarKind::Local
+                || to.function().is_some()
+                || matches!(**named, Type::Pointer(_) | Type::Void)
+            {
+                continue;
+            }
+            let mut fits = |place: &Expr, root: VarId, block: &[Stmt]| {
+                let vars = &program.vars;
+                matches!(&place.kind, ExprKind::AddrOf(inner)
+                    if matches!(inner.kind, ExprKind::Var(var) if var == root))
+                    && matches!(vars[root].kind, VarKind::Local | VarKind::Param)
+                    && only_through(block, program, pointer)
+            };
+            let Some(place) = take_store(&mut body, program, pointer, &mut fits) else {
+                continue;
+            };
+            let ExprKind::AddrOf(named) = place.kind else {
+                unreachable!()
+            };
+            each_expr_mut(&mut body, &mut program.vars, &mut |expr| {
+                let through = match &expr.kind {
+                    ExprKind::Deref(inner) | ExprKind::Index(inner, _) => {
+                        matches!(inner.kind, ExprKind::Var(var) if var == pointer)
+                    }
+                    _ => false,
+                };
+                if through {
+                    *expr = Expr {
+                        at: expr.at,
+                        ..(*named).clone()
+                    };
+                }
+            });
+        }
+        program.functions[function].body = body;
+    }
+}
+
+/// Whether the statements use the pointer only as `*pointer` and
+/// `pointer[0]`, apart from its one store.
+fn only_through(stmts: &[Stmt], program: &Program, pointer: VarId) -> bool {
+    let is_pointer = |expr: &Expr| matches!(expr.kind, ExprKind::Var(var) if var == pointer);
+    let (mut uses, mut through, mut stored) = (0, 0, 0);
+    any_expr(stmts, &program.vars, &mut |expr| {
+        match &expr.kind {
+            ExprKind::Var(var) if *var == pointer => uses += 1,
+            ExprKind::Deref(inner) if is_pointer(inner) => through += 1,
+            ExprKind::Index(inner, at) if is_pointer(inner) && at.constant(program) == Some(0) => {
+                through += 1;
+            }
+            ExprKind::Assign {
+                op: None, target, ..
+            } if is_pointer(target) => stored += 1,
+            _ => {}
+        }
+        false
+    });
+    uses == through + stored
+}
+
 /// The address that the pointer only ever holds, with its declaration and
 /// its one store taken out of the statements, or nothing where it may hold
 /// another.
-fn take_store(stmts: &mut Vec<Stmt>, program: &Program, pointer: VarId) -> Option<Expr> {
+fn take_store(
+    stmts: &mut Vec<Stmt>,
+    program: &Program,
+    pointer: VarId,
+    // Whether the address fits, given the place it names and the block
+    // that declares the pointer.
+    fits: &mut dyn FnMut(&Expr, VarId, &[Stmt]) -> bool,
+) -> Option<Expr> {
     let vars = &program.vars;
     let Some(decl) = stmts
         .iter()
@@ -49,10 +137,9 @@ fn take_store(stmts: &mut Vec<Stmt>, program: &Program, pointer: VarId) -> Optio
             | Stmt::While(_, body)
             | Stmt::DoWhile(body, _)
             | Stmt::Switch(_, body)
-            | Stmt::For { body, .. } => take_store(body, program, pointer),
-            Stmt::If(_, then, other) => {
-                take_store(then, program, pointer).or_else(|| take_store(other, program, pointer))
-            }
+            | Stmt::For { body, .. } => take_store(body, program, pointer, fits),
+            Stmt::If(_, then, other) => take_store(then, program, pointer, fits)
+                .or_else(|| take_store(other, program, pointer, fits)),
             _ => None,
         });
     };
@@ -91,17 +178,26 @@ fn take_store(stmts: &mut Vec<Stmt>, program: &Program, pointer: VarId) -> Optio
         ExprKind::AddrOf(inner) | ExprKind::Decay(inner) => inner.root_var(),
         _ => None,
     };
-    let root = root.filter(|_| place.ty == declared.ty && is_address(&place, program))?;
+    let root = root.filter(|_| place.ty == declared.ty)?;
     // The Rust names follow the C names, so a variable that hides the
     // place where the pointer is used would be named in its place.
-    if hides(&stmts[decl + 1..], vars, root) {
+    if hides(&stmts[decl + 1..], vars, root) || !fits(&place, root, stmts) {
         return None;
     }
-    // A call that takes the pointer, as it is or as `&*p` or `&p->f`, or
-    // the address of the place, and reads the place or the pointer in
-    // another argument would borrow the place and read it at once.
+    if let Some(store) = store {
+        stmts.remove(store);
+    }
+    stmts.remove(decl);
+    Some(place)
+}
+
+/// Whether a call in the statements takes the pointer, as it is or as
+/// `&*p` or `&p->f`, or the address of the place, and reads the place or
+/// the pointer in another argument: it would borrow the place and read it
+/// at once.
+fn beside(stmts: &[Stmt], program: &Program, pointer: VarId, root: VarId) -> bool {
     let is = |expr: &Expr, var: VarId| matches!(expr.uncast().kind, ExprKind::Var(named) if named == var);
-    let beside = any_expr(stmts, vars, &mut |expr| match &expr.kind {
+    any_expr(stmts, &program.vars, &mut |expr| match &expr.kind {
         // The library's functions that print only read their arguments.
         ExprKind::Call(callee, args)
             if callee.function().is_none_or(|name| {
@@ -118,15 +214,7 @@ fn take_store(stmts: &mut Vec<Stmt>, program: &Program, pointer: VarId) -> Optio
             })
         }
         _ => false,
-    });
-    if beside {
-        return None;
-    }
-    if let Some(store) = store {
-        stmts.remove(store);
-    }
-    stmts.remove(decl);
-    Some(place)
+    })
 }
 
 /// Whether the statements declare another variable with the name of `var`.

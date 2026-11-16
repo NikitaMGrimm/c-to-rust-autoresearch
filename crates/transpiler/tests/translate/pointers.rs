@@ -1,4 +1,4 @@
-use crate::common::{assert_lines, check};
+use crate::common::{assert_lines, check, translate};
 
 #[test]
 fn pointers_that_do_not_own_are_borrows() {
@@ -509,4 +509,127 @@ int main(void) {
             "total += i;",
         ],
     );
+}
+
+/// R61: a local pointer to a pointer that only ever holds the address of
+/// one pointer variable is that variable, also after the variable changes.
+#[test]
+fn a_pointer_to_a_pointer_that_only_names_one_pointer_is_that_pointer() {
+    let rust = check(
+        "pointer_to_one_pointer",
+        r#"
+#include <stdio.h>
+struct pair { int left; int right; };
+static int lo = 2, hi = 40;
+static int both(const struct pair *at) {
+    const struct pair **via = &at;
+    return (*via)->left + via[0]->right;
+}
+static int after(int *from) {
+    int **hold;
+    hold = &from;
+    return **hold + from[1];
+}
+int main(void) {
+    int row[4] = {10, 20, 30, 40};
+    int *walk = row, **step = &walk;
+    printf("%d\n", **step);
+    walk += 2;
+    printf("%d\n", **step);
+    *step = row + 1;
+    printf("%d %d\n", *walk, (*step)[1]);
+    int *bound, **ref;
+    bound = &lo;
+    ref = &bound;
+    **ref += 5;
+    bound = &hi;
+    if (*ref) printf("%d %d\n", **ref, lo);
+    struct pair p = {7, 8};
+    printf("%d %d\n", both(&p), after(row + 2));
+    int count = 1, *slot, **name;
+    slot = &count;
+    name = &slot;
+    count += 5;
+    **name += count;
+    printf("%d\n", count);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "walk += 2;",
+            "walk = 1;",
+            "println!(\"{} {}\", row[walk], row[walk + 1]);",
+            "count += count;",
+        ],
+    );
+    assert!(!rust.contains("step") && !rust.contains("hold") && !rust.contains("via"));
+}
+
+/// R61 leaves a pointer to a pointer that is more than a second name for one
+/// pointer variable as it is, refused as a pointer to a pointer.
+#[test]
+fn a_pointer_to_a_pointer_that_is_more_than_a_name_is_refused() {
+    let head = "#include <stdio.h>\nstatic int peek(int **pp) { return **pp; }\nstatic int **same(int **pp) { return pp; }\n";
+    for (name, body) in [
+        ("twice", "int *q = &x, **pp = &p; pp = &q; return **pp;"),
+        (
+            "branch",
+            "int **pp; if (x) pp = &p; else pp = &p; return **pp;",
+        ),
+        ("moved", "int **pp = &p; pp++; return pp[-1][0];"),
+        ("index", "int **pp = &p; return pp[1] == 0;"),
+        ("compared", "int **pp = &p; return pp == &p;"),
+        ("handed", "int **pp = &p; return peek(pp);"),
+        ("returned", "int **pp = &p; return **same(pp);"),
+        ("address", "int **pp = &p; int ***r = &pp; return ***r;"),
+        (
+            "read_first",
+            "int **pp = 0; if (pp) return 1; pp = &p; return **pp;",
+        ),
+        (
+            "hidden",
+            "int **pp = &p; { int *p = 0; return **pp + (p != 0); }",
+        ),
+        ("cast", "char **pp = (char **)&p; return **pp;"),
+        ("triple", "int **q = &p; int ***pp = &q; return ***pp;"),
+        (
+            "loop",
+            "int *q = &x, **pp; for (int i = 0; i < 2; i++) pp = i ? &q : &p; return **pp;",
+        ),
+        ("void", "void *v = p; void **pp = &v; return *(int *)*pp;"),
+    ] {
+        let c = format!("{head}int main(void) {{ int x = 1; int *p = &x; {body} }}\n");
+        let refusal = translate(name, &c).unwrap_err();
+        assert!(
+            refusal.contains("a pointer to a pointer") || refusal.contains("behind a pointer"),
+            "{name}: {refusal}"
+        );
+    }
+    // A place that is no pointer variable is left as well, and refused for
+    // what it is.
+    for (name, c) in [
+        (
+            "field",
+            "struct box { int *v; };\nint main(void) { int x = 2; struct box b; int **pp; b.v = &x; pp = &b.v; **pp = 3; return x; }\n",
+        ),
+        (
+            "arrow",
+            "struct box { int *v; };\nstatic int get(struct box *q) { int **pp = &q->v; return **pp; }\nint main(void) { int x = 2; struct box b = {&x}; return get(&b); }\n",
+        ),
+        (
+            "element",
+            "int main(void) { int x = 1; int *a[1]; int **pp; a[0] = &x; pp = &a[0]; return **pp; }\n",
+        ),
+        (
+            "global",
+            "int g = 4; int *gp = &g;\nint main(void) { int **pp = &gp; **pp = 8; return g; }\n",
+        ),
+    ] {
+        assert!(translate(name, c).is_err(), "{name}");
+    }
 }

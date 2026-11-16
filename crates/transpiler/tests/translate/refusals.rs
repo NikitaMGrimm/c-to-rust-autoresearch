@@ -154,7 +154,7 @@ fn a_variable_used_while_a_pointer_to_it_is_in_use_is_refused() {
     assert_eq!(
         refused(
             "borrowed_address",
-            "int main(void) {\n    int depth = 1;\n    int *down = &depth;\n    int **again = &down;\n    depth = 3;\n    **again += 1;\n    return *down - 4;\n}\n"
+            "int main(void) {\n    int depth = 1;\n    int *down = &depth;\n    int **again = &down;\n    depth = 3;\n    **again += 1;\n    return *down - 4 + (again == 0);\n}\n"
         ),
         "unsupported: a variable that is used while a pointer to it is in use, at line 7"
     );
