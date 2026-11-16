@@ -463,3 +463,73 @@ fn realloc_that_is_no_resize_in_place_is_refused() {
         "unsupported: `realloc` of a parameter's array, at line 3"
     );
 }
+
+/// R66: after `gone = list;` both names hold one pointer until either is
+/// stored to, and Rust has moved it: the reads of `list` name `gone`.
+#[test]
+fn a_read_of_an_owner_follows_its_memory_to_the_local_that_got_it() {
+    let chain = |walk: &str| {
+        format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct link {{ int weight; struct link *rest; }};\nstatic struct link *grow(int count) {{\n    struct link *list = NULL;\n    for (int i = 1; i <= count; i++) {{\n        struct link *fresh = malloc(sizeof(struct link));\n        fresh->weight = i * 3;\n        fresh->rest = list;\n        list = fresh;\n    }}\n    return list;\n}}\nint main(void) {{\n    struct link *list = grow(4);\n    int total = 0;\n{walk}    printf(\"%d\\n\", total);\n    return 0;\n}}\n"
+        )
+    };
+    let rust = check(
+        "follow-walk",
+        &chain(
+            "    while (list != NULL) {\n        struct link *gone;\n        gone = list;\n        total += list->weight;\n        list = list->rest;\n        free(gone);\n    }\n",
+        ),
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "total += gone.as_deref().unwrap().weight;",
+            "list = gone.as_deref_mut().unwrap().rest.take();",
+        ],
+    );
+    // A parameter, read in a condition and in both branches.
+    let rust = check(
+        "follow-param",
+        "#include <stdio.h>\n#include <stdlib.h>\nstruct link { int weight; struct link *rest; };\nstatic void report(struct link *list) {\n    struct link *kept = list;\n    if (list->rest) printf(\"%d then %d\\n\", list->weight, list->rest->weight);\n    else printf(\"%d alone\\n\", list->weight);\n    free(kept->rest);\n    free(kept);\n}\nint main(int argc, char **argv) {\n    struct link *one = malloc(sizeof(struct link));\n    one->weight = 7;\n    one->rest = NULL;\n    if (argc > 1) {\n        one->rest = malloc(sizeof(struct link));\n        one->rest->weight = 9;\n        one->rest->rest = NULL;\n    }\n    report(one);\n    return 0;\n}\n",
+        &[&[], &["more"]],
+        "",
+    );
+    assert_lines(&rust, &["if kept.rest.is_some() {"]);
+    // What stays refused: a store to one of the names in a branch, a
+    // `case` that the store does not reach, a jump, and a local that hides
+    // the new name.
+    let reason = |line: u32| {
+        format!(
+            "unsupported: a pointer that is used after its memory went to another owner, at line {line}"
+        )
+    };
+    for (name, walk, line) in [
+        (
+            "follow-branch",
+            "    struct link *gone = list;\n    if (total == 0) { list = list->rest; }\n    total += list->weight;\n    free(gone);\n",
+            18,
+        ),
+        (
+            "follow-case",
+            "    struct link *gone = NULL;\n    switch (total) {\n    case 1: gone = list;\n    case 0: total += list->weight; gone = list;\n    }\n    free(gone);\n",
+            20,
+        ),
+        (
+            "follow-jump",
+            "    struct link *gone = NULL;\n    if (total) goto count;\n    gone = list;\ncount:\n    total += list->weight;\n    free(gone);\n",
+            21,
+        ),
+        (
+            "follow-hidden",
+            "    struct link *gone = list;\n    { int gone = 2; total += list->weight + gone; }\n    free(gone);\n",
+            18,
+        ),
+    ] {
+        assert_eq!(
+            translate(name, &chain(walk)).unwrap_err(),
+            reason(line),
+            "{name}"
+        );
+    }
+}

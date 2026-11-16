@@ -1405,3 +1405,28 @@ Entry format, newest last:
   a pointer field of a global record that never changes; no development
   program needs it
 - Changes: extends R62 from global pointers to such fields
+
+## R66: a read of an owner follows its memory
+
+- C: `q = p;` or `T *q = p;` where `p` and the local `q` both own what
+  they point to, and reads of `p` after it: `gone = list; total +=
+  list->weight; list = list->rest; free(gone);`
+- Rust: each read of `p` in the statements that follow in the block names
+  `q`, up to the first statement that stores to `p` or `q`; of that one, a
+  plain store to `p`, the value names `q` too: `let mut gone = list; total
+  += gone.as_deref().unwrap().weight; list = gone.as_deref_mut().unwrap()
+  .rest.take(); drop(gone);`
+- Needs: `Facts::moved`, which finds the functions with such a read, and
+  `owned` of both variables; `normalise::follow` rewrites only those
+  functions
+- Refused: as before (R8), a read after a statement that stores to one of
+  the two in a branch or a loop, after a `case`, in a function with a
+  label or a `goto`, where a local hides the name of `q`, where either
+  has its address taken, and for a global `p` after a call of a function
+  of the program; memory that went to a field, a global or a parameter is
+  not followed
+- Motivation: programs outside the development set take a node off a list
+  through a second pointer and read the first again; no development
+  program needs it
+- Changes: `normalise::follow` runs after `alias`, and the facts after it;
+  R8's refusal of an owner that is used after it was moved covers less

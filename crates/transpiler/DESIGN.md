@@ -28,7 +28,7 @@ Two consequences shape everything else:
 ## Stages
 
 ```text
-Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> narrow -> facts -> lower -> rust -> text
+Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends, found -> facts -> same -> facts -> cursors -> facts -> alias -> facts -> follow -> facts -> narrow -> facts -> lower -> rust -> text
 ```
 
 | Stage | File | Does | Knows |
@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `follow` names the local that got an owner's memory where C reads the owner again, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias`, `follow` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -171,6 +171,37 @@ refuses with the reason instead:
   another owner, a field, a global, a local or a parameter, and before
   anything stored to it (`Facts::moved`), in the same order. A `free` is
   not followed, nor a read in another function.
+
+An owner whose memory went to another is one of three things, and each
+has its own translation:
+
+- **Two names for one pointer.** `q = p;` for a local owner `q`: until `p`
+  or `q` is stored to, C reads the same pointer by both names, and Rust
+  has moved it to `q`. `normalise::follow` names `q` at each read of `p`
+  in the statements that follow in the block, up to the first that
+  stores to either; of that statement, a plain store to `p`, the value
+  names `q` too, so that `gone = list; list = list->rest; free(gone);`
+  is `let mut gone = list; list = gone.rest.take(); drop(gone);` (R66). A
+  borrow is not what C means here: `q` is freed or handed on. The rewrite
+  keeps every value, so it needs no proof about other pointers; it stops
+  at a `case`, leaves a function with a label, and for a global `p` stops
+  at a call of a function of the program, which may store to it.
+- **A record that is linked before it is filled.** `list->rest = fresh;
+  fresh->weight = 3;` and `shelf = fresh; fresh->size = 1;`: the memory
+  went into a field or a global, and the local is used on. A Rust
+  programmer fills the record first and links it last, so the store
+  belongs after the local's last use: the order of the statements
+  changes. That needs a proof that no statement between reads the field
+  or the global, also through another pointer to the same record, which
+  the analysis cannot give yet. Refused.
+- **Memory with two owners.** A list with a pointer back (`fresh->before
+  = top; top->after = fresh;`), a ring (`only->next = only;`) and a graph
+  whose records point to records that a pool owns: both pointers live on,
+  and neither is the one owner. The honest translation is shared
+  ownership, `Rc<RefCell<T>>` with `Weak` for the pointer back, or one
+  owner (a `Vec` of the records) with indices for the others. Neither is
+  a default: it needs a fact that proves which slots share, and belongs
+  to **Shared memory** below. Refused.
 
 A function that returns an owner out of a record which it only borrows,
 as `struct node *after(struct node *p) { return p->next; }`, is refused

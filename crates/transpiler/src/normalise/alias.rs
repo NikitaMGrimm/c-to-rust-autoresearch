@@ -130,7 +130,7 @@ fn take_store(stmts: &mut Vec<Stmt>, program: &Program, pointer: VarId) -> Optio
 }
 
 /// Whether the statements declare another variable with the name of `var`.
-fn hides(stmts: &[Stmt], vars: &[Var], var: VarId) -> bool {
+pub(super) fn hides(stmts: &[Stmt], vars: &[Var], var: VarId) -> bool {
     let other = |declared: VarId| declared != var && vars[declared].name == vars[var].name;
     stmts.iter().any(|stmt| match stmt {
         Stmt::Decl(declared) => other(*declared),
