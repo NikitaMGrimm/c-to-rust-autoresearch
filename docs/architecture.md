@@ -131,7 +131,9 @@ descend from `BASE`, changes anything outside `crates/transpiler/` and
 refactorings with a `refactor(transpiler)` subject. Otherwise it builds both
 transpilers from `git archive` in the sandbox, after fetching dependencies
 outside it, and evaluates them on the development set, the private validation
-set and the private variants of the development set. It never evaluates
+set, the private variants of the development set and, where the private
+directory has them, the [generated programs](../bench/README.md#generated-programs).
+It never evaluates
 held-out, which stays sealed until the work on the transpiler is over.
 
 The keep rule is provisional: the development score rises, or does not drop
@@ -147,12 +149,14 @@ lowers neither score: the development set then need not hold a program for
 every rule, and the log's `steady_rules` tells such judgings from the
 others. The owner puts the file there; it is in the private directory, which
 the agent's guard blocks and the audit reports. A candidate that passes the
-scores is still rejected when a program turns newly wrong on any of the three
+scores is still rejected when a program turns newly wrong on any of these
 sets, with `--dev-only` on the development set: the base refused it or gave Rust that does not compile, and the
 candidate's translation stops, runs too long or prints something else. A
 refusal costs a score nothing, so without this a rule could trade refusals
 for wrong programs. The log counts such programs per set as `newly_wrong`,
-and the printed reason names neither set nor program. Every result goes to
+and the printed reason names neither set nor program. The generated
+programs decide nothing else: their passes are only logged, as the variants'
+are. Every result goes to
 `PRIVATE_DIR/loop/log.jsonl`, or with `--run ID` to
 `PRIVATE_DIR/runs/ID/log.jsonl`, with the scores of the private sets without [near-copies](../bench/README.md#near-copies),
 the passes that fail their fuzzed inputs and the passes that are not strict. The gate prints only the

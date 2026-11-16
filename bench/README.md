@@ -319,6 +319,10 @@ once. A program is kept when it passes the same C checks as the benchmarks
 on at least two of its inputs that print differently, with only those
 inputs. The tool prints counts only.
 
+The gate evaluates the set where the private directory has it. Its passes
+are logged and decide nothing; a candidate with which one of its programs
+newly runs wrong is rejected, as on the other sets.
+
 ## Regenerating
 
 ```sh

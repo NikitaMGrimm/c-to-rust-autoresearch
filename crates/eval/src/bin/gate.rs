@@ -1,8 +1,8 @@
 //! Decides whether the research loop keeps a candidate commit. It trusts its
 //! own code, so it runs only from a clean checkout of main outside the loop
 //! agent's clone. It evaluates the base and the candidate transpiler on the
-//! development set, the private validation set and the private variants of
-//! the development set, appends everything to a private log and prints only
+//! development set, the private validation set, the private variants of
+//! the development set and the private generated programs, appends everything to a private log and prints only
 //! what the loop agent may see. It never evaluates held-out, which stays
 //! sealed until a run is over; the `transfer` tool evaluates it then.
 
@@ -136,11 +136,16 @@ fn gate(args: &Args) -> Result<bool, String> {
         "--verify",
         &format!("{}^{{commit}}", args.candidate),
     ])?;
-    let sets: [(&'static str, PathBuf); 3] = [
+    let mut sets: Vec<(&'static str, PathBuf)> = vec![
         ("dev", eval::dev_dir()),
         ("validation", args.private.join("validation")),
         ("dev_variants", args.private.join("variants/dev")),
     ];
+    // A private directory from before the generate tool has none.
+    let generated = args.private.join("generated");
+    if generated.is_dir() {
+        sets.push(("generated", generated));
+    }
 
     let near_copies = near_copies(&args.private)?;
     let repo = Path::new(eval::REPO);
@@ -360,7 +365,7 @@ fn wrong_rejection(before: &Results, after: &Results, dev_only: bool) -> Option<
     let judged: &[&str] = if dev_only {
         &["dev"]
     } else {
-        &["dev", "validation", "dev_variants"]
+        &["dev", "validation", "dev_variants", "generated"]
     };
     let wrong = |set: &&str| newly_wrong(before, after, set) > 0;
     judged.iter().any(wrong).then(|| NEWLY_WRONG.to_owned())
@@ -460,7 +465,7 @@ mod tests {
         assert!(!wrong(&before, &before, false));
         assert!(!wrong(&Results::new(), &Results::new(), false));
         // Each private set rejects, but not where only development decides.
-        for set in ["validation", "dev_variants"] {
+        for set in ["validation", "dev_variants", "generated"] {
             let stages = |stage| BTreeMap::from([("p".to_owned(), stage)]);
             let before = Results::from([(set, stages(TranspileFail))]);
             let after = Results::from([(set, stages(Panic))]);
