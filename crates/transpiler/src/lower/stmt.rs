@@ -2,7 +2,7 @@
 
 use super::input::Read;
 use super::{Entered, Helper, Lower, Nest, R, unsupported};
-use crate::c::{BinOp, Expr, ExprKind, Program, Stmt, Type, VarId, VarKind, any_expr};
+use crate::c::{BinOp, Expr, ExprKind, Program, RecordId, Stmt, Type, VarId, VarKind, any_expr};
 use crate::facts::Slot;
 use crate::names::{ENTRY, loop_label, step_label};
 use crate::normalise::leaves;
@@ -24,6 +24,21 @@ impl Lower<'_> {
             let nesting = self.nesting.len();
             self.restored = None;
             self.restored_element = self.moved_element(stmt, stmts.clone());
+            let moving = match stmt {
+                Stmt::Expr(expr) | Stmt::Return(Some(expr)) | Stmt::If(expr, ..) => Some(expr),
+                Stmt::Decl(var) => self.program.vars[*var].init.as_ref(),
+                _ => None,
+            };
+            self.twice = moving.map_or_else(Vec::new, |moving| {
+                let mut fields = read_twice(moving);
+                fields.extend(read_later(
+                    moving,
+                    stmts.clone(),
+                    self.last.as_ref(),
+                    self.program,
+                ));
+                fields
+            });
             // R35: a declaration in a statement expression, with its first
             // value.
             let lowered = if let Stmt::Decl(var) = stmt
@@ -32,6 +47,9 @@ impl Lower<'_> {
                 && of == var
             {
                 stmts.next();
+                self.twice = read_twice(value);
+                let later = read_later(value, stmts.clone(), self.last.as_ref(), self.program);
+                self.twice.extend(later);
                 self.restored = stmts
                     .peek()
                     .and_then(|next| restores(self.program, next))
@@ -57,6 +75,7 @@ impl Lower<'_> {
         }
         self.restored = outer;
         self.restored_element = None;
+        self.twice.clear();
         Ok(out)
     }
 
@@ -1296,6 +1315,159 @@ fn names_once(expr: &Expr, var: VarId) -> bool {
         false
     });
     count == 1
+}
+
+/// The fields that the expression reads more than once. The field that a
+/// plain assignment stores to is no read.
+fn read_twice(expr: &Expr) -> Vec<(RecordId, usize)> {
+    let mut seen = Vec::new();
+    let mut twice = Vec::new();
+    let mut count = |part: &Expr| {
+        if let ExprKind::Member { record, field, .. } = part.kind {
+            match seen.contains(&(record, field)) {
+                true => twice.push((record, field)),
+                false => seen.push((record, field)),
+            }
+        }
+        false
+    };
+    match &expr.kind {
+        ExprKind::Assign {
+            op: None,
+            target,
+            value,
+        } => {
+            if let ExprKind::Member { base, .. } = &target.kind {
+                base.any(&mut count);
+                value.any(&mut count);
+            } else {
+                expr.any(&mut count);
+            }
+        }
+        _ => {
+            expr.any(&mut count);
+        }
+    }
+    twice
+}
+
+/// The fields of the expression that a later statement of the block may
+/// read before one stores to the field or to the variable that leads to
+/// it: a read of the field through the same variable, at any index, or a
+/// call of a function of the program, which may read it too.
+fn read_later<'a>(
+    expr: &Expr,
+    rest: impl Iterator<Item = &'a Stmt> + Clone,
+    last: Option<&Expr>,
+    program: &Program,
+) -> Vec<(RecordId, usize)> {
+    let mut later = Vec::new();
+    let called = |call: &Expr| {
+        matches!(&call.kind, ExprKind::Call(callee, _) if callee
+            .function()
+            .is_none_or(|name| program.function(name).is_some()))
+    };
+    expr.any(&mut |part| {
+        let ExprKind::Member { record, field, .. } = part.kind else {
+            return false;
+        };
+        let reads =
+            |within: &Expr| within.any(&mut |read| called(read) || same_place(read, part, false));
+        // A call in the statement itself that does not get the field may
+        // read it by another way.
+        if expr
+            .any(&mut |call| called(call) && !call.any(&mut |read| same_place(read, part, false)))
+        {
+            later.push((record, field));
+            return false;
+        }
+        let mut ended = false;
+        for stmt in rest.clone() {
+            if let Stmt::Expr(next) = stmt
+                && let ExprKind::Assign {
+                    op: None,
+                    target,
+                    value,
+                } = &next.kind
+            {
+                if same_place(target, part, true) {
+                    if reads(value) {
+                        later.push((record, field));
+                    }
+                    ended = true;
+                    break;
+                }
+                // A store to a variable of the place makes it another
+                // place.
+                if let ExprKind::Var(stored) = target.kind
+                    && part
+                        .any(&mut |named| matches!(named.kind, ExprKind::Var(var) if var == stored))
+                    && !reads(value)
+                {
+                    ended = true;
+                    break;
+                }
+            }
+            if any_expr(std::slice::from_ref(stmt), &program.vars, &mut |within| {
+                reads(within)
+            }) {
+                later.push((record, field));
+                ended = true;
+                break;
+            }
+        }
+        if !ended && last.is_some_and(reads) {
+            later.push((record, field));
+        }
+        false
+    });
+    later
+}
+
+/// Whether two places may be one: the same field or element, at any
+/// index, of the same variable; `exact` asks for indices written the same
+/// way, which makes them one place.
+fn same_place(one: &Expr, other: &Expr, exact: bool) -> bool {
+    // `(&s)->f` and `(*s).f` are `s.f`: an address or a pointer followed
+    // leads to the same variable.
+    let plain = |expr: &'_ Expr| -> Option<Expr> {
+        match &expr.kind {
+            ExprKind::AddrOf(place)
+            | ExprKind::Deref(place)
+            | ExprKind::Decay(place)
+            | ExprKind::Cast(place) => Some((**place).clone()),
+            // `s->f` is `s[0].f`, and any element may be that one.
+            ExprKind::Index(base, _) if !exact => Some((**base).clone()),
+            _ => None,
+        }
+    };
+    if let Some(one) = plain(one) {
+        return same_place(&one, other, exact);
+    }
+    if let Some(other) = plain(other) {
+        return same_place(one, &other, exact);
+    }
+    match (&one.kind, &other.kind) {
+        (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
+        (
+            ExprKind::Member {
+                base,
+                record,
+                field,
+                ..
+            },
+            ExprKind::Member {
+                base: other_base,
+                record: other_record,
+                field: other_field,
+                ..
+            },
+        ) => record == other_record && field == other_field && same_place(base, other_base, exact),
+        (ExprKind::Index(base, at), ExprKind::Index(other_base, other_at)) => {
+            same_place(base, other_base, exact) && (!exact || same_index(at, other_at))
+        }
+        _ => false,
+    }
 }
 
 /// The pointer `pp` of a statement `*pp = e;` whose `e` neither names

@@ -536,6 +536,14 @@ impl Lower<'_> {
             ExprKind::Var(var) => self.program.vars[var].kind.is_global(),
             _ => false,
         };
+        if let ExprKind::Member { record, field, .. } = pointer.kind
+            && self.twice.contains(&(record, field))
+        {
+            return unsupported(
+                "a move out of a field that is read again before it is stored to: no rule yet",
+                pointer.at,
+            );
+        }
         Ok(match (held, from.nullable, from.many) {
             (false, ..) => value,
             (true, true, _) => rust::method(value, "take", []),

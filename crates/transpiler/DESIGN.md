@@ -901,7 +901,10 @@ become a fact and a refusal:
 - An owner moved out of a field or a global leaves `None` behind
   (`take()`); a C program that reads the field again before storing to it
   would see NULL in Rust. A global that its own function reads again is
-  refused; a field, and a global that another function reads, are not.
+  refused, and so is a field that its own statement or a later one of
+  the block reads again before a store; a field that is read after the
+  block or in the loop's next round, and a global that another function
+  reads, are not.
 - A pointer into the middle of an array that is no cursor is the rest of
   the array from there (`&a[1..]`), so an index or a step back before it
   (`p[-1]`) stops the program where C reads the element. A global pointer

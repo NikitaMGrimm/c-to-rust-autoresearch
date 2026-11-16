@@ -11,7 +11,7 @@ mod search;
 mod stmt;
 mod types;
 
-use crate::c::{Expr, ExprKind, FuncId, Program, Stmt, Type, VarId, any_expr};
+use crate::c::{Expr, ExprKind, FuncId, Program, RecordId, Stmt, Type, VarId, any_expr};
 use crate::facts::{Access, Facts, Slot};
 use crate::names::Names;
 use crate::rust;
@@ -970,6 +970,12 @@ struct Lower<'a> {
     /// of whole and the next statement stores to again, before anything
     /// reads it.
     restored_element: Option<Expr>,
+    /// The fields that the statement being lowered reads more than once:
+    /// a move out of one would leave `None` for the other read.
+    twice: Vec<(RecordId, usize)>,
+    /// The value that the function returns at its end, which reads after
+    /// every statement of its body.
+    last: Option<Expr>,
     /// The block entered at a label that is being translated (R49).
     entered: Option<Entered>,
     /// The library's records that the translation names: `div_t` and its
@@ -1005,6 +1011,8 @@ impl<'a> Lower<'a> {
             walking: None,
             restored: None,
             restored_element: None,
+            twice: Vec::new(),
+            last: None,
             entered: None,
             quotients: Default::default(),
             zeroing: Default::default(),
@@ -1452,7 +1460,10 @@ impl Lower<'_> {
                 at,
             ))?;
         }
-        let mut body = self.seeded(rest)?;
+        self.last = last.cloned();
+        let body = self.seeded(rest);
+        self.last = None;
+        let mut body = body?;
         if let Some(value) = last {
             let value = match self.in_main() {
                 false => self.returned(value).map(Some),

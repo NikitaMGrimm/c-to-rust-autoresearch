@@ -546,3 +546,54 @@ fn a_field_that_a_conditional_gives_up_is_taken_out_of_a_writable_record() {
     );
     assert_lines(&rust, &["let mut gone: Option<Box<Link>> = list;"]);
 }
+
+#[test]
+fn a_field_that_is_moved_out_and_read_again_in_one_statement_is_refused() {
+    // The move leaves `None` in the field, which the other read would see
+    // where C still sees the pointer.
+    let program = |call: &str| {
+        format!(
+            "#include <stdio.h>\n#include <stdlib.h>\nstruct box {{ int *p; }};\nvoid consume(int *p, int present) {{ printf(\"%d %d\\n\", *p, present); free(p); }}\nvoid pop(struct box *s) {{\n    {call}\n    s->p = NULL;\n}}\nint main(void) {{ struct box b; b.p = malloc(sizeof *b.p); *b.p = 7; pop(&b); return 0; }}\n"
+        )
+    };
+    assert_eq!(
+        translate("again", &program("consume(s->p, s->p != NULL);")).unwrap_err(),
+        "unsupported: a move out of a field that is read again before it is stored to: no rule yet, at line 6"
+    );
+    assert_eq!(
+        translate(
+            "later",
+            &program("int *q = s->p;\n    printf(\"%d\\n\", s->p != NULL);\n    free(q);")
+        )
+        .unwrap_err(),
+        "unsupported: a move out of a field that is read again before it is stored to: no rule yet, at line 6"
+    );
+    // A function of the program may read the field, and so may another
+    // way to write the record.
+    for (name, later) in [
+        ("called", "pop(s);"),
+        (
+            "other-element",
+            "s[1].p = NULL;\n    printf(\"%d\\n\", s[0].p != NULL);",
+        ),
+        ("written", "printf(\"%d\\n\", (&*s)->p != NULL);"),
+    ] {
+        assert_eq!(
+            translate(
+                name,
+                &program(&format!("int *q = s->p;\n    {later}\n    free(q);"))
+            )
+            .unwrap_err(),
+            "unsupported: a move out of a field that is read again before it is stored to: no rule yet, at line 6",
+            "{name}"
+        );
+    }
+    assert!(translate("once", &program("consume(s->p, 1);")).is_ok());
+    assert!(
+        translate(
+            "stored",
+            &program("int *q = s->p;\n    s->p = NULL;\n    free(q);")
+        )
+        .is_ok()
+    );
+}
