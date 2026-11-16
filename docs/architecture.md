@@ -151,9 +151,11 @@ others. The owner puts the file there; it is in the private directory, which
 the agent's guard blocks and the audit reports. A candidate that passes the
 scores is still rejected when a program turns newly wrong on any of these
 sets, with `--dev-only` on the development set: the base refused it or gave Rust that does not compile, and the
-candidate's translation stops, runs too long or prints something else. A
-refusal costs a score nothing, so without this a rule could trade refusals
-for wrong programs. The log counts such programs per set as `newly_wrong`,
+candidate's translation stops, runs too long or prints something else. It is
+rejected as well when a program that the base refused gets Rust that does
+not compile. A refusal costs a score nothing, so without this a rule could
+trade refusals for wrong programs. The log counts such programs per set as
+`newly_wrong` and `newly_not_compiling`,
 and the printed reason names neither set nor program. The generated
 programs decide nothing else: their passes are only logged, as the variants'
 are. Every result goes to

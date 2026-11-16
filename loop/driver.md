@@ -89,7 +89,7 @@ own as tests.
    rises, and a refactoring or a fix when it does not drop; in both cases the
    validation score may not drop, and no program on any of these sets or
    among private generated programs that had no running translation may run wrong: stop, run too long or
-   print something else. Refuse what a rule cannot translate correctly. Where the owner's message says that the
+   print something else, and none that was refused may get Rust that does not compile. Refuse what a rule cannot translate correctly. Where the owner's message says that the
    run keeps steady rules, a rule is judged as a fix is, and one judging is
    one construct family, whether or not a development program passes with
    it; what follows about completing a program then does not hold. It prints the development results and its

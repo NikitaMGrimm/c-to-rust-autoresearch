@@ -17,7 +17,7 @@ const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage 
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
      --usage adds a report of the transcripts usage tool to the private log.\n\
      A candidate is rejected when a program that had no running translation\n\
-     runs wrong with it.\n\
+     runs wrong with it, or a refused one gets Rust that does not compile.\n\
      --dev-only keeps CANDIDATE on the development set alone; the private sets\n\
      are only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop;\n\
      a file steady-rules there keeps a rule as a fix is kept: the development\n\
@@ -202,6 +202,7 @@ fn gate(args: &Args) -> Result<bool, String> {
                     "candidate": lax(&lax_after, set),
                 },
                 "newly_wrong": newly_wrong(&before, &after, set),
+                "newly_not_compiling": newly_not_compiling(&before, &after, set),
             });
             if let Some(copies) = near_copies.get(set) {
                 let (base, _) = passes_without(base_stages, copies);
@@ -337,14 +338,15 @@ fn rejection(
 
 /// The rejection of a candidate with a newly wrong program. The loop agent
 /// reads it, so it names neither the set nor the program.
-const NEWLY_WRONG: &str = "a program that had no running translation now runs wrong";
+const NEWLY_WRONG: &str =
+    "a program that had no running translation now has one that does not compile or runs wrong";
 
 /// The programs of `set` that the candidate newly translates wrong: the base
 /// refused them or gave Rust that does not compile, and the candidate's
 /// translation stops, runs too long or prints something else. A refusal
 /// costs a score nothing, so only this keeps a rule from trading one for a
-/// wrong program. Rust that does not compile on the way there is not counted
-/// itself, and does not hide the step after it.
+/// wrong program. Rust that does not compile on the way there is counted by
+/// [`newly_not_compiling`], and does not hide the step after it.
 fn newly_wrong(before: &Results, after: &Results, set: &str) -> usize {
     let untranslated = |stage| matches!(stage, Stage::TranspileFail | Stage::CompileFail);
     let wrong = |stage| matches!(stage, Stage::Timeout | Stage::Panic | Stage::Mismatch);
@@ -359,15 +361,32 @@ fn newly_wrong(before: &Results, after: &Results, set: &str) -> usize {
         .count()
 }
 
-/// The rejection for a newly wrong program, on the development set and,
-/// unless `dev_only`, on the private sets.
+/// The programs of `set` that the base refused and the candidate translates
+/// into Rust that does not compile. A translator may refuse; what it does
+/// translate has to be Rust.
+fn newly_not_compiling(before: &Results, after: &Results, set: &str) -> usize {
+    let (Some(before), Some(after)) = (before.get(set), after.get(set)) else {
+        return 0;
+    };
+    after
+        .iter()
+        .filter(|&(name, &stage)| {
+            stage == Stage::CompileFail && before.get(name) == Some(&Stage::TranspileFail)
+        })
+        .count()
+}
+
+/// The rejection for a program that is newly wrong or newly does not
+/// compile, on the development set and, unless `dev_only`, on the private
+/// sets.
 fn wrong_rejection(before: &Results, after: &Results, dev_only: bool) -> Option<String> {
     let judged: &[&str] = if dev_only {
         &["dev"]
     } else {
         &["dev", "validation", "dev_variants", "generated"]
     };
-    let wrong = |set: &&str| newly_wrong(before, after, set) > 0;
+    let wrong =
+        |set: &&str| newly_wrong(before, after, set) + newly_not_compiling(before, after, set) > 0;
     judged.iter().any(wrong).then(|| NEWLY_WRONG.to_owned())
 }
 
@@ -449,6 +468,14 @@ mod tests {
             &[Mismatch, Panic, Pass, TranspileFail],
         );
         assert_eq!(newly_wrong(&before, &after, "dev"), 3);
+        // Only a refused program newly fails to compile.
+        assert_eq!(newly_not_compiling(&before, &after, "dev"), 1);
+        assert_eq!(newly_not_compiling(&after, &after, "dev"), 0);
+        let stages = |stage| Results::from([("dev", BTreeMap::from([("p".to_owned(), stage)]))]);
+        for (old, rejected) in [(TranspileFail, true), (CompileFail, false), (Pass, false)] {
+            let rejection = wrong_rejection(&stages(old), &stages(CompileFail), false);
+            assert_eq!(rejection.is_some(), rejected);
+        }
         // A pass that turns wrong lowers the score instead, and a program
         // that was wrong before is not newly so.
         assert_eq!(newly_wrong(&before, &after, "validation"), 0);
