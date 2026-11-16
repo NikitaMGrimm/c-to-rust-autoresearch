@@ -7,7 +7,7 @@ stays fixed while a loop runs.
 |---|---|---|
 | `transpiler` | Translates one C file to Rust, in the stages of its [design](../crates/transpiler/DESIGN.md) | the loop |
 | `eval` | The evaluator library, the `eval` command, the loop's `gate` and `transfer` | the owner |
-| `bench` | Builds the benchmark sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies`, and a practice `pool` | the owner |
+| `bench` | Builds the benchmark sets: `intake`, `codenet`, `variants`, `fuzz`, `near-copies`, `generate`, and a practice `pool` | the owner |
 | `transcripts` | Reads Claude Code transcripts: model `usage` and the loop's `audit` | the owner |
 
 ## Evaluating a program
@@ -113,6 +113,7 @@ Project CodeNet ──codenet──> transfer           (private)
 TRACTOR sets ──variants──> PRIVATE_DIR/variants/SET
 each set ──fuzz──────> NAME.fuzz.json next to each program
 private sets ──near-copies──> PRIVATE_DIR/near-copies.json
+seed ──generate──> PRIVATE_DIR/generated   (private)
 ```
 
 [bench/README.md](../bench/README.md) describes each step, the split and the
