@@ -290,6 +290,25 @@ joined, popped and freed; helpers with recursion, a function pointer, a
 static local and a global; string buffers; and `goto` to a cleanup label,
 out of nested loops, backward as a loop and into a block.
 
+A tenth family gives most programs pointers that share an object where a
+translation would move ownership: a pointer field copied into a local
+without clearing it and both read, in the same block, after it, in the next
+round of a loop or inside a function; the same objects reached as
+`a[i]->p`, `a[i].p`, `(&s)->p` or `(*s).p`, through tables of records that
+hold a pointer and a record that holds a heap array; a pointer handed to a
+function chosen by a condition, and an owner that a function frees only on
+some condition and reports by its return value; lists changed through a
+pointer to a pointer; paths through two and three links; pointers into the
+middle of an array and one past its end as arguments; and owners swapped,
+rotated or moved to another container, or a buffer grown while an index
+into it is kept. About a third of the programs are such a shape and little
+else, since a translator that refuses one construct refuses the whole
+program. Integer shapes join them: compound assignment to a narrower type,
+comparisons after implicit conversion, shifts of promoted values, `/` and
+`%` by negative numbers, products that wrap in 32 bits beside 64,
+post-increment in an index, side effects in the right operand of `&&` and
+`||`, chained assignment and unsigned counters that count down to zero.
+
 Each program gets four inputs, such as zeros, small positives, negatives and
 numbers near the bounds. The generator keeps a range for every integer, the
 targets of every pointer and whether heap memory is live, so a program is

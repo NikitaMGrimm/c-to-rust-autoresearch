@@ -46,9 +46,11 @@ enum Family {
     Functions,
     Strings,
     Goto,
+    /// Pointers that share an object where a translation would move it.
+    Sharing,
 }
 
-const FAMILIES: [(Family, u64); 9] = [
+const FAMILIES: [(Family, u64); 10] = [
     (Family::Integers, 4),
     (Family::Control, 4),
     (Family::Arrays, 4),
@@ -58,6 +60,7 @@ const FAMILIES: [(Family, u64); 9] = [
     (Family::Functions, 3),
     (Family::Strings, 3),
     (Family::Goto, 3),
+    (Family::Sharing, 6),
 ];
 
 const WORDS: [&str; 40] = [
@@ -115,6 +118,8 @@ struct Candidate {
     source: String,
     inputs: Vec<Input>,
     families: BTreeSet<Family>,
+    /// The shapes of shared pointers and conversions it contains, 1 to 8.
+    shapes: BTreeSet<u8>,
 }
 
 /// A candidate's valid inputs and the reasons its other inputs failed, or
@@ -164,6 +169,7 @@ fn generate(args: &Args) -> Result<(), String> {
     let mut rejected: BTreeMap<&str, usize> = BTreeMap::new();
     let mut dropped: BTreeMap<&str, usize> = BTreeMap::new();
     let mut families: BTreeMap<Family, usize> = BTreeMap::new();
+    let mut shapes: BTreeMap<u8, usize> = BTreeMap::new();
     let mut kept = 0;
     // Only the prefix up to the last kept candidate counts, whatever the
     // workers checked beyond it.
@@ -178,6 +184,9 @@ fn generate(args: &Args) -> Result<(), String> {
                 for family in &candidate.families {
                     *families.entry(*family).or_default() += 1;
                 }
+                for shape in &candidate.shapes {
+                    *shapes.entry(*shape).or_default() += 1;
+                }
             }
             Err(reason) => *rejected.entry(reason).or_default() += 1,
         }
@@ -186,6 +195,7 @@ fn generate(args: &Args) -> Result<(), String> {
     println!("rejected: {rejected:?}");
     println!("inputs dropped from kept programs: {dropped:?}");
     println!("programs per family: {families:?}");
+    println!("programs per shape: {shapes:?}");
     Ok(())
 }
 
@@ -272,7 +282,7 @@ fn candidate(seed: u64, index: usize) -> Candidate {
     let mut budget = 20 + rng.below(56) as usize;
     loop {
         let mut generator = Gen::new(&mut rng);
-        let (source, families) = generator.program(budget);
+        let (source, families, shapes) = generator.program(budget);
         let count = generator.inputs;
         let lines = source.lines().count();
         if (LINES.0..=LINES.1).contains(&lines) {
@@ -281,6 +291,7 @@ fn candidate(seed: u64, index: usize) -> Candidate {
                 source,
                 inputs,
                 families,
+                shapes,
             };
         }
         budget = budget.saturating_sub(5).max(20);
@@ -467,11 +478,15 @@ fn binary(op: &str, a: &E, b: &E) -> Option<E> {
         "+" => Some((al + bl, ah + bh)),
         "-" => Some((al - bh, ah - bl)),
         "*" => corners(&|x, y| x.checked_mul(y)),
-        "/" if bl >= 1 => corners(&|x, y| Some(x / y)),
-        "%" if bl >= 1 => Some((
-            if al < 0 { al.max(1 - bh) } else { 0 },
-            if ah > 0 { ah.min(bh - 1) } else { 0 },
-        )),
+        // A divisor of -1 could overflow, so a negative one is -2 or less.
+        "/" if bl >= 1 || (bh <= -2 && !ty.unsigned()) => corners(&|x, y| Some(x / y)),
+        "%" if bl >= 1 || (bh <= -2 && !ty.unsigned()) => {
+            let most = bh.max(-bl);
+            Some((
+                if al < 0 { al.max(1 - most) } else { 0 },
+                if ah > 0 { ah.min(most - 1) } else { 0 },
+            ))
+        }
         "&" | "|" | "^" if al >= 0 && bl >= 0 => {
             let mask = |x: i128| ((x as u128 + 1).next_power_of_two() - 1) as i128;
             Some(if op == "&" {
@@ -725,6 +740,11 @@ struct Gen<'r> {
     /// States where a `break` leaves each enclosing `switch`.
     breaks: Vec<State>,
     inputs: usize,
+    shapes: BTreeSet<u8>,
+    /// A record holding a node pointer: tag, number field, pointer field.
+    holder: Option<(String, String, String)>,
+    /// A record holding a heap array: tag, length field, pointer field.
+    vector: Option<(String, String, String)>,
 }
 
 type Generator<'r> = fn(&mut Gen<'r>) -> bool;
@@ -763,6 +783,9 @@ impl<'r> Gen<'r> {
             cleanup: None,
             breaks: Vec::new(),
             inputs: 0,
+            shapes: BTreeSet::new(),
+            holder: None,
+            vector: None,
         }
     }
 
@@ -875,9 +898,17 @@ impl<'r> Gen<'r> {
 
     // The program.
 
-    fn program(&mut self, budget: usize) -> (String, BTreeSet<Family>) {
+    fn program(&mut self, budget: usize) -> (String, BTreeSet<Family>, BTreeSet<u8>) {
         let mut chosen: Vec<Family> = Vec::new();
-        let count = 2 + self.below(4);
+        // Some programs are a shape of shared pointers and little else: a
+        // translator that refuses one construct refuses the whole program.
+        let focused = self.chance(35);
+        let (count, budget) = if focused {
+            chosen.push(Family::Sharing);
+            (1 + self.below(2), budget.min(30 + self.below(15)))
+        } else {
+            (2 + self.below(4), budget)
+        };
         while chosen.len() < count {
             let total: u64 = FAMILIES.iter().map(|(_, w)| w).sum();
             let mut roll = self.rng.below(total);
@@ -917,7 +948,8 @@ impl<'r> Gen<'r> {
             source.push('\n');
         }
         source.push_str("}\n");
-        (source, std::mem::take(&mut self.used))
+        let shapes = std::mem::take(&mut self.shapes);
+        (source, std::mem::take(&mut self.used), shapes)
     }
 
     fn size(&self) -> usize {
@@ -1003,6 +1035,11 @@ impl<'r> Gen<'r> {
                     Self::compound,
                     Self::step,
                     Self::small_decl,
+                    Self::compare_print,
+                    Self::widen_pair,
+                    Self::post_increment,
+                    Self::short_circuit,
+                    Self::chain,
                 ],
                 Family::Control => &[
                     Self::if_else,
@@ -1011,6 +1048,7 @@ impl<'r> Gen<'r> {
                     Self::do_while,
                     Self::switch,
                     Self::jump,
+                    Self::countdown,
                 ],
                 Family::Arrays => &[
                     Self::array_decl,
@@ -1054,6 +1092,15 @@ impl<'r> Gen<'r> {
                     Self::clamp_call,
                 ],
                 Family::Strings => &[Self::string_decl, Self::string_op, Self::string_op],
+                Family::Sharing => &[
+                    Self::shape_field_copy,
+                    Self::shape_spellings,
+                    Self::shape_chosen_owner,
+                    Self::shape_cursor,
+                    Self::shape_nested,
+                    Self::shape_inner_pointer,
+                    Self::shape_swap_owners,
+                ],
                 Family::Goto => &[
                     Self::goto_out,
                     Self::nested_exit,
@@ -1282,13 +1329,17 @@ impl<'r> Gen<'r> {
                 let b = self.expr(depth - 1);
                 self.arithmetic(op, a, b)
             }
-            5 => {
+            5 | 6 => {
+                let op = if self.chance(50) { "/" } else { "%" };
                 let d = self.divisor();
-                binary("/", &a, &d).unwrap()
-            }
-            6 => {
-                let d = self.divisor();
-                binary("%", &a, &d).unwrap()
+                let negative = E::new(format!("(-{})", d.text), d.ty, (-d.hi, -d.lo));
+                let signed = !common(a.ty, d.ty).unsigned();
+                if signed && self.chance(30) {
+                    self.shapes.insert(8);
+                    binary(op, &a, &negative).unwrap()
+                } else {
+                    binary(op, &a, &d).unwrap()
+                }
             }
             7 => {
                 let c = self.cond(depth - 1);
@@ -1317,6 +1368,11 @@ impl<'r> Gen<'r> {
                 } else {
                     a
                 }
+            }
+            9 if a.ty == Ty::UChar && self.chance(50) => {
+                // Promoted to int before the shift.
+                self.shapes.insert(8);
+                shift("<<", &a, 1 + self.below(8) as u32).unwrap()
             }
             9 => {
                 let u = if a.ty.unsigned() {
@@ -1535,7 +1591,7 @@ impl<'r> Gen<'r> {
             self.line(line);
             return true;
         }
-        if !matches!(place.ty, Ty::Int | Ty::Long) {
+        if !matches!(place.ty, Ty::Int | Ty::Long | Ty::Short) {
             return false;
         }
         let op = self.pick(&["+", "-", "*"]);
@@ -1548,6 +1604,14 @@ impl<'r> Gen<'r> {
         let Some(result) = binary(op, &place.e(), &e) else {
             return false;
         };
+        // The result converts back to the place's type, which must hold it.
+        let (min, max) = place.ty.range();
+        if result.lo < min || result.hi > max {
+            return false;
+        }
+        if place.ty == Ty::Short {
+            self.shapes.insert(8);
+        }
         self.line(format!("{} {op}= {};", place.text, bare(&e.text)));
         if result.lo < place.lo || result.hi > place.hi {
             self.line(format!(
@@ -2063,6 +2127,12 @@ impl<'r> Gen<'r> {
             "free" => &["free_list", "release"],
             "concat" => &["concat", "join_lists"],
             "build" => &["build", "make_list"],
+            "node_new" => &["new_node", "make_node", "node_with"],
+            "peek" => &["second_value", "peek_next"],
+            "bump" => &["bump_next", "touch_next"],
+            "consume" => &["consume", "take_value"],
+            "maybe_drop" => &["drop_if_above", "maybe_drop"],
+            "until" => &["count_until", "run_length"],
             _ => &["total", "make", "shift"],
         };
         let name = match key.split_once(':') {
@@ -2161,6 +2231,24 @@ impl<'r> Gen<'r> {
                     "static struct {t} *{name}(int n, int v)\n{{\n    struct {t} *h = NULL;\n    for (int i = 0; i < n; i++)\n        h = {push}(h, (v + i * 7) % 1000);\n    return h;\n}}\n"
                 )
             }
+            "node_new" => format!(
+                "static struct {t} *{name}(int v, struct {t} *next)\n{{\n    struct {t} *n = malloc(sizeof *n);\n    if (n == NULL)\n        exit(3);\n    n->{v} = v;\n    n->{x} = next;\n    return n;\n}}\n"
+            ),
+            "peek" => format!(
+                "static int {name}(const struct {t} *n)\n{{\n    return n->{x} != NULL ? n->{x}->{v} : -1;\n}}\n"
+            ),
+            "bump" => format!(
+                "static int {name}(struct {t} *n, int k)\n{{\n    struct {t} *t = n->{x};\n    t->{v} = (t->{v} + k) % 1000;\n    return n->{x}->{v} + t->{v};\n}}\n"
+            ),
+            "consume" => format!(
+                "static int {name}(struct {t} *n)\n{{\n    int v = n->{v};\n    free(n);\n    return v;\n}}\n"
+            ),
+            "maybe_drop" => format!(
+                "static int {name}(struct {t} *n, int limit)\n{{\n    if (n->{v} > limit) {{\n        free(n);\n        return 1;\n    }}\n    return 0;\n}}\n"
+            ),
+            "until" => format!(
+                "static int {name}(const int *p, const int *end, int limit)\n{{\n    int c = 0;\n    while (p != end && *p <= limit) {{\n        c++;\n        p++;\n    }}\n    return c;\n}}\n"
+            ),
             _ => self.record_helper(key, name),
         }
     }
@@ -2793,21 +2881,10 @@ impl<'r> Gen<'r> {
             return false;
         }
         let b = self.below(self.buffers.len());
-        let (name, home, _) = self.buffers[b].clone();
-        let (owned, len) = self.state.buffers[b];
+        let name = self.buffers[b].0.clone();
+        let owned = self.state.buffers[b].0;
         if owned == Owned::Live && self.top_level() && self.chance(50) {
-            let grown = len + 1 + self.below(4);
-            let tmp = self.fresh(&["grown", "bigger", "resized"]);
-            self.line(format!(
-                "int *{tmp} = realloc({name}, {grown} * sizeof *{name});"
-            ));
-            self.open(format!("if ({tmp} == NULL)"));
-            self.line(format!("free({name});"));
-            self.line("return 3;");
-            self.close();
-            self.line(format!("{name} = {tmp};"));
-            self.fill_buffer(&name, len, grown, home);
-            self.state.buffers[b] = (Owned::Live, grown);
+            self.realloc_buffer(b);
             return true;
         }
         if owned == Owned::Null {
@@ -2827,6 +2904,24 @@ impl<'r> Gen<'r> {
         }
         self.state.buffers[b].0 = Owned::Null;
         true
+    }
+
+    /// Grows live buffer `b` at the top level and fills the new part.
+    fn realloc_buffer(&mut self, b: usize) {
+        let (name, home, _) = self.buffers[b].clone();
+        let len = self.state.buffers[b].1;
+        let grown = len + 1 + self.below(4);
+        let tmp = self.fresh(&["grown", "bigger", "resized"]);
+        self.line(format!(
+            "int *{tmp} = realloc({name}, {grown} * sizeof *{name});"
+        ));
+        self.open(format!("if ({tmp} == NULL)"));
+        self.line(format!("free({name});"));
+        self.line("return 3;");
+        self.close();
+        self.line(format!("{name} = {tmp};"));
+        self.fill_buffer(&name, len, grown, home);
+        self.state.buffers[b] = (Owned::Live, grown);
     }
 
     /// Uses a buffer that may have been freed only where it is not null.
@@ -3570,6 +3665,720 @@ impl<'r> Gen<'r> {
     }
 }
 
+/// Shapes 1 to 7: pointers that share an object where a translation would
+/// move ownership, each a short idiom at the top level of `main` that frees
+/// what it allocates or leaves a list for the cleanup. Shape 8: conversions
+/// and side effects that mechanical translation gets wrong.
+impl Gen<'_> {
+    fn show(&mut self, values: &[String]) {
+        let formats = vec!["%d"; values.len()].join(" ");
+        self.line(format!("printf(\"{formats}\\n\", {});", values.join(", ")));
+    }
+
+    /// A statement between the parts of an idiom, which touches none of it.
+    fn filler(&mut self) {
+        if self.chance(50) {
+            self.simple += 1;
+            self.simple_statement();
+            self.simple -= 1;
+        }
+    }
+
+    /// `count` new nodes linked in a chain.
+    fn chain_of(&mut self, count: usize) -> String {
+        let new = self.helper("node_new");
+        let mut text = "NULL".to_owned();
+        for _ in 0..count {
+            let v = self.list_value();
+            text = format!("{new}({v}, {text})");
+        }
+        text
+    }
+
+    /// Hands a chain of `count` nodes to the cleanup, or frees it here.
+    fn keep_or_free(&mut self, name: &str, count: usize) {
+        if self.chance(50) {
+            let decl = self.decl();
+            self.lists.push((name.to_owned(), decl));
+            self.state.lists.push(count as i128);
+            return;
+        }
+        let next = self.node().next;
+        for depth in (0..count).rev() {
+            self.line(format!(
+                "free({name}{});",
+                format!("->{next}").repeat(depth)
+            ));
+        }
+    }
+
+    /// `(field + e) % 1000`, which stays a node value.
+    fn moved(&mut self, field: &str) -> String {
+        let e = self.operand();
+        format!("({field} + {e}) % 1000")
+    }
+
+    /// A node value to use inside a larger expression.
+    fn operand(&mut self) -> String {
+        let v = self.list_value();
+        if v.contains(' ') { format!("({v})") } else { v }
+    }
+
+    fn holder(&mut self) -> (String, String, String) {
+        if self.holder.is_none() {
+            let node = self.node().tag;
+            let tag = self.fresh(&["holder", "bucket", "owner_rec"]);
+            let id = self.pick(&["id", "rank", "slot"]).to_owned();
+            let ptr = self.pick(&["item", "ptr", "ref"]).to_owned();
+            self.top.push(format!(
+                "struct {tag} {{\n    int {id};\n    struct {node} *{ptr};\n}};\n"
+            ));
+            self.holder = Some((tag, id, ptr));
+        }
+        self.holder.clone().unwrap()
+    }
+
+    fn vector(&mut self) -> (String, String, String) {
+        if self.vector.is_none() {
+            let tag = self.fresh(&["vec", "span", "block"]);
+            let len = self.pick(&["len", "size", "count"]).to_owned();
+            let data = self.pick(&["data", "items", "vals"]).to_owned();
+            self.top.push(format!(
+                "struct {tag} {{\n    int {len};\n    int *{data};\n}};\n"
+            ));
+            self.vector = Some((tag, len, data));
+        }
+        self.vector.clone().unwrap()
+    }
+
+    /// 1: a pointer field copied into a local without clearing the field,
+    /// then both used.
+    fn shape_field_copy(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let Node { tag, val, next } = self.node();
+        let s = self.fresh(&["head", "base", "anchor", "front"]);
+        let init = self.chain_of(2);
+        self.line(format!("struct {tag} *{s} = {init};"));
+        let t = self.fresh(&["t", "copy", "second", "saved"]);
+        let declare = format!("struct {tag} *{t} = {s}->{next};");
+        match self.below(5) {
+            0 => {
+                self.line(&declare);
+                self.show(&[format!("{s}->{next} != NULL"), format!("{t}->{val}")]);
+                self.filler();
+                let value = self.moved(&format!("{t}->{val}"));
+                self.line(format!("{t}->{val} = {value};"));
+                self.show(&[format!("{s}->{next}->{val}"), format!("{t}->{val}")]);
+            }
+            1 => {
+                let c = self.cond(1);
+                self.open(format!("if ({c})"));
+                self.line(&declare);
+                let e = self.operand();
+                self.line(format!("{t}->{val} = ({t}->{val} * 3 + {e}) % 1000;"));
+                self.filler();
+                self.close();
+                self.show(&[format!("{s}->{next}->{val}")]);
+            }
+            2 => {
+                let k = self.range(2, 4);
+                self.open(format!("for (int i = 0; i < {k}; i++)"));
+                self.line(&declare);
+                self.show(&[format!("{t}->{val}")]);
+                let e = self.operand();
+                self.line(format!(
+                    "{s}->{next}->{val} = ({s}->{next}->{val} + i + {e}) % 1000;"
+                ));
+                self.close();
+            }
+            3 => {
+                self.line(&declare);
+                let value = self.moved(&format!("{t}->{val}"));
+                self.line(format!("{t}->{val} = {value};"));
+                let peek = self.helper("peek");
+                self.store(E::new(format!("{peek}({s})"), Ty::Int, (-BOUND, BOUND)));
+            }
+            _ => {
+                self.line(&declare);
+                self.show(&[format!("{t}->{val}")]);
+                let bump = self.helper("bump");
+                let e = self.list_value();
+                self.store(E::new(format!("{bump}({s}, {e})"), Ty::Int, (-1998, 1998)));
+            }
+        }
+        self.keep_or_free(&s, 2);
+        self.shapes.insert(1);
+        true
+    }
+
+    /// 2: the same objects reached through other spellings: tables of node
+    /// pointers, tables of records holding a pointer, a record holding a
+    /// heap array.
+    fn shape_spellings(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let Node { tag, val, next } = self.node();
+        let n = self.range(2, 4) as usize;
+        let (i, j) = (self.index(n), self.index(n));
+        let (first, last) = (0, n - 1);
+        match self.below(3) {
+            0 => {
+                let a = self.fresh(&["nodes", "cells", "table"]);
+                let new = self.helper("node_new");
+                self.line(format!("struct {tag} *{a}[{n}];"));
+                let v = self.operand();
+                self.line(format!("for (int i = 0; i < {n}; i++)"));
+                self.line(format!("    {a}[i] = {new}(({v} + i * 7) % 1000, NULL);"));
+                let value = self.moved(&format!("{a}[{j}]->{val}"));
+                self.line(format!("{a}[{i}]->{val} = {value};"));
+                self.show(&[format!("{a}[0]->{val}"), format!("{a}[{i} + 0]->{val}")]);
+                self.line(format!("{a}[{first}]->{next} = {a}[{last}];"));
+                let t = self.fresh(&["t", "picked", "held"]);
+                self.line(format!("struct {tag} *{t} = {a}[{j}];"));
+                self.filler();
+                self.show(&[
+                    format!("{t}->{val} + {a}[{j}]->{val}"),
+                    format!("{a}[{first}]->{next}->{val}"),
+                ]);
+                if self.chance(60) {
+                    self.line(format!("{t} = {a}[{first}];"));
+                    self.line(format!("{a}[{first}] = {a}[{last}];"));
+                    self.line(format!("{a}[{last}] = {t};"));
+                    self.shapes.insert(7);
+                }
+                self.line(format!("for (int i = 0; i < {n}; i++)"));
+                self.line(format!("    free({a}[i]);"));
+            }
+            1 => {
+                let (h, id, ptr) = self.holder();
+                let tab = self.fresh(&["tab", "rows", "entries"]);
+                let new = self.helper("node_new");
+                self.line(format!("struct {h} {tab}[{n}];"));
+                let v = self.operand();
+                self.open(format!("for (int i = 0; i < {n}; i++)"));
+                self.line(format!("{tab}[i].{id} = i;"));
+                self.line(format!(
+                    "{tab}[i].{ptr} = {new}(({v} + i * 7) % 1000, NULL);"
+                ));
+                self.close();
+                let k = self.below(n);
+                let r = self.fresh(&["r", "row", "entry"]);
+                self.line(format!("struct {h} *{r} = &{tab}[{k}];"));
+                self.show(&[
+                    format!("(*{r}).{ptr}->{val}"),
+                    format!("(&{tab}[{k}])->{ptr}->{val}"),
+                ]);
+                let t = self.fresh(&["t", "picked", "held"]);
+                self.line(format!("struct {tag} *{t} = {tab}[{i}].{ptr};"));
+                let value = self.moved(&format!("{t}->{val}"));
+                self.line(format!("{tab}[{j}].{ptr}->{val} = {value};"));
+                self.show(&[format!("{tab}[{i}].{ptr}->{val}"), format!("{t}->{val}")]);
+                let c = self.cond(1);
+                if self.chance(50) {
+                    // Moved to another element on one path only.
+                    self.open(format!("if ({c})"));
+                    self.line(format!("free({tab}[{last}].{ptr});"));
+                    self.line(format!("{tab}[{last}].{ptr} = {tab}[{first}].{ptr};"));
+                    self.line(format!("{tab}[{first}].{ptr} = NULL;"));
+                    self.close();
+                } else {
+                    // Taken out, and stored back on one path only.
+                    self.line(format!("{t} = {tab}[{first}].{ptr};"));
+                    self.line(format!("{tab}[{first}].{ptr} = NULL;"));
+                    self.line(format!("if ({c})"));
+                    self.line(format!("    {tab}[{first}].{ptr} = {t};"));
+                    self.line(format!("if ({tab}[{first}].{ptr} == NULL)"));
+                    self.line(format!("    free({t});"));
+                }
+                self.show(&[
+                    format!("{tab}[{first}].{ptr} == NULL"),
+                    format!("{tab}[{last}].{ptr}->{val} + {tab}[{last}].{id}"),
+                ]);
+                self.line(format!("for (int i = 0; i < {n}; i++)"));
+                self.line(format!("    free({tab}[i].{ptr});"));
+            }
+            _ => {
+                let (vt, len, data) = self.vector();
+                let b = self.fresh(&["vec", "store", "bag"]);
+                let n = n + 2;
+                self.line(format!("struct {vt} {b};"));
+                self.line(format!("{b}.{len} = {n};"));
+                self.line(format!("{b}.{data} = calloc({n}, sizeof *{b}.{data});"));
+                self.line(format!("if ({b}.{data} == NULL)"));
+                self.line("    return 3;");
+                let view = self.fresh(&["view", "alias", "items"]);
+                self.line(format!("int *{view} = {b}.{data};"));
+                let (k, k2) = (self.index(n), self.index(n));
+                let e = self.list_value();
+                self.line(format!("{view}[{k}] = {e};"));
+                self.filler();
+                self.show(&[format!("{b}.{data}[{k}]"), format!("(&{b})->{data}[{k2}]")]);
+                let bp = self.fresh(&["vp", "bp", "ref"]);
+                self.line(format!("struct {vt} *{bp} = &{b};"));
+                let value = self.moved(&format!("{view}[{k2}]"));
+                self.line(format!("(*{bp}).{data}[{k2}] = {value};"));
+                let sum = self.helper("sum");
+                self.store(E::new(
+                    format!("{sum}({b}.{data}, {b}.{len})"),
+                    Ty::Int,
+                    (-BOUND * n as i128, BOUND * n as i128),
+                ));
+                self.line(format!("free({b}.{data});"));
+            }
+        }
+        self.shapes.insert(2);
+        true
+    }
+
+    /// 3: a pointer handed to a function chosen by a condition, with
+    /// cleanup that depends on it; an owner freed by a function only on some
+    /// condition, which it tells by its return value.
+    fn shape_chosen_owner(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let Node { tag, val, next } = self.node();
+        let x = self.fresh(&["left", "one", "x_node"]);
+        let init = self.chain_of(1);
+        self.line(format!("struct {tag} *{x} = {init};"));
+        let got = self.fresh(&["got", "taken", "result"]);
+        match self.below(3) {
+            0 => {
+                let y = self.fresh(&["right", "other", "y_node"]);
+                let init = self.chain_of(1);
+                self.line(format!("struct {tag} *{y} = {init};"));
+                let k = self.fresh(&["k", "which", "flag"]);
+                let c = self.cond(1);
+                self.line(format!("int {k} = {c};"));
+                let consume = self.helper("consume");
+                self.line(format!("int {got} = {consume}({k} ? {x} : {y});"));
+                self.line(format!("if ({k})"));
+                self.line(format!("    free({y});"));
+                self.line("else");
+                self.line(format!("    free({x});"));
+            }
+            1 => {
+                let s = self.fresh(&["pair", "holder_node", "two"]);
+                let init = self.chain_of(2);
+                self.line(format!("struct {tag} *{s} = {init};"));
+                let k = self.fresh(&["k", "which", "flag"]);
+                let c = self.cond(1);
+                self.line(format!("int {k} = {c};"));
+                let consume = self.helper("consume");
+                self.line(format!("int {got} = {consume}({k} ? {s}->{next} : {x});"));
+                self.open(format!("if ({k})"));
+                self.line(format!("{s}->{next} = NULL;"));
+                self.line(format!("free({x});"));
+                self.close();
+                self.show(&[
+                    got.clone(),
+                    format!("{s}->{next} != NULL ? {s}->{next}->{val} : -1"),
+                ]);
+                self.line(format!("free({s}->{next});"));
+                self.line(format!("free({s});"));
+            }
+            _ => {
+                let drop = self.helper("maybe_drop");
+                let e = self.list_value();
+                self.line(format!("int {got} = {drop}({x}, {e});"));
+                self.open(format!("if (!{got})"));
+                let value = self.moved(&format!("{x}->{val}"));
+                self.line(format!("{x}->{val} = {value};"));
+                self.show(&[format!("{x}->{val}")]);
+                self.line(format!("free({x});"));
+                self.close();
+            }
+        }
+        self.new_var(got, Ty::Int, (-BOUND, BOUND), false);
+        self.shapes.insert(3);
+        true
+    }
+
+    /// 4: a list changed through a pointer to a pointer.
+    fn shape_cursor(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let Node { tag, val, next } = self.node();
+        let pp = self.fresh(&["pp", "link", "cursor"]);
+        let new = self.helper("node_new");
+        let choice = self.below(3);
+        if choice == 0 || self.lists.is_empty() {
+            let s = self.fresh(&["head", "base", "anchor", "front"]);
+            let init = self.chain_of(2);
+            self.line(format!("struct {tag} *{s} = {init};"));
+            self.line(format!("struct {tag} **{pp} = &{s}->{next};"));
+            self.show(&[format!("(*{pp})->{val}")]);
+            let v = self.operand();
+            if self.chance(50) {
+                self.line(format!(
+                    "*{pp} = {new}(({v} + (*{pp})->{val} % 2) % 1000, *{pp});"
+                ));
+            } else {
+                self.line(format!("*{pp} = {new}({v}, *{pp});"));
+            }
+            self.show(&[
+                format!("(*{pp})->{val}"),
+                format!("{s}->{next}->{next}->{val}"),
+            ]);
+            self.keep_or_free(&s, 3);
+        } else {
+            let l = self.below(self.lists.len());
+            let owner = self.lists[l].0.clone();
+            self.line(format!("struct {tag} **{pp} = &{owner};"));
+            if choice == 1 && self.state.lists[l] < LIST_CAP {
+                let v = self.list_value();
+                self.line(format!("while (*{pp} != NULL && (*{pp})->{val} < {v})"));
+                self.line(format!("    {pp} = &(*{pp})->{next};"));
+                let v = self.list_value();
+                self.line(format!("*{pp} = {new}({v}, *{pp});"));
+                self.state.lists[l] += 1;
+            } else {
+                let k = self.range(2, 4);
+                let dead = self.fresh(&["dead", "gone", "victim"]);
+                self.open(format!("while (*{pp} != NULL)"));
+                self.open(format!("if ((*{pp})->{val} % {k} == 0)"));
+                self.line(format!("struct {tag} *{dead} = *{pp};"));
+                self.line(format!("*{pp} = {dead}->{next};"));
+                self.line(format!("free({dead});"));
+                self.reopen("else");
+                self.line(format!("{pp} = &(*{pp})->{next};"));
+                self.close();
+                self.close();
+                self.kill_aliases(l);
+            }
+            let print = self.helper("print");
+            self.line(format!("{print}({owner});"));
+        }
+        self.shapes.insert(4);
+        true
+    }
+
+    /// 5: nested paths through two and three links.
+    fn shape_nested(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let Node { tag, val, next } = self.node();
+        let a = self.fresh(&["head", "base", "anchor", "front"]);
+        let init = self.chain_of(3);
+        self.line(format!("struct {tag} *{a} = {init};"));
+        let b = self.fresh(&["mid", "middle", "b_node"]);
+        self.line(format!("struct {tag} *{b} = {a}->{next};"));
+        self.show(&[
+            format!("{a}->{next}->{val}"),
+            format!("{b}->{next}->{val}"),
+            format!("{a}->{next}->{next}->{val}"),
+        ]);
+        let value = self.moved(&format!("{b}->{val}"));
+        self.line(format!("{a}->{next}->{next}->{val} = {value};"));
+        self.filler();
+        self.line(format!(
+            "{b}->{val} = ({a}->{next}->{next}->{val} - {b}->{val}) % 1000;"
+        ));
+        self.show(&[format!("{a}->{next}->{val}")]);
+        self.keep_or_free(&a, 3);
+        self.shapes.insert(5);
+        true
+    }
+
+    /// 6: pointers into the middle of an array and one past its end.
+    fn shape_inner_pointer(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let live: Vec<usize> = (0..self.buffers.len())
+            .filter(|&b| self.state.buffers[b].0 == Owned::Live)
+            .collect();
+        let use_buffer = !live.is_empty() && self.chance(50);
+        if !use_buffer && self.one_dim().is_none() {
+            // A one-dimensional array to point into.
+            while !self.array_decl() || self.arrays.last().unwrap().dims.len() != 1 {}
+        }
+        let (name, n, home) = if use_buffer {
+            let b = self.pick(&live);
+            (
+                self.buffers[b].0.clone(),
+                self.state.buffers[b].1,
+                self.buffers[b].1,
+            )
+        } else {
+            let a = self.one_dim().unwrap();
+            let array = &self.arrays[a];
+            (array.name.clone(), array.dims[0], array.home)
+        };
+        let k = self.below(n);
+        match self.below(3) {
+            0 => {
+                let m = 1 + self.below(n - k);
+                let sum = self.helper("sum");
+                let start = if self.chance(50) {
+                    format!("&{name}[{k}]")
+                } else {
+                    format!("{name} + {k}")
+                };
+                self.mark(Family::Functions);
+                self.store(E::new(
+                    format!("{sum}({start}, {m})"),
+                    Ty::Int,
+                    (-home * m as i128, home * m as i128),
+                ));
+            }
+            1 => {
+                let until = self.helper("until");
+                let e = self.list_value();
+                self.mark(Family::Functions);
+                self.store(E::new(
+                    format!("{until}(&{name}[{k}], &{name}[{n}], {e})"),
+                    Ty::Int,
+                    (0, (n - k) as i128),
+                ));
+            }
+            _ => {
+                let mid = self.fresh(&["mid", "inner", "part"]);
+                self.line(format!("int *{mid} = {name} + {k};"));
+                let j = self.index(n);
+                let e = self.expr(1);
+                let value = self.fit(e, Ty::Int, -home, home);
+                self.line(format!("{name}[{j}] = {value};"));
+                self.line(format!("*{mid} = (*{mid} + {name}[{j}]) % {};", home + 1));
+                let back = if k > 0 {
+                    format!("*({mid} - 1)")
+                } else {
+                    format!("{mid}[0]")
+                };
+                self.show(&[format!("{name}[{k}]"), back]);
+            }
+        }
+        self.shapes.insert(6);
+        true
+    }
+
+    /// 7: owners swapped, rotated or moved to another container; a buffer
+    /// grown while an index into it is kept.
+    fn shape_swap_owners(&mut self) -> bool {
+        if !self.top_level() {
+            return false;
+        }
+        let live: Vec<usize> = (0..self.buffers.len())
+            .filter(|&b| self.state.buffers[b].0 == Owned::Live)
+            .collect();
+        if !live.is_empty() && self.chance(30) {
+            let b = self.pick(&live);
+            let (name, len) = (self.buffers[b].0.clone(), self.state.buffers[b].1);
+            let at = self.fresh(&["at", "keep", "spot"]);
+            let index = self.index(len);
+            self.line(format!("int {at} = {index};"));
+            self.realloc_buffer(b);
+            self.show(&[format!("{name}[{at}]")]);
+            self.new_var(at, Ty::Int, (0, len as i128 - 1), false);
+            self.shapes.insert(7);
+            return true;
+        }
+        while self.lists.len() < 2 {
+            self.list_decl();
+        }
+        let tag = self.node().tag;
+        let count = self.lists.len().min(2 + self.below(2));
+        let mut chosen: Vec<usize> = (0..self.lists.len()).collect();
+        while chosen.len() > count {
+            chosen.remove(self.below(chosen.len()));
+        }
+        let names: Vec<String> = chosen.iter().map(|&l| self.lists[l].0.clone()).collect();
+        let empty = chosen.iter().position(|&l| self.state.lists[l] == 0);
+        if let (Some(e), true) = (empty, self.chance(50)) {
+            // Stored into the empty container, removed from the first.
+            let from = (e + 1) % chosen.len();
+            self.line(format!("{} = {};", names[e], names[from]));
+            self.line(format!("{} = NULL;", names[from]));
+            self.state.lists[chosen[e]] = self.state.lists[chosen[from]];
+            self.state.lists[chosen[from]] = 0;
+        } else {
+            let t = self.fresh(&["t", "swap_tmp", "spare"]);
+            self.line(format!("struct {tag} *{t} = {};", names[0]));
+            for w in 1..names.len() {
+                self.line(format!("{} = {};", names[w - 1], names[w]));
+            }
+            self.line(format!("{} = {t};", names[names.len() - 1]));
+            let lens: Vec<i128> = chosen.iter().map(|&l| self.state.lists[l]).collect();
+            for (w, &l) in chosen.iter().enumerate() {
+                self.state.lists[l] = lens[(w + 1) % lens.len()];
+            }
+        }
+        // An alias into any of them now points into a list another one owns.
+        for (_, deps) in &mut self.state.aliases {
+            if chosen.iter().any(|l| deps.contains(l)) {
+                deps.extend(chosen.iter().copied());
+            }
+        }
+        let len = self.helper("len");
+        self.show(&[format!("{len}({})", names[0])]);
+        self.shapes.insert(7);
+        true
+    }
+
+    // Shape 8: integers.
+
+    /// A comparison of a signed with an unsigned value.
+    fn compare_print(&mut self) -> bool {
+        if self.mult > 8 {
+            return false;
+        }
+        let a = self.expr(1);
+        let mut b = self.place(false).map_or_else(|| self.expr(1), |p| p.e());
+        if a.ty.unsigned() == b.ty.unsigned() {
+            let range = b.range_as(Ty::UInt);
+            b = E::new(format!("(unsigned){}", b.text), Ty::UInt, range);
+        }
+        let op = self.pick(&["<", "<=", ">", ">="]);
+        self.show(&[format!("{} {op} {}", a.text, b.text)]);
+        self.shapes.insert(8);
+        true
+    }
+
+    /// A product that wraps in 32 bits beside the same product in 64.
+    fn widen_pair(&mut self) -> bool {
+        if self.no_decl {
+            return false;
+        }
+        let unsigned = |g: &mut Self| {
+            let e = g.expr(1);
+            if e.ty == Ty::UInt {
+                e.text
+            } else {
+                format!("(unsigned){}", e.text)
+            }
+        };
+        let (a, b) = (unsigned(self), unsigned(self));
+        let (narrow, wide) = (self.word(), self.word());
+        self.line(format!("unsigned long {narrow} = {a} * {b};"));
+        self.line(format!("unsigned long {wide} = (unsigned long){a} * {b};"));
+        for name in [narrow, wide] {
+            self.new_var(name, Ty::ULong, Ty::ULong.range(), true);
+        }
+        self.shapes.insert(8);
+        true
+    }
+
+    /// Writes with a post-increment in the index.
+    fn post_increment(&mut self) -> bool {
+        if self.no_decl {
+            return false;
+        }
+        let Some(a) = self.one_dim() else {
+            return false;
+        };
+        let (name, n, home) = (
+            self.arrays[a].name.clone(),
+            self.arrays[a].dims[0],
+            self.arrays[a].home,
+        );
+        let pos = self.fresh(&["pos", "fill", "next_at"]);
+        self.line(format!("int {pos} = 0;"));
+        let m = 1 + self.below(n.min(4));
+        for _ in 0..m {
+            let e = self.expr(1);
+            let value = self.fit(e, Ty::Int, -home, home);
+            self.line(format!("{name}[{pos}++] = {value};"));
+        }
+        self.new_var(pos, Ty::Int, (m as i128, m as i128), false);
+        self.shapes.insert(8);
+        true
+    }
+
+    /// Conditions whose right operand counts, so short-circuiting shows.
+    fn short_circuit(&mut self) -> bool {
+        if self.no_decl {
+            return false;
+        }
+        let hits = self.fresh(&["hits", "checks", "tests"]);
+        self.line(format!("int {hits} = 0;"));
+        let n = 2 + self.below(2);
+        for _ in 0..n {
+            let c = self.cond(0);
+            let side = if self.chance(50) {
+                format!("{c} && ++{hits} > 1")
+            } else {
+                format!("{c} || {hits}++ < 1")
+            };
+            self.open(format!("if ({side})"));
+            self.filler();
+            self.show(std::slice::from_ref(&hits));
+            self.close();
+        }
+        self.new_var(hits, Ty::Int, (0, n as i128), false);
+        self.shapes.insert(8);
+        true
+    }
+
+    /// `a = b = value`, where `a` receives `b`'s value converted.
+    fn chain(&mut self) -> bool {
+        let vars = self.scalars(true);
+        if vars.len() < 2 {
+            return false;
+        }
+        let (a, b) = (self.pick(&vars), self.pick(&vars));
+        let fits = a.ty.unsigned() || (b.lo >= a.lo && b.hi <= a.hi);
+        if a.name == b.name || !fits {
+            return false;
+        }
+        let e = self.expr(2);
+        let value = self.fit(e, b.ty, b.lo, b.hi);
+        self.line(format!("{} = {} = {value};", a.name, b.name));
+        self.shapes.insert(8);
+        true
+    }
+
+    /// A loop whose unsigned counter counts down to zero.
+    fn countdown(&mut self) -> bool {
+        let small: Vec<Var> = self
+            .vars
+            .iter()
+            .filter(|v| v.lo >= 0 && v.hi >= 1 && v.hi <= 12)
+            .cloned()
+            .collect();
+        let (bound, hi) = if !small.is_empty() && self.chance(50) {
+            let v = self.pick(&small);
+            (v.name, v.hi)
+        } else {
+            let k = self.range(2, 7);
+            (k.to_string(), k)
+        };
+        let Some(mult) = self.enter_loop(Loop::For, hi) else {
+            return false;
+        };
+        let k = self.fresh(&["k", "down", "left_n"]);
+        let (header, lo, top) = if self.chance(50) {
+            (
+                format!("for (unsigned {k} = {bound}; {k}-- > 0;)"),
+                0,
+                hi - 1,
+            )
+        } else {
+            (
+                format!("for (unsigned {k} = {bound}; {k} > 0; {k}--)"),
+                1,
+                hi,
+            )
+        };
+        self.open(header);
+        self.scoped(|g| {
+            let mut counter = Var::counter(k.clone(), lo, top.max(lo));
+            counter.ty = Ty::UInt;
+            g.vars.push(counter);
+            g.body();
+        });
+        self.names.remove(&k);
+        self.close();
+        self.leave_loop(mult);
+        self.shapes.insert(8);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3604,7 +4413,7 @@ mod tests {
                     );
                 }
                 assert_eq!(c.inputs.len(), 4);
-                assert!(c.families.len() >= 2, "{:?}", c.families);
+                assert!(!c.families.is_empty(), "{:?}", c.families);
                 for family in c.families {
                     *families.entry(family).or_default() += 1;
                 }
