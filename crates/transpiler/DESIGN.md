@@ -736,6 +736,31 @@ development set too, most frequent first:
   items = longer;` is `items.resize(n, 0)`. Needs that the copy is of the
   whole used part and that nothing else points to the old array.
 
+What a sixth review found beside these, most frequent first:
+
+- **A record filled field by field.** `let mut node = Box::new(Node::
+  default()); node.data = data; node.next = None;` is `Box::new(Node {
+  data, next: None })`. Needs that nothing reads the record or hands it
+  on before its last field is stored, and the order of the values kept.
+- **A test negated around its comparison.** `if !(left != 0)` is `if
+  left == 0`, and `i32::from(!(n != 0))` is `i32::from(n == 0)`. Needs no analysis; a comparison of floating-point numbers by order
+  stays, since a NaN answers both ways.
+- **A length beside the vector that a record owns.** `list.items[list.used
+  as usize] = x; list.used += 1;` after R59's block is `list.items.
+  push(x)` where the vector holds exactly the elements in use. Needs
+  that the length and the storage always agree, and that no spare
+  element is read; the `Option` and the block for a size of 0 stay until
+  then.
+- **A pointer that only names one place and causes no conflict.** `let p:
+  &i32 = &x; if *p != 2` is `if x != 2`. R61 with its own proofs, for a
+  pointer that the borrow checker would accept as well.
+- **Truths combined as numbers.** `i32::from(a < n) & i32::from(b < n) !=
+  0` is `(a < n) & (b < n)`, which evaluates both sides as C does. Needs
+  no analysis where both operands are comparisons.
+- **A missing value handed on by hand.** `let Some(buffer) = buffer else {
+  return None; };` is `let buffer = buffer?;` where the function returns
+  an `Option` and the branch does nothing else. Needs no analysis.
+
 ## Known weak spots
 
 Places where a rule assumes more than the analysis proves. Each should
@@ -784,6 +809,12 @@ become a fact and a refusal:
 - A local pointer to a global, or to a `static` local, is a borrow of it
   that the analysis does not follow: `int *p = &x; x = 2;` with a later
   read of `*p`, for a global `x`, is translated and does not compile.
+- A record that owns memory and is passed by value is moved into the
+  call: `n = get(s);` with a later read of `s.next` is translated and does
+  not compile, where C copies the record.
+- A function that nothing names and that returns an owner out of a record
+  it borrows takes the owner out (`take()`); it is refused only once
+  something names it.
 - `getenv` reads the environment with `std::env::var`, which gives no
   value for a variable that is not UTF-8, where C finds the bytes, and
   may differ from C for a name with `=` or a NUL.
