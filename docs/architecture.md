@@ -137,15 +137,21 @@ The keep rule is provisional: the development score rises, or does not drop
 for a candidate whose commits are all fixes with a `fix(transpiler)` subject,
 such as for a review comment, or refactorings, which prepare later rules,
 and the validation score does not drop. With
-`--dev-only`, as in the baseline runs, the development score alone decides
-and validation is only logged. With `--strict`, the scores of the keep rule
+`--dev-only`, as in the baseline runs, the development set alone decides
+and the private sets are only logged. With `--strict`, the scores of the keep rule
 count only strict passes, and the gate also prints the development set's
 strict score and its passes that are not strict. For a run whose log
 directory holds a file `steady-rules`, a rule is kept as a fix is, when it
 lowers neither score: the development set then need not hold a program for
 every rule, and the log's `steady_rules` tells such judgings from the
 others. The owner puts the file there; it is in the private directory, which
-the agent's guard blocks and the audit reports. Every result goes to
+the agent's guard blocks and the audit reports. A candidate that passes the
+scores is still rejected when a program turns newly wrong on any of the three
+sets: the base refused it or gave Rust that does not compile, and the
+candidate's translation stops, runs too long or prints something else. A
+refusal costs a score nothing, so without this a rule could trade refusals
+for wrong programs. The log counts such programs per set as `newly_wrong`,
+and the printed reason names neither set nor program. Every result goes to
 `PRIVATE_DIR/loop/log.jsonl`, or with `--run ID` to
 `PRIVATE_DIR/runs/ID/log.jsonl`, with the scores of the private sets without [near-copies](../bench/README.md#near-copies),
 the passes that fail their fuzzed inputs and the passes that are not strict. The gate prints only the

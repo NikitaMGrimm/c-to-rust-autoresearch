@@ -16,8 +16,10 @@ const USAGE: &str = "usage: gate PRIVATE_DIR BASE CANDIDATE [--jobs N] [--usage 
      \x20           [--dev-only] [--strict] [--run ID]\n\
      Exits 0 to keep CANDIDATE, 1 to reject it and 2 on errors.\n\
      --usage adds a report of the transcripts usage tool to the private log.\n\
-     --dev-only keeps CANDIDATE on the development score alone; validation is\n\
-     only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop;\n\
+     A candidate is rejected when a program that had no running translation\n\
+     runs wrong with it.\n\
+     --dev-only keeps CANDIDATE on the development set alone; the private sets\n\
+     are only logged. --strict counts only strict passes in both scores. --run logs to PRIVATE_DIR/runs/ID instead of PRIVATE_DIR/loop;\n\
      a file steady-rules there keeps a rule as a fix is kept: the development\n\
      score need not rise.\n\
      Run it from a clean checkout of main, not from the loop agent's checkout.";
@@ -163,10 +165,18 @@ fn gate(args: &Args) -> Result<bool, String> {
         )
     };
     let steady_rules = steady_rules(args);
-    let reason = problem.or_else(|| {
-        let steady = steady || steady_rules;
-        rejection(scores("dev"), scores("validation"), steady, args.dev_only)
-    });
+    let reason = problem
+        .or_else(|| {
+            let steady = steady || steady_rules;
+            rejection(scores("dev"), scores("validation"), steady, args.dev_only)
+        })
+        .or_else(|| {
+            let judged = if args.dev_only { &sets[..1] } else { &sets[..] };
+            let wrong = judged
+                .iter()
+                .map(|(set, _)| newly_wrong(&before, &after, set));
+            (wrong.sum::<usize>() > 0).then(|| NEWLY_WRONG.to_owned())
+        });
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -192,6 +202,7 @@ fn gate(args: &Args) -> Result<bool, String> {
                     "base": lax(&lax_before, set),
                     "candidate": lax(&lax_after, set),
                 },
+                "newly_wrong": newly_wrong(&before, &after, set),
             });
             if let Some(copies) = near_copies.get(set) {
                 let (base, _) = passes_without(base_stages, copies);
@@ -325,6 +336,30 @@ fn rejection(
     }
 }
 
+/// The rejection of a candidate with a newly wrong program. The loop agent
+/// reads it, so it names neither the set nor the program.
+const NEWLY_WRONG: &str = "a program that had no running translation now runs wrong";
+
+/// The programs of `set` that the candidate newly translates wrong: the base
+/// refused them or gave Rust that does not compile, and the candidate's
+/// translation stops, runs too long or prints something else. A refusal
+/// costs a score nothing, so only this keeps a rule from trading one for a
+/// wrong program. Rust that does not compile on the way there is not counted
+/// itself, and does not hide the step after it.
+fn newly_wrong(before: &Results, after: &Results, set: &str) -> usize {
+    let untranslated = |stage| matches!(stage, Stage::TranspileFail | Stage::CompileFail);
+    let wrong = |stage| matches!(stage, Stage::Timeout | Stage::Panic | Stage::Mismatch);
+    let (Some(before), Some(after)) = (before.get(set), after.get(set)) else {
+        return 0;
+    };
+    after
+        .iter()
+        .filter(|&(name, &stage)| {
+            wrong(stage) && before.get(name).is_some_and(|&old| untranslated(old))
+        })
+        .count()
+}
+
 /// Whether the subject of every commit from `base` to `candidate` in the
 /// repository at `dir` starts with one of `kinds`.
 fn commits_are(dir: &Path, base: &str, candidate: &str, kinds: &[&str]) -> Result<bool, String> {
@@ -389,6 +424,29 @@ mod tests {
     fn reject(before: &Results, after: &Results, fix: bool, dev_only: bool) -> Option<String> {
         let scores = |set| (passes(before, set), passes(after, set));
         rejection(scores("dev"), scores("validation"), fix, dev_only)
+    }
+
+    #[test]
+    fn counts_programs_that_turn_from_untranslated_to_wrong() {
+        use Stage::{CompileFail, Mismatch, Panic, Pass, Timeout, TranspileFail};
+        let before = results(
+            &[TranspileFail, TranspileFail, CompileFail, TranspileFail],
+            &[Pass, Mismatch, TranspileFail, TranspileFail],
+        );
+        let after = results(
+            &[Mismatch, Panic, Timeout, CompileFail],
+            &[Mismatch, Panic, Pass, TranspileFail],
+        );
+        assert_eq!(newly_wrong(&before, &after, "dev"), 3);
+        // A pass that turns wrong lowers the score instead, and a program
+        // that was wrong before is not newly so.
+        assert_eq!(newly_wrong(&before, &after, "validation"), 0);
+        assert_eq!(newly_wrong(&before, &after, "dev_variants"), 0);
+        assert_eq!(newly_wrong(&before, &before, "dev"), 0);
+        // The loop agent reads the reason.
+        for word in ["dev", "validation", "variant", "p0"] {
+            assert!(!NEWLY_WRONG.contains(word));
+        }
     }
 
     #[test]
