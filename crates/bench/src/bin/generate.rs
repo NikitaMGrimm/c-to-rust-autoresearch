@@ -4391,13 +4391,18 @@ mod tests {
 
     #[test]
     fn arithmetic_on_a_promoted_unsigned_place_is_range_checked() {
-        // `unsigned char *= int` multiplies as `int`.
-        let byte = E::new("byte".to_owned(), Ty::UChar, (0, 255));
-        let wide = E::new("v".to_owned(), Ty::Int, (0, 99_980_001));
-        assert!(binary("*", &byte, &wide).is_none());
-        assert!(binary("*", &byte, &E::lit(7)).is_some());
-        let unsigned = E::new("u".to_owned(), Ty::UInt, (0, u32::MAX.into()));
-        assert!(binary("*", &unsigned, &wide).is_some());
+        // `unsigned char *= int` multiplies as `int`, so `byte *= v * v`
+        // could overflow; this seed chose it before the check.
+        for seed in (0..2000).chain([1644]) {
+            let mut rng = Rng(seed);
+            let mut generator = Gen::new(&mut rng);
+            generator.new_var("byte".to_owned(), Ty::UChar, (0, 255), true);
+            generator.new_var("v".to_owned(), Ty::Int, (-9999, 9999), false);
+            generator.compound();
+            for line in &generator.lines {
+                assert!(!line.contains("*= v * v"), "seed {seed}: {line}");
+            }
+        }
     }
 
     #[test]
