@@ -1150,6 +1150,16 @@ impl<'a> Walk<'a> {
     /// a test has found it not to be NULL.
     fn flow_of(&mut self, pointer: &Expr, to: Slot, set: bool) {
         let held = pointer.uncast();
+        // Each value of a conditional is held by its own place.
+        match &held.kind {
+            ExprKind::Cond(cond, then, other) if self.known.truth(self.program, cond).is_none() => {
+                self.flow_of(then, to, set);
+                self.flow_of(other, to, set);
+                return;
+            }
+            ExprKind::Comma(_, last) => return self.flow_of(last, to, set),
+            _ => {}
+        }
         // A pointer to a pointer makes the places behind both ends one.
         if to_pointer(slot_type(self.program, to))
             && let Some(behind) = to.behind()

@@ -533,3 +533,16 @@ fn a_read_of_an_owner_follows_its_memory_to_the_local_that_got_it() {
         );
     }
 }
+
+/// What a field gives up as one value of a conditional is taken out of
+/// its record, which the record's binding must allow.
+#[test]
+fn a_field_that_a_conditional_gives_up_is_taken_out_of_a_writable_record() {
+    let rust = check(
+        "conditional-move",
+        "#include <stdio.h>\n#include <stdlib.h>\nstruct link { int weight; struct link *rest; };\nint main(int argc, char **argv) {\n    struct link *list = NULL;\n    for (int i = 1; i <= 3; i++) {\n        struct link *fresh = malloc(sizeof(struct link));\n        fresh->weight = i;\n        fresh->rest = list;\n        list = fresh;\n    }\n    int total = 0;\n    while (list) {\n        struct link *gone = list;\n        total += gone->weight;\n        list = argc > 1 || gone->weight > 1 ? gone->rest : NULL;\n        free(gone);\n    }\n    printf(\"%d\\n\", total);\n    return 0;\n}\n",
+        &[&[], &["all"]],
+        "",
+    );
+    assert_lines(&rust, &["let mut gone: Option<Box<Link>> = list;"]);
+}

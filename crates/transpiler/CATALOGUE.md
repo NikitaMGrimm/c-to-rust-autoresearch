@@ -171,7 +171,8 @@ Entry format, newest last:
   `calloc`'s memory count as NULL; `Box<T>` or `Vec<T>` for every
   slot that owns; a move between owners, `&mut *b` or `&mut v` from an owner
   to a borrow; `drop(p)` for `free(p)`. A field or a global gives up what it
-  owns with `take()` or `std::mem::take`, since its holder stays in use. The
+  owns with `take()` or `std::mem::take`, since its holder stays in use,
+  also where it is one value of a conditional, `p = c ? q->next : NULL`. The
   NULL test after an allocation is left out, since allocation in Rust does
   not return NULL. Refused: an owner, a local or a global, that is read
   after it gave its memory to another owner (a field, a global, another
