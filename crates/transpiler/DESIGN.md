@@ -924,6 +924,39 @@ What a sixth review found beside these, most frequent first:
   return None; };` is `let buffer = buffer?;` where the function returns
   an `Option` and the branch does nothing else. Needs no analysis.
 
+What a seventh review found beside these, most frequent first:
+
+- **A loop that counts down or by more than one.** `let mut i = 5; while
+  i > 0 { … i -= 1; }` is `for i in (1..=5).rev()`, and a step of 2 is
+  `(0..=n - 2).step_by(2)`. R3's test of a counted loop, for a step
+  other than one up; a step that could pass the type's limit stays a
+  `while`.
+- **A function that only answers yes or no.** `fn is_empty(…) -> i32`
+  whose every `return` is 0 or 1, compared with 0 by its callers, is `->
+  bool`. Needs every return and every caller, also through a pointer to
+  the function.
+- **A table built empty and then filled.** `(0..n).map(|_| Vec::new()).
+  collect()` followed by a loop that stores `vec![0; m]` in every row is
+  `vec![vec![0; m]; n]`, and `[0; 2]` with a store to each element is
+  the array of the values. Needs that every element is stored once
+  before anything reads it.
+- **A record on the heap that nothing links.** A `Box<Stack>` whose
+  record holds a `Vec` and is in no list is `Stack`. Needs that no
+  pointer to it is kept in another record; a node of a list stays a
+  `Box`.
+- **A length that the type of a parameter gave.** `fn mix(state: &mut
+  [u64], block: &[u64])` for C's `uint64_t state[8]` is `&mut [u64; 8]`
+  where every caller hands an array of that length.
+- **A borrow handed back to the caller that lent it.** `p = grow(p, n);`
+  for a `grow` that returns its own parameter is `grow(p, n);` with no
+  result. Needs that every `return` names the parameter and every caller
+  stores the result where the argument came from.
+- **A star before a method.** `(*head).take()` for a `head: &mut
+  Option<…>` is `head.take()`. Needs no analysis.
+- **Limits and a new line spelled as numbers.** `2147483647` is
+  `i32::MAX`, and `print!("{}", 10 as u8 as char)` is `println!()`: with
+  the spelling of numbers above.
+
 ## Known weak spots
 
 Places where a rule assumes more than the analysis proves. Each should
@@ -997,6 +1030,23 @@ become a fact and a refusal:
   program does not call for its inputs is translated and does not
   compile. An operation that the lints refuse as written (`x - x`, `x &
   0`, a constant index beyond its array) is refused.
+- Other code that the compiler or its lints refuse as written is still
+  translated and does not compile: two constants (`0 * 3`, `7 & 0`), `x %
+  1`, a shift by the width of its type or a division by a literal 0 in a
+  statement that never runs, and an index that is a `const` local beyond
+  its array. A constant index beyond its array is refused also in a
+  branch that a constant test drops (`if (0)`), where the translation
+  would compile.
+- The address of the end of an array, `&a[N]`, is an index only for a
+  cursor or the end of a loop; as an argument for a borrow of one
+  element it is translated and does not compile.
+- A borrow of an element of an array of pointers that is held across a
+  store to another element, `t = a[i]; a[j] = t->next;` with a later read
+  of `t`, is translated and does not compile; so is a record that is
+  read through a second name (`r = s;`) while a field of it is moved out.
+- A conditional that moves a local owner on one side, `take(k ? s->p :
+  other)`, followed by `if (k) free(other);`, is translated and does not
+  compile: the compiler does not know that the two tests agree.
 - A copy of a function with one parameter for two (R53) still declares
   the locals that were pointers of the two: `int *p = a, *q = b;` in
   `f(void *a, void *b)` called as `f(x, x)` is one `&mut` and one `&` of
