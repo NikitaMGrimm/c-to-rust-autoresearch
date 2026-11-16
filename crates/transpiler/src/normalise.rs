@@ -20,6 +20,11 @@
 //! parameters of the functions it holds. It runs after `voids`; it is in a
 //! file of its own.
 //!
+//! `enter`, R68, moves a label that a `goto` reaches from outside its
+//! block to the front of the statement that holds it, with a flag that
+//! skips what stands before the label. It needs no facts and runs before
+//! the first analysis; it is in a file of its own.
+//!
 //! `join` gives a local its first value where it is declared: C89 declares
 //! at the top of a block and assigns later, and Rust declares where the
 //! value is known. It needs no facts and runs before the first analysis.
@@ -55,6 +60,7 @@
 mod alias;
 mod cursors;
 mod ends;
+mod enter;
 mod errno;
 mod follow;
 mod found;
@@ -66,6 +72,7 @@ mod voids;
 pub use alias::{alias, pointers};
 pub use cursors::{cursors, steps_before};
 pub use ends::ends;
+pub use enter::enter;
 pub use follow::follow;
 pub use found::{SEARCHES, found, is_search};
 pub use protos::protos;

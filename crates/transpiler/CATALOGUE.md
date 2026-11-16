@@ -1545,3 +1545,25 @@ Entry format, newest last:
   needs it
 - Changes: extends R65 from one place behind a pointer to the elements of
   an array, and R8's `malloc` and `calloc` to arrays of pointers
+
+## R68: `goto` into a block from outside it
+
+- C: `goto L;` where `L` stands in the branch or the `else` of an `if`, the
+  body of a `while` or a `do`, or a plain block, also nested, and every
+  `goto L` is outside the statement that holds it
+- Rust: the label moves to the front of that statement, which a local flag
+  `entered` enters at the label: `L: if (entered || c) { if (!entered) { A; }
+  entered = 0; B; }`, `!entered && c` for an `else`, and the jump is
+  `entered = 1; goto L;`, which R48 or R49 translate. The condition is not
+  evaluated on entry; a statement around another moved one leaves the flag
+  to it, and a store of 0 that nothing reads is left out
+- Needs: `normalise::enter`, before the first analysis
+- Refused: a jump into a `for` loop, past its initialiser; past a
+  declaration that the part after the label reads; into a statement that
+  another moved label enters too, as one flag cannot say which; a jump from the
+  statement that holds the label, such as from the other branch of the same
+  `if`, as before; into a `switch`, as before
+- Motivation: programs outside the development set jump into the branch of
+  an `if` or into a loop's body; no development program needs it
+- Changes: R48's and R49's refusal of a jump into a block from outside it
+  now holds only where R68 leaves the jump

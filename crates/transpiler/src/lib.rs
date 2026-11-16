@@ -117,6 +117,7 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     normalise::voids(&mut program)?;
     normalise::protos(&mut program)?;
     normalise::places(&mut program);
+    normalise::enter(&mut program)?;
     normalise::join(&mut program);
     normalise::ends(&mut program);
     normalise::found(&mut program);
@@ -160,6 +161,9 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
             listing.add("rewrite", "", refusal);
         }
         normalise::places(&mut program);
+        if let Err(refusal) = normalise::enter(&mut program) {
+            listing.add("rewrite", "", refusal);
+        }
         normalise::join(&mut program);
         normalise::ends(&mut program);
         normalise::found(&mut program);

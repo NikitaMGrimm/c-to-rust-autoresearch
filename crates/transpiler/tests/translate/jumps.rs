@@ -213,9 +213,11 @@ out:
 int main(int argc, char *argv[]) {
     if (argc != 2) return 2;
     int n = atoi(argv[1]);
-    if (n == 0) goto inside;
-    while (n > 0) {
-        printf("loop\n");
+    if (n > 0) {
+        printf("high\n");
+        if (n == 2) goto inside;
+    } else {
+        printf("low\n");
     inside:
         n -= 3;
     }
@@ -748,5 +750,190 @@ fn two_labels_with_one_rust_name_are_refused() {
             ),
             "{name}"
         );
+    }
+}
+
+/// R68: a `goto` into a block from outside it enters the statement that
+/// holds the label by a flag, which skips the condition and what stands
+/// before the label.
+#[test]
+fn a_goto_into_a_block_enters_it_by_a_flag() {
+    let runs: &[&[&str]] = &[&["0"], &["1"], &["4"], &["-2"], &["150"]];
+    let rust = check(
+        "goto_into_if",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+
+static int probes = 0;
+static int above(int n, int limit) { probes++; return n > limit; }
+
+static int classify(int n) {
+    int code = 0;
+    if (n < 0) goto wrong;
+    if (above(n, 99)) {
+        printf("huge\n");
+        code = 5;
+    wrong:
+        printf("rejected %d\n", n);
+        code += 1;
+    } else {
+        if (n == 4) goto even;
+        printf("small\n");
+        if (n == 1) {
+            code = 7;
+        } else {
+        even:
+            code += 2;
+        }
+    }
+    return code;
+}
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    int n = atoi(argv[1]);
+    printf("%d %d\n", classify(n), probes);
+    return 0;
+}
+"#,
+        runs,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut entered: i32 = 0;",
+            "entered = 1;",
+            "if !(entered != 0) {",
+        ],
+    );
+    assert!(
+        rust.contains("if entered != 0 || above(globals, n, 99) != 0 {"),
+        "{rust}"
+    );
+    assert!(rust.contains("if !(entered != 0) && n == 1 {"), "{rust}");
+    let rust = check(
+        "goto_into_loops",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    int n = atoi(argv[1]);
+    int i = 0, sum = 0, entered = 3;
+    if (n > 0) goto middle;
+    while (i < 6) {
+        sum += 100;
+    middle:
+        i++;
+        if (i == 3) continue;
+        sum += i;
+    }
+    if (n == 1) goto deep;
+    do {
+        sum -= 1;
+        {
+            sum += 7;
+        deep:
+            entered++;
+        }
+    } while (entered < 6);
+    printf("%d %d %d\n", i, sum, entered);
+    return 0;
+}
+"#,
+        runs,
+        "",
+    );
+    assert_lines(&rust, &["entered_1 = 0;", "entered_1 = 1;"]);
+    assert!(rust.contains("while entered_1 != 0 || i < 6 {"), "{rust}");
+}
+
+/// R68 refuses a jump into a `for` loop, one past a declaration that the
+/// part after the label reads, one into a statement that another label
+/// enters too, and one into a `case`.
+#[test]
+fn a_goto_into_a_block_that_the_flag_cannot_enter_is_refused() {
+    for (name, c, refusal) in [
+        (
+            "goto_into_for",
+            r#"#include <stdio.h>
+
+int main(void) {
+    int k = 2, total = 0;
+    if (total == 0) goto body;
+    for (k = 0; k < 5; k++) {
+        total += 3;
+    body:
+        total += k;
+    }
+    printf("%d\n", total);
+    return 0;
+}
+"#,
+            "unsupported: `goto body` into a `for` loop, past its initialiser: no rule yet",
+        ),
+        (
+            "goto_into_declared",
+            r#"#include <stdio.h>
+
+int main(void) {
+    int k = 2;
+    if (k == 2) goto mid;
+    if (k > 4) {
+        int half = k / 2;
+    mid:
+        half = 1;
+        printf("%d\n", half);
+    }
+    return 0;
+}
+"#,
+            "unsupported: `goto mid` into a block past a declaration that the part after the label reads: no rule yet, at line 7",
+        ),
+        (
+            "goto_into_twice",
+            r#"#include <stdio.h>
+
+int main(void) {
+    int k = 3, sum = 0;
+    if (k == 3) goto low;
+    if (k == 4) goto high;
+    if (k > 8) {
+        sum += 2;
+    low:
+        sum += 20;
+    high:
+        sum += 200;
+    }
+    printf("%d\n", sum);
+    return 0;
+}
+"#,
+            "unsupported: `goto high` into a block that another label of the same statement enters: no rule yet",
+        ),
+        (
+            "goto_into_case",
+            r#"#include <stdio.h>
+
+int main(void) {
+    int k = 3, sum = 0;
+    if (k < 5) goto second;
+    switch (k) {
+    case 1:
+        sum = 4;
+        break;
+    case 2:
+    second:
+        sum = 9;
+        break;
+    }
+    printf("%d\n", sum);
+    return 0;
+}
+"#,
+            "unsupported: `goto second` to a label under a `case`: no rule yet",
+        ),
+    ] {
+        assert_eq!(translate(name, c).unwrap_err(), refusal, "{name}");
     }
 }

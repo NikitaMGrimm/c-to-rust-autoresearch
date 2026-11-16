@@ -103,6 +103,7 @@ Keep to these:
 | `switch` | `match`; cases that fall through share one arm, `entry @ (2 \| 1) => { if entry == 2 { … } … }` |
 | `goto out;` with `out:` later in the same block or one around it | `'out: { …; break 'out; … }` |
 | `goto` back to a label of a block around it, or past another label | `let mut entry = 0; 'entry: loop { if entry == 0 { … } if entry <= 1 { … } …; break; }`, a `goto` is `entry = 1; continue 'entry;`, and a `break` or `continue` of a loop around names it, `'outer` |
+| `goto` into a block from outside it | The label moves to the front of the statement that holds it: `L: if (entered \|\| c) { if (!entered) { A; } entered = 0; B; }`, and the jump is `entered = 1; goto L;`, which R48 or R49 translate |
 | `printf` with a literal format | `print!` or `println!`, the format converted at translation time |
 | `const char *` that only holds string literals | `&str` |
 | `if (p)`, `if (!p) return;` | `if let Some(p) = …`, `let Some(p) = … else { … }` |
@@ -605,6 +606,34 @@ like any other and the pointer rules apply.
 | a `void *` parameter of the library (`memcpy`, `memset`, `memcmp`, `free`) | the library's rules, which take the argument's own type |
 | `%p` | refused |
 | a size beside it in bytes, `(void *p, size_t len)` | stays the program's number: it counts elements only where the type is a byte, and no rule changes it |
+### `goto` into a block
+
+A `goto` into a block from outside it (R68) is rewritten in
+`normalise::enter` before the first analysis. The label moves to the front
+of the statement that holds it, and a local `entered` of the function (with
+a number where the name is taken) says that the statement is entered at the
+label: the condition is not evaluated then, and what stands before the label
+is skipped. Where the label is still in a block that the jump is outside of,
+the statement around it moves it again, and only the innermost statement
+clears the flag. A store of 0 to the flag that nothing reads afterwards is
+left out, as the compiler refuses it. R48 translates a jump that now comes
+before the label, R49 one that comes after it.
+
+| The label stands in | The jump comes from | Rust form |
+| --- | --- | --- |
+| the branch of an `if (c) { A; L: B; }` | before the `if`, or after it | `L: if (entered \|\| c) { if (!entered) { A; } entered = 0; B; }` |
+| the `else` of an `if (c) { T } else { A; L: B; }` | before the `if`, or after it | `L: if (!entered && c) { T } else { if (!entered) { A; } entered = 0; B; }` |
+| the body of `while (c) { A; L: B; }` | before the loop, or after it | `L: while (entered \|\| c) { if (!entered) { A; } entered = 0; B; }`; `break` and `continue` in `B` stay the loop's |
+| the body of `do { A; L: B; } while (c);` | before the loop, or after it | `L: do { if (!entered) { A; } entered = 0; B; } while (c);` |
+| a plain block `{ A; L: B; }` | before the block, or after it | `L: { if (!entered) { A; } entered = 0; B; }` |
+| any of these inside another of them | before the outer statement | both rewritten, the outer one without `entered = 0` |
+| the body of a `for` | outside it | refused: `` `goto L` into a `for` loop, past its initialiser `` |
+| a block after a declaration in `A` that `B` reads, or of a variable-length array | outside it | refused: `` `goto L` into a block past a declaration that the part after the label reads `` (C rejects a jump into the scope of a variable-length array) |
+| a statement that another moved label enters too: two labels of one block, or one in the branch and one in the `else` | outside it | refused: `` `goto L` into a block that another label of the same statement enters `` |
+| the other branch of the same `if`, or a block that the jump's own statement holds | the statement itself | refused as before: `` `goto L` into a block from outside it `` |
+| a `case` of a `switch` | outside it | refused as before: `` `goto L` to a label under a `case` `` |
+| a statement expression | outside it | C rejects it |
+
 ### Statement expressions
 
 `({ statements; value; })` is a block that is an expression, as every block
@@ -703,8 +732,10 @@ place:
   is a local. `Rc` belongs only on a slot that a fact
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
-- **Others.** `goto` into a loop or a block from outside it, to a label
-  under a `case`, from a `switch` into a block entered at a label, and a
+- **Others.** `goto` into a `for` loop or into a block from a statement
+  that holds it, past a declaration that the part after the label reads,
+  into a statement that another label enters too (R68), to a label under
+  a `case`, from a `switch` into a block entered at a label, and a
   local of one part of such a block that a later part uses (a jump forward
   is a `break` of a labelled block, R48, and one back a loop entered at a
   part, R49), a computed `goto`, a `case` that falls through with
