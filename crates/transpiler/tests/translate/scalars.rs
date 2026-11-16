@@ -1327,3 +1327,27 @@ fn a_decided_conditional_converts_what_is_left() {
         &["let most: u32 = 4294967295;", "let under: i64 = -2;"],
     );
 }
+
+#[test]
+fn a_for_over_no_numbers_stays_a_while() {
+    // Clippy's `reversed_empty_ranges` is an error for `2..2` and `3..=1`.
+    let rust = check(
+        "empty-range",
+        r#"#include <stdio.h>
+int main(void) {
+    int total = 0;
+    for (int i = 2; i < 2; i++) total += i;
+    for (int i = 3; i <= 1; i++) total += i;
+    for (int i = 1; i <= 1; i++) total += i;
+    printf("%d\n", total);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["while i < 2 {", "while i <= 1 {", "for i in 1..=1 {"],
+    );
+}

@@ -72,7 +72,7 @@ Entry format, newest last:
 - Rust: `if`/`else if`/`else`; `while`, or `loop` for a test that is always
   true; `loop` ending in `if !test { break; }` for `do`; `for i in a..b`, or
   `a..=b` for a signed counter, for a `for` that counts a local up by one to
-  a bound that its body cannot change, `_` for a counter the body does not read, and otherwise the
+  a bound that its body cannot change, `_` for a counter the body does not read, and otherwise, also for two constants with nothing between them (`for (i = 2; i < 2; i++)`), whose range the lints refuse, the
   initialiser and a `while` ending in the step; `match` with `|` for cases
   that share statements. A test that the facts decide is left out with the
   branch that cannot run: also a constant that is no literal, `if (2 -

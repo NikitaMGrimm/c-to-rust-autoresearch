@@ -866,7 +866,18 @@ impl Lower<'_> {
         body: &[Stmt],
         out: &mut Vec<syn::Stmt>,
     ) -> R<()> {
-        if let Some((var, start, bound, inclusive)) = self.counts(init, cond, step, body) {
+        // The lints refuse a range of two constants that is empty, so such
+        // a loop stays a `while`.
+        let empty = |start: &Expr, bound: &Expr, inclusive: bool| match (
+            start.constant(self.program),
+            bound.constant(self.program),
+        ) {
+            (Some(start), Some(bound)) => start > bound || (start == bound && !inclusive),
+            _ => false,
+        };
+        if let Some((var, start, bound, inclusive)) = self.counts(init, cond, step, body)
+            && !empty(&start, &bound, inclusive)
+        {
             // A counter that the body does not read needs no name.
             let read = any_expr(
                 body,
