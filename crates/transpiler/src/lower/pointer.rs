@@ -473,7 +473,7 @@ impl Lower<'_> {
             && !matches!(behind.kind, ExprKind::Var(var) if self.restored == Some(var))
         {
             return unsupported(
-                "a move out of the place behind a pointer that the next statement does not store to: no rule yet",
+                "a move out of the place behind a pointer that something may read before it is stored to: no rule yet",
                 pointer.at,
             );
         }

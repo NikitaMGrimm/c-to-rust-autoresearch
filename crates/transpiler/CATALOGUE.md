@@ -1443,10 +1443,15 @@ Entry format, newest last:
   marks the place behind written, a store to `*pp` or a move out of it
   `pp`; `same` (R53) leaves a `T **` parameter alone
 - Refused: a move out of `*pp` (`t = *pp`, `*to = *from`, `return *pp`)
-  whose next statement is not a store `*pp = e` that does not read
-  `*pp`: C still holds the pointer that Rust takes out, `` a move out of
-  the place behind a pointer that the next statement does not store to:
-  no rule yet ``; the place behind holds a borrow, as `const char **out` that
+  unless nothing can read the place before it is stored to: the moving
+  statement is an expression or a declaration that names `pp` only in
+  the move, and the next statement is `*pp = e` with an `e` that names
+  no `pp` and calls no function of the program or through a pointer. C
+  still holds the pointer that Rust takes out, `` a move out of the place
+  behind a pointer that something may read before it is stored to: no
+  rule yet ``; `&p` for a `T **` that is written, while a pointer that
+  borrows `p` is used after the call, `` a variable that is used while a
+  pointer to it is in use ``; the place behind holds a borrow, as `const char **out` that
   gets a literal, `` the place behind the pointer `out`: a borrow behind
   a pointer: no rule yet ``; the address of a global's pointer as the
   argument, `` the address of a global's pointer for a pointer to a

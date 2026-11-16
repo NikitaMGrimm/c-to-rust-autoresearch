@@ -31,11 +31,22 @@ impl Lower<'_> {
                 && of == var
             {
                 stmts.next();
-                self.restored = stmts.peek().and_then(|next| restores(next));
+                self.restored = stmts
+                    .peek()
+                    .and_then(|next| restores(self.program, next))
+                    .filter(|&pp| names_once(value, pp));
                 self.decl_with(*var, Some(value))
                     .map(|declared| out.extend(declared))
             } else {
-                self.restored = stmts.peek().and_then(|next| restores(next));
+                let moving = match stmt {
+                    Stmt::Expr(expr) => Some(expr),
+                    Stmt::Decl(var) => self.program.vars[*var].init.as_ref(),
+                    _ => None,
+                };
+                self.restored = stmts
+                    .peek()
+                    .and_then(|next| restores(self.program, next))
+                    .filter(|&pp| moving.is_some_and(|moving| names_once(moving, pp)));
                 self.stmt(stmt, &mut out)
             };
             if lowered.is_err() {
@@ -1253,9 +1264,23 @@ fn declared(stmts: &[Stmt]) -> impl Iterator<Item = VarId> + '_ {
 }
 
 /// The label of the block that a `goto` to the C label leaves.
-/// The pointer `pp` of a statement `*pp = e;` whose `e` does not read
-/// `*pp`.
-fn restores(stmt: &Stmt) -> Option<VarId> {
+/// Whether the expression names the variable once: a move out of `*pp`
+/// leaves `None` for any other read of `pp` in the statement.
+fn names_once(expr: &Expr, var: VarId) -> bool {
+    let mut count = 0;
+    expr.any(&mut |part| {
+        if matches!(part.kind, ExprKind::Var(read) if read == var) {
+            count += 1;
+        }
+        false
+    });
+    count == 1
+}
+
+/// The pointer `pp` of a statement `*pp = e;` whose `e` neither names
+/// `pp` nor calls a function of the program or through a pointer, which
+/// could read the place that `pp` names by another way.
+fn restores(program: &Program, stmt: &Stmt) -> Option<VarId> {
     let Stmt::Expr(expr) = stmt else { return None };
     let ExprKind::Assign {
         op: None,
@@ -1271,8 +1296,12 @@ fn restores(stmt: &Stmt) -> Option<VarId> {
     let ExprKind::Var(var) = pointer.kind else {
         return None;
     };
-    let reads = value.any(&mut |part| {
-        matches!(&part.kind, ExprKind::Deref(inner) if matches!(inner.kind, ExprKind::Var(read) if read == var))
+    let reads = value.any(&mut |part| match &part.kind {
+        ExprKind::Var(read) => *read == var,
+        ExprKind::Call(callee, _) => callee
+            .function()
+            .is_none_or(|name| program.function(name).is_some()),
+        _ => false,
     });
     (!reads).then_some(var)
 }

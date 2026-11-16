@@ -1611,6 +1611,18 @@ impl InUse<'_> {
                 {
                     for (&param, arg) in self.program.functions[function].params.iter().zip(args) {
                         self.move_into(arg, Slot::Var(param), state);
+                        // R65: `&p` lent to a `T **` that is written is a
+                        // store to `p`.
+                        if to_pointer(&self.program.vars[param].ty)
+                            && self
+                                .pointers
+                                .get(&Slot::Var(param))
+                                .is_some_and(|pointer| pointer.written)
+                            && let ExprKind::AddrOf(place) = &arg.uncast().kind
+                            && let Some(var) = place.root_var()
+                        {
+                            self.stored(var, state);
+                        }
                     }
                 }
             }

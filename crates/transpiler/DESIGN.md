@@ -316,10 +316,10 @@ another argument of the call is refused, also where both are shared
 borrows. Built so far (R65): a parameter `T **` for a record, a number or
 `char`, with the arguments `&p`, `&s.field`, `&s->field` and the
 caller's own `T **`, and inside it the rules for a pointer in a field on
-`*pp`, where a move out of `*pp` is refused unless the next statement
-stores to `*pp` again; a local `T **pp` that only names one pointer
-variable (R61); and the end of a number (`char **end` of `strtol`, see
-Cursors).
+`*pp`, where a move out of `*pp` is refused unless nothing can read the
+place before the next statement stores to it again; a local `T **pp`
+that only names one pointer variable (R61); and the end of a number
+(`char **end` of `strtol`, see Cursors).
 The rest of the table is refused.
 
 ### Cursors

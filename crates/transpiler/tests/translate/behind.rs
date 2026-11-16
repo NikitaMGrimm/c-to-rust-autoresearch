@@ -138,7 +138,7 @@ fn a_pointer_to_a_pointer_without_a_rule_is_refused() {
                 "{list}{push}void copy(struct n **to, struct n **from) {{ *to = *from; }}\nint main(void) {{ struct n *a = NULL, *b = NULL; push(&a, 5); copy(&b, &a); int r = b->v + (a ? a->v : 0); free(a); return r; }}\n"
             )
         ),
-        "unsupported: a move out of the place behind a pointer that the next statement does not store to: no rule yet, at line 4"
+        "unsupported: a move out of the place behind a pointer that something may read before it is stored to: no rule yet, at line 4"
     );
     assert_eq!(
         refused(
@@ -147,7 +147,48 @@ fn a_pointer_to_a_pointer_without_a_rule_is_refused() {
                 "{list}{push}void drop_if(struct n **h, int k) {{ struct n *t = *h; if (t->v != k) return; *h = t->next; free(t); }}\nint main(void) {{ struct n *l = NULL; push(&l, 1); drop_if(&l, 9); int r = l ? l->v : 0; drop_if(&l, 1); return r; }}\n"
             )
         ),
-        "unsupported: a move out of the place behind a pointer that the next statement does not store to: no rule yet, at line 4"
+        "unsupported: a move out of the place behind a pointer that something may read before it is stored to: no rule yet, at line 4"
+    );
+    let moved = "unsupported: a move out of the place behind a pointer that something may read before it is stored to: no rule yet, at line 3";
+    let take = "#include <stdio.h>\n#include <stdlib.h>\n";
+    // Another operand of the moving statement reads the place after the move.
+    assert_eq!(
+        refused(
+            "behind_same_test",
+            &format!(
+                "{take}void eat(long *q, int full) {{ printf(\"%ld %d\\n\", *q, full); free(q); }} void take(long **slot) {{ eat(*slot, *slot != NULL); *slot = NULL; }}\nint main(void) {{ long *x = NULL; x = malloc(sizeof *x); *x = 11; take(&x); return 0; }}\n"
+            )
+        ),
+        moved
+    );
+    assert_eq!(
+        refused(
+            "behind_same_read",
+            &format!(
+                "{take}void eat(long *q, long w) {{ printf(\"%ld %ld\\n\", *q, w); free(q); }} void take(long **slot) {{ eat(*slot, **slot + 1); *slot = NULL; }}\nint main(void) {{ long *x = NULL; x = malloc(sizeof *x); *x = 11; take(&x); return 0; }}\n"
+            )
+        ),
+        moved
+    );
+    // The value stored back may read the place through a call.
+    assert_eq!(
+        refused(
+            "behind_store_call",
+            &format!(
+                "{take}long *fresh(long **slot) {{ long *q = malloc(sizeof *q); *q = *slot ? 20 : 30; return q; }} void swap_in(long **slot) {{ long *old = *slot; *slot = fresh(slot); printf(\"%ld %ld\\n\", *old, **slot); free(old); }}\nint main(void) {{ long *x = NULL; x = malloc(sizeof *x); *x = 11; swap_in(&x); free(x); return 0; }}\n"
+            )
+        ),
+        moved
+    );
+    // `first` borrows `h` while `h` is lent to be stored to.
+    assert_eq!(
+        refused(
+            "behind_lent",
+            &format!(
+                "{list}{push}int main(void) {{ struct n *h = NULL; h = malloc(sizeof *h); h->v = 4; h->next = NULL; struct n *first = h; push(&h, 6); int r = first->v + h->v; free(h->next); free(h); return r; }}\n"
+            )
+        ),
+        "unsupported: a variable that is used while a pointer to it is in use, at line 4"
     );
     assert_eq!(
         refused(
