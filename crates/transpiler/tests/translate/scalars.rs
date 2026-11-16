@@ -475,6 +475,42 @@ fn the_same_value_on_both_sides_is_refused_where_the_lints_refuse_it() {
         refused("self-minus", "(argc + 1) - (argc + 1)"),
         "unsupported: the same value on both sides of `-`: no rule yet, at line 2"
     );
+    // Clippy's `erasing_op` is an error too.
+    for (name, value, op) in [
+        ("and-zero", "argc & 0", "&"),
+        ("zero-times", "0 * argc", "*"),
+        ("times-zero", "(argc + 1) * (2 - 2)", "*"),
+        ("zero-over", "0 / argc", "/"),
+    ] {
+        assert_eq!(
+            refused(name, value),
+            format!(
+                "unsupported: `{op}` with 0, which is 0 whatever its other side: no rule yet, at line 2"
+            ),
+            "{name}"
+        );
+    }
+    // The lints pass these: the rest of 0, an unsigned `*`, which is a
+    // method, and a 0 with a name.
+    for (name, value) in [
+        ("zero-rest", "0 % argc"),
+        ("unsigned", "(int)(argc * 0u)"),
+        ("named", "argc * NONE"),
+    ] {
+        let source = format!(
+            "enum {{ NONE }};\nint main(int argc, char **argv) {{\n    return {value};\n}}\n"
+        );
+        assert!(translate(name, &source).is_ok(), "{name}");
+    }
+    // Two constants are their number, and 0 on the right of `/` is not
+    // this case.
+    assert!(
+        translate(
+            "zero-zero",
+            "int main(void) {\n    return 0 * 3 + (0 & 7);\n}\n"
+        )
+        .is_ok()
+    );
 }
 
 #[test]

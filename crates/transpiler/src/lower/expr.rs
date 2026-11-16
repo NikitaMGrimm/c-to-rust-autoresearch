@@ -402,6 +402,32 @@ impl Lower<'_> {
         if expr.ty == Type::Index {
             return self.index_arithmetic(op, left, right);
         }
+        // And these, which are 0 whatever the other side is: `x & 0`,
+        // `0 * x`, `0 / x`. They pass a 0 with a name, an enumerator, and
+        // the method that an unsigned `*` is.
+        let zero = |side: &Expr, other: &Expr| {
+            side.constant(self.program) == Some(0)
+                && !side.any(&mut |part| matches!(part.kind, ExprKind::Enumerator(_)))
+                && other.constant(self.program).is_none()
+        };
+        let signed = !matches!(expr.ty.int(), Some((_, false)));
+        if left.ty.is_integer()
+            && right.ty.is_integer()
+            && match op {
+                BinOp::Mul if !signed => false,
+                BinOp::Mul | BinOp::BitAnd => zero(left, right) || zero(right, left),
+                BinOp::Div => zero(left, right),
+                _ => false,
+            }
+        {
+            return unsupported(
+                format!(
+                    "`{}` with 0, which is 0 whatever its other side: no rule yet",
+                    symbol(op)
+                ),
+                expr.at,
+            );
+        }
         // The compiler's lints refuse these, such as `x - x`.
         if matches!(
             op,
