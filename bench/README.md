@@ -262,6 +262,67 @@ variant. It prints how many, also where it fails, and writes nothing to
 `PRIVATE_DIR`; the pool must lie outside it. A driver gets the pool only
 after this.
 
+## Generated programs
+
+Wrong translations have mostly turned up where constructs meet: a pointer
+field moved out and read again, a `free` in a branch before a later use,
+pointer arithmetic beside indexing, a `goto` into a block. The TRACTOR sets
+hold few such combinations.
+`cargo run -p bench --bin generate -- PRIVATE_DIR [--count N] [--jobs N]`
+writes N small C programs, 300 by default, to `PRIVATE_DIR/generated` as
+`gen_NNNN.c` with a spec `gen_NNNN.json`. The set is private and no agent may
+read it. Everything is derived from the secret seed: candidate `i` depends
+only on the seed and `i`, and the set is the first N candidates that pass, so
+a rerun writes the same files and a larger N keeps a smaller set as its
+prefix.
+
+A program is 15 to 80 lines of C99 using only `stdio.h`, `stdlib.h` and
+`string.h`. It reads one to three numbers with `scanf`, returns 1 when one is
+missing and 2 when one is outside -999..999, and prints its state along the
+way and at the end. It combines two to five of nine families of constructs
+that share variables: integer expressions mixing widths and signedness;
+`if`, loops, `switch` with fall-through, `break` and `continue`; local and
+2-D arrays with in-place algorithms; pointers to scalars and into arrays,
+including pointer walks, differences and a pointer to a pointer; structs by
+value, by pointer, nested, in arrays and holding arrays; heap buffers with
+`realloc` and frees on one path, and linked lists with nodes moved, split,
+joined, popped and freed; helpers with recursion, a function pointer, a
+static local and a global; string buffers; and `goto` to a cleanup label,
+out of nested loops, backward as a loop and into a block.
+
+A tenth family gives most programs pointers that share an object where a
+translation would move ownership: a pointer field copied into a local
+without clearing it and both read, in the same block, after it, in the next
+round of a loop or inside a function; the same objects reached as
+`a[i]->p`, `a[i].p`, `(&s)->p` or `(*s).p`, through tables of records that
+hold a pointer and a record that holds a heap array; a pointer handed to a
+function chosen by a condition, and an owner that a function frees only on
+some condition and reports by its return value; lists changed through a
+pointer to a pointer; paths through two and three links; pointers into the
+middle of an array and one past its end as arguments; and owners swapped,
+rotated or moved to another container, or a buffer grown while an index
+into it is kept. About a third of the programs are such a shape and little
+else, since a translator that refuses one construct refuses the whole
+program. Integer shapes join them: compound assignment to a narrower type,
+comparisons after implicit conversion, shifts of promoted values, `/` and
+`%` by negative numbers, products that wrap in 32 bits beside 64,
+post-increment in an index, side effects in the right operand of `&&` and
+`||`, chained assignment and unsigned counters that count down to zero.
+
+Each program gets four inputs, such as zeros, small positives, negatives and
+numbers near the bounds. The generator keeps a range for every integer, the
+targets of every pointer and whether heap memory is live, so a program is
+free of undefined behaviour and leaks on every input in range by
+construction: arithmetic that could overflow is reduced with `%` or done in
+unsigned or wider types, indices stay in range, and memory is freed exactly
+once. A program is kept when it passes the same C checks as the benchmarks
+on at least two of its inputs that print differently, with only those
+inputs. The tool prints counts only.
+
+The gate evaluates the set where the private directory has it. Its passes
+are logged and decide nothing; a candidate with which one of its programs
+newly runs wrong is rejected, as on the other sets.
+
 ## Regenerating
 
 ```sh
@@ -273,7 +334,7 @@ repository, because it contains the validation and held-out programs too. The
 second argument is a checkout of the private repository. Run `variants` after
 `intake`, then `fuzz` (`intake` removes the fuzzed inputs), then update the
 manifest as the private README describes, and run `near-copies` whenever a set
-changes. The transfer set comes from an unpacked
+changes. `generate` needs only the seed and can run at any time. The transfer set comes from an unpacked
 [Project_CodeNet.tar.gz](https://codait-cos-dax.s3.us.cloud-object-storage.appdomain.cloud/dax-project-codenet/1.0.0/Project_CodeNet.tar.gz),
 also kept outside this repository, since it contains the transfer programs:
 
