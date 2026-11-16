@@ -1161,8 +1161,18 @@ impl Lower<'_> {
             return Ok(rust::assign(self.place(target, true)?, value?));
         }
         if op.is_none() && target.number_in_bytes().is_some() {
+            // A value that reads bytes itself is computed first: Rust
+            // lends the bytes to the store before it evaluates the value.
+            let first = value.any(&mut |part| part.number_in_bytes().is_some());
             let value = self.init(&target.ty, None, value)?;
-            return self.number_into_bytes(target, value);
+            if !first {
+                return self.number_into_bytes(target, value);
+            }
+            let store = self.number_into_bytes(target, rust::name("stored_number"))?;
+            return Ok(parse_quote!({
+                let stored_number = #value;
+                #store;
+            }));
         }
         let width = self.bit_field(target);
         let Some((op, compute)) = op else {

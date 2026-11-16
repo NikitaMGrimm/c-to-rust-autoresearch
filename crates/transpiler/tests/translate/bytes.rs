@@ -115,3 +115,30 @@ fn a_number_in_bytes_without_a_rule_is_refused() {
         );
     }
 }
+
+/// A stored value that reads bytes itself is computed before the store,
+/// which borrows the bytes.
+#[test]
+fn a_number_stored_from_bytes_of_the_same_array_is_computed_first() {
+    let rust = check(
+        "number_from_its_own_bytes",
+        r#"
+#include <stdio.h>
+int main(int argc, char **argv) {
+    unsigned char raw[8] = {0};
+    (void)argv;
+    *(int *)(raw + 4) = argc + 4;
+    *(int *)raw = *(int *)(raw + 4) + 1;
+    ((int *)raw)[1] = ((int *)raw)[0] * 2;
+    printf("%d %d\n", *(int *)raw, *(int *)(raw + 4));
+    return 0;
+}
+"#,
+        &[&[], &["more"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["let stored_number = i32::from_ne_bytes(raw[4..][..4].try_into().unwrap()) + 1;"],
+    );
+}

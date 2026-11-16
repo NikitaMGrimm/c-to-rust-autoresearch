@@ -1590,7 +1590,9 @@ Entry format, newest last:
   local `T *q = (T *)p` that only names the cast
 - Rust: `i32::from_ne_bytes(p[k..][..4].try_into().unwrap())` and
   `p[k..][..4].copy_from_slice(&i32::to_ne_bytes(v))`, with `i as usize *
-  4..` for an index `i`; the local is the cast at each use
+  4..` for an index `i`; the local is the cast at each use; a stored
+  value that reads bytes itself is computed first, `let stored_number =
+  …;`, since Rust lends the bytes to the store before the value
 - Needs: the bytes marked an array (`many`) by the analysis;
   `normalise::casts`, before the first analysis, for the local, which
   repeats the cast only where it means the same address at each use

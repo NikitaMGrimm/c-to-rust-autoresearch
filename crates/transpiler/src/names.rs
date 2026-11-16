@@ -56,6 +56,7 @@ const RESERVED: &[&str] = &[
     "before",
     "assert_holds",
     "grown_len",
+    "stored_number",
     "scanned",
     "random",
     "Random",
