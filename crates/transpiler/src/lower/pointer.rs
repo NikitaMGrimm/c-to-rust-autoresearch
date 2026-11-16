@@ -29,6 +29,9 @@ pub(super) struct Repr {
     pub nullable: bool,
     /// A `&str`: the pointer only ever holds text that is passed on whole.
     pub text: bool,
+    /// For a pointer to pointers: the slot behind it, which says what its
+    /// elements are.
+    pub behind: Option<Slot>,
 }
 
 impl Repr {
@@ -39,6 +42,7 @@ impl Repr {
         mutable: false,
         nullable: false,
         text: true,
+        behind: None,
     };
 
     /// Bytes that are there, for a use that reads them.
@@ -48,6 +52,7 @@ impl Repr {
         mutable: false,
         nullable: false,
         text: false,
+        behind: None,
     };
 
     /// Bytes that are there, for a use that stores to them.
@@ -117,6 +122,7 @@ impl Lower<'_> {
             mutable: pointer.written,
             nullable: pointer.nullable,
             text,
+            behind: slot.behind().filter(|_| to_pointer(self.slot_c_type(slot))),
         })
     }
 
@@ -132,10 +138,14 @@ impl Lower<'_> {
             ExprKind::Var(_)
             | ExprKind::Member { .. }
             | ExprKind::Deref(_)
-            | ExprKind::Call(..) => self
-                .slot_of(pointer)
-                .and_then(|slot| self.repr(slot, pointer.at))
-                .is_ok_and(|repr| repr.text),
+            | ExprKind::Index(..)
+            | ExprKind::Call(..)
+                if !self.is_argument(pointer) =>
+            {
+                self.slot_of(pointer)
+                    .and_then(|slot| self.repr(slot, pointer.at))
+                    .is_ok_and(|repr| repr.text)
+            }
             // R21: text from the index where a number ends in it.
             ExprKind::Binary(BinOp::Add, text, index) if index.ty == Type::Index => {
                 self.is_text(text) || self.is_argument(text)
@@ -217,7 +227,13 @@ impl Lower<'_> {
         }
         let param = matches!(slot, Slot::Var(var) if self.program.vars[var].kind == VarKind::Param);
         let repr = self.repr(slot, at)?;
-        if !param || repr.owned || repr.many || repr.nullable || !to_pointer(pointer) {
+        // R67: an array of pointers that the pointer owns, as a local, or
+        // borrows, as a parameter.
+        let array = repr.many && !repr.nullable && !repr.text && (repr.owned || param);
+        if !array && (!param || repr.owned || repr.many || repr.nullable)
+            || !to_pointer(pointer)
+            || !matches!(slot, Slot::Var(_))
+        {
             return unsupported("a pointer to a pointer", at);
         }
         let Some(behind) = slot.behind() else {
@@ -225,7 +241,10 @@ impl Lower<'_> {
         };
         // A borrow behind a borrow needs two lifetimes that the
         // translation does not know.
-        if !self.repr(behind, at)?.owned {
+        // R67: a slice of text that nothing stores to is `&[&str]`.
+        let held = self.repr(behind, at)?;
+        let text = held.text && repr.many && !repr.owned && !repr.mutable;
+        if !held.owned && !text {
             return unsupported(
                 format!(
                     "{}: a borrow behind a pointer: no rule yet",
@@ -236,7 +255,11 @@ impl Lower<'_> {
         }
         let held = self.slot_type(behind, element, None, at)?;
         let mutability: Option<syn::Token![mut]> = repr.mutable.then(Default::default);
-        Ok(parse_quote!(& #lifetime #mutability #held))
+        Ok(match (repr.many, repr.owned) {
+            (true, true) => parse_quote!(Vec<#held>),
+            (true, false) => parse_quote!(& #lifetime #mutability [#held]),
+            _ => parse_quote!(& #lifetime #mutability #held),
+        })
     }
 
     /// Whether the expression is `argv[i]`, one of `main`'s arguments.
@@ -333,7 +356,10 @@ impl Lower<'_> {
             ExprKind::Var(_)
             | ExprKind::Member { .. }
             | ExprKind::Deref(_)
-            | ExprKind::Call(..) => {
+            | ExprKind::Index(..)
+            | ExprKind::Call(..)
+                if !self.is_argument(pointer) =>
+            {
                 let from = self.repr(self.slot_of(pointer)?, at)?;
                 let value = self.slot_value(pointer, to.mutable || to.owned)?;
                 let result = matches!(pointer.kind, ExprKind::Call(..));
@@ -477,14 +503,36 @@ impl Lower<'_> {
                 pointer.at,
             );
         }
+        // R67: a move out of an element leaves `None` in it, where C
+        // still holds the pointer.
+        if let ExprKind::Index(..) = &pointer.kind
+            && !self.element_restored(pointer)
+        {
+            return unsupported(
+                "a move out of an element of an array of pointers that the next statement does not store to: no rule yet",
+                pointer.at,
+            );
+        }
         Ok(())
+    }
+
+    /// Whether the statement after the one being written stores to the
+    /// element `a[i]` again, before anything reads it.
+    fn element_restored(&self, element: &Expr) -> bool {
+        self.restored_element
+            .as_ref()
+            .is_some_and(|restored| super::stmt::same_element(restored, element))
     }
 
     /// What an owner holds, moved out of it. A record or `Globals` stays in
     /// use, so what it holds is replaced by an empty value.
     fn moved(&self, pointer: &Expr, value: syn::Expr, from: Repr) -> R<syn::Expr> {
         let held = match pointer.kind {
-            ExprKind::Member { .. } | ExprKind::Deref(_) => true,
+            ExprKind::Member { .. } | ExprKind::Deref(_) | ExprKind::Index(..)
+                if !self.is_argument(pointer) =>
+            {
+                true
+            }
             ExprKind::Var(var) => self.program.vars[var].kind.is_global(),
             _ => false,
         };
@@ -512,13 +560,20 @@ impl Lower<'_> {
         {
             let from = self.repr(Slot::Var(var), pointer.at)?;
             let local = matches!(self.program.vars[var].kind, VarKind::Local | VarKind::Param);
-            if (from == to && to.mutable)
+            // The slots behind two pointers are one where one is passed
+            // for the other.
+            let from = Repr {
+                behind: None,
+                ..from
+            };
+            let to_same = Repr { behind: None, ..to };
+            if (from == to_same && to.mutable)
                 || (local
                     && from.mutable
                     && Repr {
                         mutable: false,
                         ..from
-                    } == to)
+                    } == to_same)
             {
                 return self.place(pointer, to.mutable);
             }
@@ -622,7 +677,10 @@ impl Lower<'_> {
             ExprKind::Var(_)
             | ExprKind::Member { .. }
             | ExprKind::Deref(_)
-            | ExprKind::Call(..) => {
+            | ExprKind::Index(..)
+            | ExprKind::Call(..)
+                if !self.is_argument(pointer) =>
+            {
                 let repr = match &pointer.kind {
                     ExprKind::Call(callee, _) if is_getenv(self.program, callee) => Repr::TEXT,
                     _ => self.repr(self.slot_of(pointer)?, pointer.at)?,
@@ -720,7 +778,10 @@ impl Lower<'_> {
             ExprKind::Var(_)
             | ExprKind::Member { .. }
             | ExprKind::Deref(_)
-            | ExprKind::Call(..) => {
+            | ExprKind::Index(..)
+            | ExprKind::Call(..)
+                if !self.is_argument(pointer) =>
+            {
                 let repr = self.repr(self.slot_of(pointer)?, pointer.at)?;
                 if !repr.many {
                     return unsupported("a pointer to one element used as an array", pointer.at);
@@ -740,9 +801,13 @@ impl Lower<'_> {
             ExprKind::Var(_)
             | ExprKind::Member { .. }
             | ExprKind::Deref(_)
-            | ExprKind::Call(..) => self
-                .slot_of(pointer)
-                .is_ok_and(|slot| !self.facts.pointer(slot).many),
+            | ExprKind::Index(..)
+            | ExprKind::Call(..)
+                if !self.is_argument(pointer) =>
+            {
+                self.slot_of(pointer)
+                    .is_ok_and(|slot| !self.facts.pointer(slot).many)
+            }
             _ => false,
         }
     }
@@ -776,7 +841,19 @@ impl Lower<'_> {
         let Some(element) = cast.ty.element() else {
             return unsupported("an allocation without a type", at);
         };
-        let zero = self.zero(element, at)?;
+        // R67: an array of pointers holds what the slot behind the
+        // pointer holds, which is not `Clone` where it owns a record.
+        let behind = match element.is_pointer() {
+            true => match to.behind {
+                Some(behind) if to.many => Some(behind),
+                _ => return unsupported("a pointer to a pointer", at),
+            },
+            false => None,
+        };
+        let zero = match behind {
+            Some(behind) => self.zero_of(element, Some(behind), at)?,
+            None => self.zero(element, at)?,
+        };
         if !to.owned {
             return unsupported("an allocation for a pointer that does not own", at);
         }
@@ -803,7 +880,10 @@ impl Lower<'_> {
             },
             _ => return unsupported("an allocation whose size has no rule", at),
         };
-        Ok(parse_quote!(vec![#zero; #count]))
+        Ok(match behind {
+            Some(_) => parse_quote!((0..#count).map(|_| #zero).collect::<Vec<_>>()),
+            None => parse_quote!(vec![#zero; #count]),
+        })
     }
 
     /// R59: `p = realloc(p, size)` as `p.resize(count, zero)` on the `Vec`

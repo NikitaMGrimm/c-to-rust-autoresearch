@@ -248,7 +248,7 @@ fn a_pointer_to_a_pointer_without_a_rule_is_refused() {
             "behind_offset",
             "#include <stdlib.h>\nint at(int **rows, int k) { return **(rows + k); }\nint main(void) { int *p = malloc(sizeof *p); *p = 4; int r = at(&p, 0); free(p); return r; }\n"
         ),
-        "unsupported: a pointer to a pointer, at line 2"
+        "unsupported: a pointer in a place with no rule, at line 2"
     );
     assert_eq!(
         refused(
@@ -265,5 +265,226 @@ fn a_pointer_to_a_pointer_without_a_rule_is_refused() {
             "#include <stdlib.h>\nvoid deep(int ***p) { **p = malloc(sizeof(int)); ***p = 2; }\nint main(void) { int *x = 0; int **y = &x; deep(&y); int r = *x; free(x); return r; }\n"
         ),
         "unsupported: a pointer to a pointer to a pointer, at line 2"
+    );
+}
+
+#[test]
+fn a_table_of_rows_from_malloc_is_a_vec_of_vecs() {
+    let rust = check(
+        "rows_table",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+static long corner_sum(long **cells, int height, int width) {
+    return cells[0][0] + cells[height - 1][width - 1];
+}
+static void bump(long **cells, int height) {
+    for (int y = 0; y < height; y++) cells[y][0] += 100;
+}
+int main(int argc, char *argv[]) {
+    int height = argc + 2, width = 3;
+    long **cells = malloc(height * sizeof(long *));
+    for (int y = 0; y < height; y++) {
+        cells[y] = malloc(width * sizeof(long));
+        for (int x = 0; x < width; x++) cells[y][x] = y * 7 + x;
+    }
+    bump(cells, height);
+    printf("%ld %ld\n", cells[1][2], corner_sum(cells, height, width));
+    double **halves = calloc(height, sizeof *halves);
+    halves[1] = calloc(2, sizeof(double));
+    halves[1][1] = 0.5;
+    printf("%d %d %.1f\n", halves[0] == NULL, halves[1] != NULL, halves[1][1]);
+    free(halves[1]);
+    free(halves);
+    for (int y = 0; y < height; y++) free(cells[y]);
+    free(cells);
+    return 0;
+}
+"#,
+        &[&[], &["q"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "fn corner_sum(cells: &[Vec<i64>], height: i32, width: i32) -> i64 {",
+            "fn bump(cells: &mut [Vec<i64>], height: i32) {",
+            "cells[y as usize] = vec![0; width as usize];",
+            "drop(std::mem::take(&mut cells[y as usize]));",
+            "drop(cells);",
+        ],
+    );
+    assert!(rust.contains("let mut cells: Vec<Vec<i64>> ="), "{rust}");
+    assert!(
+        rust.contains("let mut halves: Vec<Option<Vec<f64>>> ="),
+        "{rust}"
+    );
+}
+
+#[test]
+fn an_array_of_list_heads_holds_an_owner_in_each_element() {
+    let rust = check(
+        "rows_heads",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct link { int id; struct link *after; };
+struct shelf { int used; struct link *slot[3]; };
+static struct link *prepend(struct link *first, int id) {
+    struct link *l = malloc(sizeof *l);
+    l->id = id;
+    l->after = first;
+    return l;
+}
+int main(int argc, char *argv[]) {
+    struct link *chains[5] = { NULL };
+    for (int i = 0; i < 12 + argc; i++) chains[i % 5] = prepend(chains[i % 5], i);
+    struct shelf s;
+    s.used = 0;
+    for (int i = 0; i < 3; i++) s.slot[i] = NULL;
+    for (int i = 0; i < 4; i++) {
+        struct link *l = malloc(sizeof *l);
+        l->id = i * 11;
+        l->after = s.slot[i % 3];
+        s.slot[i % 3] = l;
+    }
+    for (int c = 0; c < 5; c++) {
+        int n = 0;
+        for (struct link *p = chains[c]; p; p = p->after) n += p->id;
+        printf("%d ", n);
+    }
+    printf("| %d %d\n", s.slot[0]->id, s.slot[0]->after->id);
+    for (int c = 0; c < 5; c++) {
+        while (chains[c] != NULL) {
+            struct link *gone = chains[c];
+            chains[c] = gone->after;
+            free(gone);
+        }
+    }
+    return 0;
+}
+"#,
+        &[&[], &["q", "r"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "chains[(i % 5) as usize] = Some(prepend(chains[(i % 5) as usize].take(), i));",
+            "l.after = s.slot[(i % 3) as usize].take();",
+            "s.slot[(i % 3) as usize] = Some(l);",
+            "let mut gone: Option<Box<Link>> = chains[c as usize].take();",
+        ],
+    );
+    assert!(rust.contains("slot: [Option<Box<Link>>; 3],"), "{rust}");
+    assert!(
+        rust.contains("let mut chains: [Option<Box<Link>>; 5] ="),
+        "{rust}"
+    );
+}
+
+#[test]
+fn an_array_of_string_literals_is_an_array_of_str() {
+    let rust = check(
+        "rows_text",
+        r#"
+#include <stdio.h>
+#include <string.h>
+static int longest(const char **words, int n) {
+    int best = 0;
+    for (int i = 1; i < n; i++) if (strlen(words[i]) > strlen(words[best])) best = i;
+    return best;
+}
+int main(void) {
+    const char *seasons[] = { "spring", "summer", "autumn", "winter" };
+    int n = sizeof seasons / sizeof seasons[0];
+    printf("%d %s\n", n, seasons[longest(seasons, n)]);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["fn longest(words: &[&str], n: i32) -> i32 {"]);
+    assert!(rust.contains("let seasons: [&str; 4] ="), "{rust}");
+}
+
+#[test]
+fn an_array_of_pointers_without_a_rule_is_refused() {
+    let refused = |name: &str, c: &str| translate(name, c).unwrap_err();
+    let boxes = "#include <stdlib.h>\nstruct b { int w; };\n";
+    // C keeps both pointers; Rust would leave `None` in the element.
+    assert_eq!(
+        refused(
+            "rows_swap",
+            &format!(
+                "{boxes}int main(void) {{ struct b *a[2]; for (int i = 0; i < 2; i++) {{ a[i] = malloc(sizeof *a[i]); a[i]->w = i; }}\nstruct b *t = a[0]; a[0] = a[1]; a[1] = t; int r = a[0]->w; free(a[0]); free(a[1]); return r; }}\n"
+            )
+        ),
+        "unsupported: a move out of an element of an array of pointers that the next statement does not store to: no rule yet, at line 4"
+    );
+    assert_eq!(
+        refused(
+            "rows_alias",
+            "#include <stdlib.h>\nint main(void) { int **m = malloc(2 * sizeof(int *)); m[0] = malloc(sizeof(int)); m[1] = m[0];\n*m[1] = 3; int r = *m[0]; free(m[0]); free(m); return r; }\n"
+        ),
+        "unsupported: a move out of an element of an array of pointers that the next statement does not store to: no rule yet, at line 2"
+    );
+    // A function may read the global array while its element is taken.
+    assert_eq!(
+        refused(
+            "rows_global",
+            "#include <stdlib.h>\nstruct n { int v; struct n *next; };\nstruct n *heads[2];\nstruct n *add(struct n *h, int v) { struct n *x = malloc(sizeof *x); x->v = v; x->next = h; return x; }\nint main(void) { heads[1] = add(heads[1], 4); return heads[1]->v; }\n"
+        ),
+        "unsupported: a move out of an element of an array of pointers that the next statement does not store to: no rule yet, at line 5"
+    );
+    assert_eq!(
+        refused(
+            "rows_borrows",
+            "int main(void) { int x = 1, y = 2; int *both[2] = { &x, &y }; return *both[0] + *both[1]; }\n"
+        ),
+        "unsupported: the place behind the pointer `both`: a borrow in an array of pointers: no rule yet, at line 1"
+    );
+    assert_eq!(
+        refused(
+            "rows_block",
+            "#include <stdlib.h>\nint main(void) { int *all = malloc(6 * sizeof(int)); int **r = malloc(2 * sizeof(int *));\nfor (int i = 0; i < 2; i++) r[i] = all + 3 * i; all[4] = 9; int v = r[1][1]; free(r); free(all); return v; }\n"
+        ),
+        "unsupported: a pointer expression with no rule, at line 3"
+    );
+    assert_eq!(
+        refused(
+            "rows_result",
+            "#include <stdlib.h>\nint **make(int n) { int **r = malloc(n * sizeof(int *)); for (int i = 0; i < n; i++) r[i] = malloc(sizeof(int)); return r; }\nint main(void) { int **r = make(2); free(r[0]); free(r[1]); free(r); return 0; }\n"
+        ),
+        "unsupported: a pointer to a pointer"
+    );
+    assert_eq!(
+        refused(
+            "rows_grow",
+            "#include <stdlib.h>\nint main(void) { int **r = malloc(sizeof(int *)); r[0] = malloc(sizeof(int)); r = realloc(r, 2 * sizeof(int *)); r[1] = malloc(sizeof(int)); free(r[0]); free(r[1]); free(r); return 0; }\n"
+        ),
+        "unsupported: the place behind the pointer `r`: it points to a place that the analysis does not follow, at line 2"
+    );
+    assert_eq!(
+        refused(
+            "rows_memset",
+            "#include <stdlib.h>\n#include <string.h>\nstruct n { int v; struct n *next; };\nint main(void) { struct n *top[3]; memset(top, 0, sizeof top); struct n *x = malloc(sizeof *x); x->v = 2; x->next = top[1]; top[1] = x; return top[1]->v + (top[0] != NULL); }\n"
+        ),
+        "unsupported: a record that owns a record of its own type that is never NULL"
+    );
+    assert_eq!(
+        refused(
+            "rows_grid",
+            "int main(void) { int p = 1, q = 2; int *grid[2][2] = { { &p, &q }, { &q, &p } }; return *grid[1][0]; }\n"
+        ),
+        "unsupported: a pointer where no rule expects one, at line 1"
+    );
+    assert_eq!(
+        refused(
+            "rows_void",
+            "int main(void) { int p = 1; char c = 2; void *any[2] = { &p, &c }; return *(int *)any[0]; }\n"
+        ),
+        "unsupported: a pointer in an array, at line 1"
     );
 }

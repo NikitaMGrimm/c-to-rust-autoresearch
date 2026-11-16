@@ -293,9 +293,10 @@ leaves `None` behind as it does in a field (`take()`), and `free(*pp)`.
 | a local `T **pp` that only ever names one pointer variable, a local or a parameter, and is only used as `*pp` and `pp[0]` | that variable, by R61, before the analysis; `p` may change, and `*pp` reads its value of the moment as C does. `pp` stored to twice, moved, indexed at another place, compared, handed on, returned, its address taken, cast, `&s.f`, `&a[i]`, `&global`, `void **`, `T ***`, and a use where another `p` hides it stay refused |
 | a local `T **link` that moves along a list, `link = &(*link)->next;`, and is stored through at the end | `let mut link = &mut head; while link.is_some() { link = &mut link.as_mut().unwrap().next; } *link = Some(node);`: a borrow that moves down the owners. Refused until the slot behind a local that is assigned twice has a rule |
 | an array of pointers, a local, a global or a field: `T *a[N]`, with or without an initialiser | `[P; N]` for the type `P` of the slot behind; an element without a value is `None`, and an array of owners is built element by element since an owner is not `Copy` |
-| `T **m` from `malloc(n * sizeof(T *))` or `calloc(n, sizeof(T *))` | `Vec<P>` of `n` elements; after `calloc` an element is NULL, so `P` is an `Option` unless every element is stored to before it is read |
+| `T **m` from `malloc(n * sizeof(T *))` or `calloc(n, sizeof(T *))` | `Vec<P>` of `n` elements, `(0..n).map(|_| zero).collect()`; after `calloc` an element is NULL, so `P` is an `Option` |
 | `m[i] = malloc(…)`, `m[i][j]`, `free(m[i])`, `free(m)` | a store to the element, `m[i][j]`, `drop(take(&mut m[i]))`, `drop(m)` |
-| `t = a[i]; a[i] = a[j]; a[j] = t;` for owners | refused where a move out of an element would leave two owners; `a.swap(i, j)` is the rule to build for the exact shape |
+| `t = a[i]; a[i] = a[j]; a[j] = t;` for owners | refused: the move out of `a[j]` is not stored to again by the next statement; `a.swap(i, j)` is the rule to build for the exact shape |
+| `t = a[i]; a[i] = e;`, `n->next = a[i]; a[i] = n;`, `a[i] = f(a[i], v);` | `a[i].take()`, which leaves `None` until the store; refused where anything may read the element between the two |
 | a cursor over an array of pointers, `for (char **p = names; p < names + n; p++)` | an index, as for any cursor; `*p` is `names[p]` |
 | `char *names[]` of string literals; an element stored to with another literal | `[&str; N]`; a store of a literal |
 | `argv` handed on, `argv + 1`, `char **p = argv;` and `*p++` | `&args[1..]`, a cursor over `args`; `argv[i][j]` stays refused (a byte of an argument) |
@@ -319,7 +320,21 @@ caller's own `T **`, and inside it the rules for a pointer in a field on
 `*pp`, where a move out of `*pp` is refused unless nothing can read the
 place before the next statement stores to it again; a local `T **pp`
 that only names one pointer variable (R61); and the end of a number
-(`char **end` of `strtol`, see Cursors).
+(`char **end` of `strtol`, see Cursors). R67 builds the arrays: a local
+`T **m` that owns the memory of
+`malloc` or `calloc`, as `Vec<P>`; an array of pointers, a local, a
+global or a field, as `[P; N]`; a parameter `T **m` that gets such an
+array, as `&[P]` or `&mut [P]`, also `&[&str]` for text that nothing
+stores to; and `&a[i]` for a parameter of R65. The slot behind them
+holds owners or text only: an array of borrows is refused as `a borrow
+in an array of pointers`. A move out of an element is built only where
+it is stored to again before anything reads it: by the next statement,
+whose value does not name the array and calls no function (`t = a[i];
+a[i] = t->next;`, `n->next = a[i]; a[i] = n;`), or by the statement
+itself, `a[i] = f(a[i], v);`, for a local array that only its elements
+are taken from. So an exchange of two elements stays refused, and
+`a.swap(i, j)` is not built. A cursor over an array of text works as any
+cursor.
 The rest of the table is refused.
 
 ### Cursors

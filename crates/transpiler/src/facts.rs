@@ -500,6 +500,53 @@ pub fn place_slot(place: &Expr) -> Option<Slot> {
         {
             place_slot(pointer)?.behind()
         }
+        // R67: `a[i]` of an array of pointers, a variable or a field.
+        ExprKind::Index(base, _) if place.ty.function().is_none() => match &base.kind {
+            ExprKind::Decay(array) => array_slot(array)?.behind(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The slot whose elements an array of pointers to data holds: the
+/// variable or the field that the array is.
+pub fn array_slot(array: &Expr) -> Option<Slot> {
+    let pointers = |ty: &Type| matches!(ty, Type::Array(..)) && to_pointer(ty);
+    if !pointers(&array.ty) {
+        return None;
+    }
+    match array.kind {
+        ExprKind::Var(var) => Some(Slot::Var(var)),
+        ExprKind::Member { record, field, .. } => Some(Slot::Field(record, field)),
+        _ => None,
+    }
+}
+
+/// The slot of a place of type `ty` that holds pointers to data, itself
+/// or as the elements of an array of them.
+pub fn holder(ty: &Type, slot: Slot) -> Option<Slot> {
+    let elements = matches!(ty, Type::Array(..)) && to_pointer(ty);
+    (ty.is_pointer() || elements).then_some(slot)
+}
+
+/// The slot of the elements of an array of type `ty` whose own slot is
+/// `slot`, where they are pointers to data.
+pub fn elements(ty: &Type, slot: Option<Slot>) -> Option<Slot> {
+    match ty {
+        Type::Array(..) if to_pointer(ty) => slot?.behind(),
+        _ => None,
+    }
+}
+
+/// The library function that allocates the pointer's memory, if the
+/// expression is a call of `malloc` or `calloc`.
+fn allocator(pointer: &Expr) -> Option<&'static str> {
+    match &pointer.uncast().kind {
+        ExprKind::Call(callee, _) => {
+            let name = callee.function()?;
+            ALLOCATORS.into_iter().find(|&allocator| allocator == name)
+        }
         _ => None,
     }
 }
@@ -626,7 +673,7 @@ impl<'a> Walk<'a> {
             if var.ty.is_pointer() && var.ty.function().is_none() {
                 self.seed(Slot::Var(global)).owned = true;
             }
-            let slot = var.ty.is_pointer().then_some(Slot::Var(global));
+            let slot = holder(&var.ty, Slot::Var(global));
             match &var.init {
                 Some(init) => {
                     self.init(&var.ty, slot, init);
@@ -760,7 +807,7 @@ impl<'a> Walk<'a> {
             Stmt::Expr(expr) => self.expr(expr),
             Stmt::Decl(id) => {
                 let var = &program.vars[*id];
-                let slot = var.ty.is_pointer().then_some(Slot::Var(*id));
+                let slot = holder(&var.ty, Slot::Var(*id));
                 if let Some(len) = &var.len {
                     self.expr(len);
                 }
@@ -950,7 +997,7 @@ impl<'a> Walk<'a> {
             }
             ExprKind::Init { var, value } => {
                 let ty = &program.vars[*var].ty;
-                let slot = ty.is_pointer().then_some(Slot::Var(*var));
+                let slot = holder(ty, Slot::Var(*var));
                 // The declaration before it has no first value.
                 self.unset.retain(|(unset, _)| unset != var);
                 self.init(ty, slot, value);
@@ -997,8 +1044,9 @@ impl<'a> Walk<'a> {
             // place behind a pointer owned out of that place.
             if matches!(
                 freed.uncast().kind,
-                ExprKind::Member { .. } | ExprKind::Deref(_)
-            ) {
+                ExprKind::Member { .. } | ExprKind::Deref(_) | ExprKind::Index(..)
+            ) && place_slot(freed.uncast()).is_some()
+            {
                 self.write(freed.uncast());
             }
         }
@@ -1062,7 +1110,7 @@ impl<'a> Walk<'a> {
             }
             (Type::Record(record), ExprKind::InitList(items)) => {
                 for (index, field) in program.records[*record].fields.iter().enumerate() {
-                    let slot = field.ty.is_pointer().then_some(Slot::Field(*record, index));
+                    let slot = holder(&field.ty, Slot::Field(*record, index));
                     match items.get(index) {
                         Some(item) => self.init(&field.ty, slot, item),
                         None => self.zero(&field.ty, slot),
@@ -1070,11 +1118,12 @@ impl<'a> Walk<'a> {
                 }
             }
             (Type::Array(element, length), ExprKind::InitList(items)) => {
+                let slot = elements(ty, slot);
                 for item in items {
-                    self.init(element, None, item);
+                    self.init(element, slot, item);
                 }
                 if length.is_none_or(|length| (items.len() as u64) < length) {
-                    self.zero(element, None);
+                    self.zero(element, slot);
                 }
             }
             _ => {}
@@ -1099,11 +1148,11 @@ impl<'a> Walk<'a> {
             }
             Type::Record(record) => {
                 for (index, field) in program.records[*record].fields.iter().enumerate() {
-                    let slot = field.ty.is_pointer().then_some(Slot::Field(*record, index));
+                    let slot = holder(&field.ty, Slot::Field(*record, index));
                     self.zero(&field.ty, slot);
                 }
             }
-            Type::Array(element, _) => self.zero(element, None),
+            Type::Array(element, _) => self.zero(element, elements(ty, slot)),
             _ => {}
         }
     }
@@ -1134,6 +1183,7 @@ impl<'a> Walk<'a> {
             // `argv` is the program's arguments, which no slot holds.
             _ if is_argv(self.program, pointer) => None,
             ExprKind::AddrOf(place) => place_slot(place),
+            ExprKind::Decay(array) => array_slot(array)?.behind(),
             ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Deref(_) => {
                 place_slot(pointer)?.behind()
             }
@@ -1165,7 +1215,22 @@ impl<'a> Walk<'a> {
             && let Some(behind) = to.behind()
             && !matches!(held.kind, ExprKind::Null)
         {
-            self.joins.push((behind, self.named(held)));
+            match allocator(held) {
+                // R67: the memory of the heap is a place of its own; the
+                // zero that `calloc` leaves in an element is NULL.
+                Some(name) => {
+                    if name == "calloc" {
+                        self.flows.push(Flow {
+                            from: Source::Null,
+                            to: behind,
+                            function: self.function,
+                            holder: None,
+                            set: false,
+                        });
+                    }
+                }
+                None => self.joins.push((behind, self.named(held))),
+            }
         }
         let holder = match held.kind {
             ExprKind::Member { .. } | ExprKind::Deref(_) => {
@@ -1222,12 +1287,13 @@ impl<'a> Walk<'a> {
         self.write_root(&root, self.function);
         // Rust reaches what a field points to through the record, so a
         // store through the field needs a writable record, and one through
-        // `*pp` a writable `pp`.
+        // `*pp` or `pp[i]` a writable `pp`.
         if let Some(pointer) = dereferenced(place)
-            && matches!(
+            && (matches!(
                 pointer.uncast().kind,
                 ExprKind::Member { .. } | ExprKind::Deref(_)
-            )
+            ) || matches!(pointer.uncast().kind, ExprKind::Index(..))
+                && place_slot(pointer.uncast()).is_some())
         {
             self.write(pointer.uncast());
         }

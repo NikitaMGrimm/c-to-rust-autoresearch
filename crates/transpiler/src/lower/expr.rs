@@ -633,7 +633,12 @@ impl Lower<'_> {
             ExprKind::Cast(inner) if inner.ty.is_pointer() || inner.ty == Type::Found => {
                 self.optional(inner)
             }
-            ExprKind::Var(_) | ExprKind::Member { .. } | ExprKind::Deref(_) => {
+            ExprKind::Var(_)
+            | ExprKind::Member { .. }
+            | ExprKind::Deref(_)
+            | ExprKind::Index(..)
+                if !self.is_argument(pointer) =>
+            {
                 // The analysis leaves the test only of a pointer that may
                 // be NULL, and of one that may be `argv[argc]`.
                 if let Some(slot) = place_slot(pointer)

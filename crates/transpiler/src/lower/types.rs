@@ -51,6 +51,30 @@ impl Lower<'_> {
         })
     }
 
+    /// R67: the type of an array of pointers to data, whose slot is
+    /// `slot`: an array of what the slot behind it holds. `None` for
+    /// any other type.
+    pub(super) fn pointers_type(&self, ty: &Type, slot: Slot, at: u32) -> R<Option<syn::Type>> {
+        let (Type::Array(element, Some(length)), Some(elements)) =
+            (ty, crate::facts::elements(ty, Some(slot)))
+        else {
+            return Ok(None);
+        };
+        let repr = self.repr(elements, at)?;
+        if !repr.owned && !repr.text {
+            return unsupported(
+                format!(
+                    "{}: a borrow in an array of pointers: no rule yet",
+                    self.slot_name(elements)
+                ),
+                at,
+            );
+        }
+        let held = self.slot_type(elements, element, None, at)?;
+        let length = rust::int((*length).into(), "");
+        Ok(Some(parse_quote!([#held; #length])))
+    }
+
     /// Whether the type's Rust values are copied by assignment, as C's are.
     pub(super) fn is_copy(&self, ty: &Type) -> bool {
         match ty {
@@ -120,7 +144,7 @@ impl Lower<'_> {
                 let fields = self.program.records[*id].fields.iter().enumerate();
                 let zeros: R<Vec<syn::Expr>> = fields
                     .map(|(index, field)| {
-                        let slot = field.ty.is_pointer().then_some(Slot::Field(*id, index));
+                        let slot = crate::facts::holder(&field.ty, Slot::Field(*id, index));
                         self.zero_of(&field.ty, slot, at)
                     })
                     .collect();
@@ -155,6 +179,18 @@ impl Lower<'_> {
 
     /// The zero of a place that may hold a pointer, whose slot is `slot`.
     pub(super) fn zero_of(&self, ty: &Type, slot: Option<Slot>, at: u32) -> R<syn::Expr> {
+        // R67: an array of pointers, element by element.
+        if let (Type::Array(element, Some(length)), Some(elements)) =
+            (ty, crate::facts::elements(ty, slot))
+        {
+            let zero = self.zero_of(element, Some(elements), at)?;
+            let length = rust::int((*length).into(), "");
+            return Ok(match self.repr(elements, at)?.text {
+                true => parse_quote!([#zero; #length]),
+                false if self.fixed.get() => return self.unfixed(at),
+                false => parse_quote!(std::array::from_fn(|_| #zero)),
+            });
+        }
         let (Type::Pointer(_), Some(slot)) = (ty, slot) else {
             return self.zero(ty, at);
         };
@@ -265,7 +301,7 @@ impl Lower<'_> {
                 let name = rust::ident(self.names.record(*id));
                 let mut values: Vec<syn::FieldValue> = Vec::new();
                 for (index, field) in program.records[*id].fields.iter().enumerate() {
-                    let slot = field.ty.is_pointer().then_some(Slot::Field(*id, index));
+                    let slot = crate::facts::holder(&field.ty, Slot::Field(*id, index));
                     let value = match items.get(index) {
                         Some(item) => {
                             let value = self.init(&field.ty, slot, item)?;
@@ -289,21 +325,24 @@ impl Lower<'_> {
                 let length = usize::try_from(*length).unwrap_or(usize::MAX);
                 // `{0}` and `{}` are the array of zeros, whatever its length.
                 if items.iter().all(|item| self.is_zero(item)) {
-                    return self.zero(ty, init.at);
+                    return self.zero_of(ty, slot, init.at);
                 }
+                let elements = crate::facts::elements(ty, slot);
                 let mut values = Vec::new();
                 for item in items {
-                    values.push(self.init(element, None, item)?);
+                    values.push(self.init(element, elements, item)?);
                 }
                 // A few missing elements are written out; many are not.
-                if length > values.len() + 8 || !self.is_copy(element) && length > values.len() {
+                if length > values.len() + 8
+                    || !self.is_copy(element) && elements.is_none() && length > values.len()
+                {
                     return unsupported(
                         "an array whose initialiser leaves much of it out",
                         init.at,
                     );
                 }
                 while values.len() < length {
-                    values.push(self.zero(element, init.at)?);
+                    values.push(self.zero_of(element, elements, init.at)?);
                 }
                 Ok(parse_quote!([#(#values),*]))
             }

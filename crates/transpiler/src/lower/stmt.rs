@@ -23,6 +23,7 @@ impl Lower<'_> {
         while let Some(stmt) = stmts.next() {
             let nesting = self.nesting.len();
             self.restored = None;
+            self.restored_element = self.moved_element(stmt, stmts.clone());
             // R35: a declaration in a statement expression, with its first
             // value.
             let lowered = if let Stmt::Decl(var) = stmt
@@ -55,6 +56,7 @@ impl Lower<'_> {
             self.listed(lowered)?;
         }
         self.restored = outer;
+        self.restored_element = None;
         Ok(out)
     }
 
@@ -826,6 +828,14 @@ impl Lower<'_> {
                 parse_quote!(let #mutability #name: Vec<#ty> = vec![#zero; #len];),
             ]);
         }
+        if let Some(ty) = self.pointers_type(&var.ty, Slot::Var(id), var.at)? {
+            let slot = Some(Slot::Var(id));
+            let value = match init {
+                Some(init) => self.init(&var.ty, slot, init)?,
+                None => self.zero_of(&var.ty, slot, var.at)?,
+            };
+            return Ok(vec![parse_quote!(let #mutability #name: #ty = #value;)]);
+        }
         let ty = self.ty(&var.ty, var.at)?;
         let value = match init {
             Some(init) => self.init(&var.ty, None, init)?,
@@ -1304,6 +1314,185 @@ fn restores(program: &Program, stmt: &Stmt) -> Option<VarId> {
         _ => false,
     });
     (!reads).then_some(var)
+}
+
+/// The variable `a` of an element `a[i]` whose index changes nothing.
+fn element_base(element: &Expr) -> Option<VarId> {
+    let ExprKind::Index(base, index) = &element.kind else {
+        return None;
+    };
+    if !index.is_pure() {
+        return None;
+    }
+    match &base.kind {
+        ExprKind::Var(var) => Some(*var),
+        ExprKind::Decay(array) => array.root_var(),
+        _ => None,
+    }
+}
+
+/// Whether two elements `a[i]` are the same one: the same variable at an
+/// index written the same way, of variables, numbers and arithmetic.
+pub(super) fn same_element(one: &Expr, other: &Expr) -> bool {
+    let (ExprKind::Index(_, at), ExprKind::Index(_, other_at)) = (&one.kind, &other.kind) else {
+        return false;
+    };
+    let (ExprKind::Index(base, _), ExprKind::Index(other_base, _)) = (&one.kind, &other.kind)
+    else {
+        return false;
+    };
+    element_base(one).is_some()
+        && element_base(other).is_some()
+        && same_index(base, other_base)
+        && same_index(at, other_at)
+}
+
+fn same_index(one: &Expr, other: &Expr) -> bool {
+    one.ty == other.ty
+        && match (&one.kind, &other.kind) {
+            (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
+            (ExprKind::Int(one), ExprKind::Int(other)) => one == other,
+            (ExprKind::Cast(one), ExprKind::Cast(other)) => same_index(one, other),
+            (ExprKind::Decay(one), ExprKind::Decay(other)) => same_index(one, other),
+            (
+                ExprKind::Member {
+                    base,
+                    field,
+                    arrow: false,
+                    ..
+                },
+                ExprKind::Member {
+                    base: other_base,
+                    field: other_field,
+                    arrow: false,
+                    ..
+                },
+            ) => field == other_field && same_index(base, other_base),
+            (
+                ExprKind::Binary(op, left, right),
+                ExprKind::Binary(other_op, other_left, other_right),
+            ) => op == other_op && same_index(left, other_left) && same_index(right, other_right),
+            _ => false,
+        }
+}
+
+/// Whether the expression names the variable.
+fn names(expr: &Expr, var: VarId) -> bool {
+    expr.any(&mut |part| matches!(part.kind, ExprKind::Var(named) if named == var))
+}
+
+impl Lower<'_> {
+    /// R67: the element `a[i]` that the statement moves out of whole and
+    /// that is stored to again before anything reads it: by the next
+    /// statement, `t = a[i]; a[i] = e;` or `n->next = a[i]; a[i] = n;`,
+    /// with an `e` that neither names `a` nor calls a function; or by the
+    /// statement itself, `a[i] = f(a[i], v);`, for a local array that
+    /// only its own elements are taken from, with arguments that do not
+    /// name `a` and no store in the value.
+    pub(super) fn moved_element(
+        &self,
+        stmt: &Stmt,
+        mut rest: std::iter::Peekable<std::slice::Iter<'_, Stmt>>,
+    ) -> Option<Expr> {
+        let value = match stmt {
+            Stmt::Decl(var) if self.program.vars[*var].init.is_some() => {
+                self.program.vars[*var].init.as_ref()?
+            }
+            Stmt::Decl(var) => match rest.next()? {
+                Stmt::Expr(init) => match &init.kind {
+                    ExprKind::Init { var: of, value } if of == var => value,
+                    _ => return None,
+                },
+                _ => return None,
+            },
+            Stmt::Expr(expr) => match &expr.kind {
+                ExprKind::Assign {
+                    op: None,
+                    target,
+                    value,
+                } if element_base(target).is_some() => {
+                    return self
+                        .restores_itself(target, value)
+                        .then(|| (**target).clone());
+                }
+                ExprKind::Assign {
+                    op: None,
+                    target,
+                    value,
+                } if target.is_pure()
+                    && element_base(value.uncast()).is_some_and(|base| !names(target, base)) =>
+                {
+                    value
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let moved = value.uncast();
+        let base = element_base(moved)?;
+        let Some(Stmt::Expr(next)) = rest.next() else {
+            return None;
+        };
+        let ExprKind::Assign {
+            op: None,
+            target,
+            value: stored,
+        } = &next.kind
+        else {
+            return None;
+        };
+        (same_element(target, moved) && stored.is_pure() && !names(stored, base))
+            .then(|| moved.clone())
+    }
+
+    /// `a[i] = f(a[i], v);` for a local array whose address nothing
+    /// takes: the value reads the element once and stores nothing.
+    fn restores_itself(&self, target: &Expr, value: &Expr) -> bool {
+        let program = self.program;
+        let Some(base) = element_base(target) else {
+            return false;
+        };
+        if program.vars[base].kind != VarKind::Local
+            || !matches!(program.vars[base].ty, Type::Array(..))
+        {
+            return false;
+        }
+        let (mut named, mut elements) = (0, 0);
+        value.any(&mut |part| {
+            match &part.kind {
+                ExprKind::Var(var) if *var == base => named += 1,
+                ExprKind::Index(..) if same_element(part, target) => elements += 1,
+                _ => {}
+            }
+            false
+        });
+        let stores = value.any(&mut |part| {
+            matches!(part.kind, ExprKind::Assign { .. } | ExprKind::IncDec { .. })
+        });
+        // Every use of the array is an element of it, so no function
+        // reaches it.
+        let Some(function) = self.function else {
+            return false;
+        };
+        let (mut decays, mut indexed) = (0, 0);
+        crate::c::any_expr(
+            &program.functions[function].body,
+            &program.vars,
+            &mut |part| {
+                match &part.kind {
+                    ExprKind::Decay(array) if matches!(array.kind, ExprKind::Var(var) if var == base) => {
+                        decays += 1
+                    }
+                    ExprKind::Index(array, _) if matches!(&array.kind, ExprKind::Decay(inner) if matches!(inner.kind, ExprKind::Var(var) if var == base)) => {
+                        indexed += 1
+                    }
+                    _ => {}
+                }
+                false
+            },
+        );
+        named == 1 && elements == 1 && !stores && decays == indexed
+    }
 }
 
 fn block_label(label: &str) -> syn::Lifetime {

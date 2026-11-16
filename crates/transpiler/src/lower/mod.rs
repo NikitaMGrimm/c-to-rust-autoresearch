@@ -966,6 +966,10 @@ struct Lower<'a> {
     /// one being written stores to, `*pp = e;` with an `e` that does not
     /// read `*pp`.
     restored: Option<VarId>,
+    /// R67: the element `a[i]` that the statement being written moves out
+    /// of whole and the next statement stores to again, before anything
+    /// reads it.
+    restored_element: Option<Expr>,
     /// The block entered at a label that is being translated (R49).
     entered: Option<Entered>,
     /// The library's records that the translation names: `div_t` and its
@@ -1000,6 +1004,7 @@ impl<'a> Lower<'a> {
             split: false,
             walking: None,
             restored: None,
+            restored_element: None,
             entered: None,
             quotients: Default::default(),
             zeroing: Default::default(),
@@ -1201,6 +1206,9 @@ impl Lower<'_> {
     /// The type of a record's field or of a global, which holds its value
     /// or owns what it points to.
     fn field_type(&mut self, slot: Slot, ty: &Type) -> R<syn::Type> {
+        if let Some(ty) = self.pointers_type(ty, slot, 0)? {
+            return Ok(ty);
+        }
         if !ty.is_pointer() {
             return self.ty(ty, 0);
         }
@@ -1225,7 +1233,7 @@ impl Lower<'_> {
         for &global in &program.globals {
             let var = &program.vars[global];
             let name = rust::ident(self.names.var(global));
-            let slot = var.ty.is_pointer().then_some(Slot::Var(global));
+            let slot = crate::facts::holder(&var.ty, Slot::Var(global));
             // What never changes and is no number is a `static`.
             let fixed =
                 !self.facts.mutated(global) && matches!(var.ty, Type::Array(..) | Type::Record(_));
@@ -1252,7 +1260,10 @@ impl Lower<'_> {
                     var.at,
                 );
             } else {
-                let ty = self.ty(&var.ty, var.at)?;
+                let ty = match self.pointers_type(&var.ty, Slot::Var(global), var.at)? {
+                    Some(ty) => ty,
+                    None => self.ty(&var.ty, var.at)?,
+                };
                 constants.push(match var.ty {
                     Type::Array(..) | Type::Record(_) => parse_quote!(static #name: #ty = #value;),
                     _ => parse_quote!(const #name: #ty = #value;),

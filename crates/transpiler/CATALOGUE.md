@@ -1500,3 +1500,43 @@ Entry format, newest last:
   program needs it
 - Changes: `normalise::follow` runs after `alias`, and the facts after it;
   R8's refusal of an owner that is used after it was moved covers less
+
+## R67: pointers in an array are elements of the type behind it
+
+- C: `T **m` from `malloc(n * sizeof(T *))` or `calloc(n, sizeof *m)`, with
+  or without a cast; an array of pointers `T *a[N]`, a local, a global or a
+  field of a record, with or without an initialiser; `m[i] = malloc(…)`,
+  `m[i][j]`, `a[i]->f`, `if (a[i])`, `free(m[i])`, `free(m)`; a parameter
+  `T **m` whose arguments are such a `m` or `a`; `t = a[i]; a[i] = e;`,
+  `n->next = a[i]; a[i] = n;` and `a[i] = f(a[i], v);`
+- Rust: `Vec<P>`, `[P; N]`, `&[P]` or `&mut [P]` for the type `P` of the
+  slot behind (`Vec<i32>`, `Option<Vec<f64>>`, `Option<Box<T>>`, `&str`);
+  the `Vec` as `(0..n).map(|_| zero).collect::<Vec<_>>()` and an array
+  without values as `std::array::from_fn(|_| None)`, since an owner is
+  not `Clone`; an element is the place `m[i]` with the rules of a pointer
+  in a field: `m[i].take()` for a move out, `drop(std::mem::take(&mut
+  m[i]))`, `m[i].as_deref().unwrap().f`
+- Needs: the elements of an array of pointers and the memory that a `T **`
+  owns are the slot behind it (`Slot::Behind`, R65); an initialiser list
+  flows into it item by item, and the zero of `calloc`, of `= { NULL }`
+  and of a global without an initialiser is NULL there; `a` as an
+  argument for a `T **` joins the slots behind; the memory of `malloc` and
+  `calloc` is a place of its own, which the slot behind owns; a store
+  through `m[i]` or `free(m[i])` marks `m` written
+- Refused: a move out of an element (`t = a[i]`, `a[i] = a[j]`, `return
+  a[i]`) that is not stored to again before anything reads it: by the next
+  statement, whose value does not name `a` and calls no function, or by the
+  statement itself, for a local array that only its elements are taken
+  from, `` a move out of an element of an array of pointers that the next
+  statement does not store to: no rule yet ``; so an exchange `t = a[i];
+  a[i] = a[j]; a[j] = t;` and an element copied to another; an array that
+  holds borrows, `int *at[2] = { &x, &y }`, or text read byte by byte, ``
+  a borrow in an array of pointers: no rule yet ``; a row inside one
+  block, `m[i] = all + i * w`; a `T **` result, `realloc` of a `T **`,
+  `T *m[2][3]`, `void *a[N]`, `memset` over an array of pointers, each
+  with its own reason
+- Motivation: programs outside the development set keep a table of rows,
+  an array of list heads or an array of names; no development program
+  needs it
+- Changes: extends R65 from one place behind a pointer to the elements of
+  an array, and R8's `malloc` and `calloc` to arrays of pointers
