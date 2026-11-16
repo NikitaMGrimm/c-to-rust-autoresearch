@@ -149,6 +149,38 @@ int main(int argc, char *argv[]) {
 }
 
 #[test]
+fn an_index_through_a_fixed_pointer_into_an_array_is_an_index_of_the_array() {
+    let rust = check(
+        "fixed-middle",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+int marks[5] = { 4, 9, 16, 25, 36 };
+enum { LATE = 3 };
+int *mid = &marks[1 + 1];
+struct view { int id; int *from; };
+struct view pane = { 7, &marks[LATE] };
+int main(int argc, char *argv[]) {
+    int n = argc > 1 ? atoi(argv[1]) : 0;
+    long far = n;
+    mid[n] += 1;
+    printf("%d %d %d %d %d\n", mid[n], mid[-1], pane.from[n], pane.from[-3], mid[far]);
+    return 0;
+}
+"#,
+        &[&[], &["-2"], &["1"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "globals.marks[(2 + n) as usize] += 1;",
+            "globals.marks[(3 + n) as usize],",
+            "globals.marks[(2 + far) as usize],",
+        ],
+    );
+}
+
+#[test]
 fn a_record_literal_that_a_global_pointer_holds_is_a_global() {
     let rust = check(
         "literal-globals",
@@ -210,7 +242,7 @@ int main(int argc, char *argv[]) {
         &[
             "static BIG: Tank = Tank { size: 9 };",
             "globals.fuel -= args.len() as i32;",
-            "println!(\"{} {} {}\", MARKS[1], MARKS[0..][2], BIG.size);",
+            "println!(\"{} {} {}\", MARKS[1], MARKS[2], BIG.size);",
             "globals.spare.size + globals.fuel",
         ],
     );

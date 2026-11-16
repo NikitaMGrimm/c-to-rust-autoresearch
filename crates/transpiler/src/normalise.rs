@@ -116,7 +116,7 @@ pub fn places(program: &mut Program) {
                 && init.ty == var.ty
                 && !init.any(&mut |part| named(part))
                 && names_place(init, program))
-            .then(|| (global, init.clone()))
+            .then(|| (global, folded(init, program)))
         })
         .collect();
     if !fixed.is_empty() {
@@ -175,7 +175,7 @@ fn fixed_field(program: &mut Program, record: usize, field: usize) {
         if !names_place(place, program) || place.any(&mut |part| any_record(part)) {
             return;
         }
-        places.push((id, place.clone()));
+        places.push((id, folded(place, program)));
     }
     let returns = program
         .functions
@@ -322,13 +322,58 @@ fn rewrite(program: &mut Program, place: impl Fn(&Expr) -> Option<Expr>) {
             **base = *place;
             *arrow = false;
         }
+        // `(&a[2])[n]` is `a[2 + n]`: the place is in the middle of its
+        // array, and `n` may be negative.
+        ExprKind::Index(base, by) => {
+            if let ExprKind::AddrOf(place) = &mut base.kind
+                && let ExprKind::Index(_, at) = &mut place.kind
+                && let ExprKind::Int(start) = at.kind
+            {
+                let sum = match by.kind {
+                    ExprKind::Int(more) => Some(ExprKind::Int(start + more)),
+                    _ if matches!(
+                        by.ty,
+                        Type::Int {
+                            bits: 32 | 64,
+                            signed: true
+                        }
+                    ) =>
+                    {
+                        at.ty = by.ty.clone();
+                        Some(ExprKind::Binary(
+                            BinOp::Add,
+                            at.clone(),
+                            Box::new(std::mem::replace(&mut **by, (**at).clone())),
+                        ))
+                    }
+                    _ => None,
+                };
+                if let Some(sum) = sum {
+                    at.kind = sum;
+                    let ExprKind::Index(array, at) =
+                        std::mem::replace(&mut place.kind, ExprKind::Zero)
+                    else {
+                        unreachable!()
+                    };
+                    *base = array;
+                    *by = at;
+                }
+            }
+        }
         _ => {}
     };
     let mut both = |expr: &mut Expr| {
         if let Some(value) = place(expr) {
             *expr = value;
         }
-        // The children are visited after the node: simplify at each level.
+        // The children are visited after the node: an index needs its base
+        // now, to be an index of the array that the place is in.
+        if let ExprKind::Index(base, _) = &mut expr.kind
+            && let Some(value) = place(base)
+        {
+            **base = value;
+        }
+        // Simplify at each level.
         simplify(expr);
     };
     for function in 0..program.functions.len() {
@@ -342,6 +387,20 @@ fn rewrite(program: &mut Program, place: impl Fn(&Expr) -> Option<Expr>) {
             init.each_mut(&mut both);
         }
     }
+}
+
+/// The place with each index as its number, `&a[1 + 0]` as `&a[1]`, so
+/// that an index through it adds to a number.
+fn folded(place: &Expr, program: &Program) -> Expr {
+    let mut place = place.clone();
+    place.each_mut(&mut |expr| {
+        if let ExprKind::Index(_, at) = &mut expr.kind
+            && let Some(value) = at.constant(program)
+        {
+            at.kind = ExprKind::Int(value);
+        }
+    });
+    place
 }
 
 /// Whether the initialiser is the address of a global, or of a field or an

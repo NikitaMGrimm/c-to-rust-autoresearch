@@ -1277,7 +1277,9 @@ Entry format, newest last:
   `struct s *p = &(struct s){ 1, 2 };`, with designators and nested records
 - Rust: no pointer: every use is the place, so that `*p` is `x`, `p->a` is
   `s.a` and `p[i]` is `table[i]` by R9's constants and the fields of
-  `Globals`; the compound literal is a global of its own that holds its
+  `Globals`; an index through a pointer to an element, `p[n]` for
+  `&a[2]`, is `a[2 + n]` for a constant, an `int` or a `long` `n`, which
+  may be negative; the compound literal is a global of its own that holds its
   value, under the pointer's name (or the fallback that the names stage
   gives a global whose name is taken), a constant or a field of `Globals`
   where the program stores through the pointer
