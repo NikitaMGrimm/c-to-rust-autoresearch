@@ -125,7 +125,10 @@ Entry format, newest last:
   arrays initialised from a string literal
 - Rust: `[T; N]`, `[zero; N]` or `std::array::from_fn` for one without an
   initialiser, `a[i as usize]`, `*b"…"` for text. An index that C widened to
-  64 bits is converted to `usize` directly
+  64 bits is converted to `usize` directly. Refused: a constant index
+  that the array does not have, `a[4]` for `int a[4]`, also where the
+  statement never runs, since the compiler refuses it; `&a[4]`, the end
+  of the array, is no such index
 - Needs: nothing
 - Motivation: skeleton
 - Changes: none

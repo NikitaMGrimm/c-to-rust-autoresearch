@@ -415,3 +415,36 @@ fn a_result_taken_out_of_a_borrowed_record_is_refused() {
         "unsupported: a result that takes its memory out of a record that the function borrows: no rule yet, at line 4"
     );
 }
+
+/// Rust's compiler refuses a constant index that an array does not have,
+/// also in a statement that never runs, where C only leaves it undefined.
+#[test]
+fn a_constant_index_beyond_its_array_is_refused() {
+    let program = |store: &str| {
+        format!(
+            "#include <stdio.h>\nstatic int grid[4];\nstruct shelf {{ int slots[3]; }};\nstatic struct shelf shelf;\nstatic void fill(void) {{\n    {store}\n}}\nint main(int argc, char **argv) {{\n    if (argc > 5) fill();\n    printf(\"%d %d\\n\", grid[0], shelf.slots[2]);\n    return 0;\n}}\n"
+        )
+    };
+    let reason =
+        "unsupported: a constant index beyond its array: the compiler refuses it, at line 6";
+    for (name, store) in [
+        ("index-end", "grid[4] = 1;"),
+        ("index-far", "grid[2147483647] = 1;"),
+        ("index-before", "grid[-1] = 1;"),
+        ("index-field", "shelf.slots[3] += 2;"),
+        ("index-sum", "int got = grid[2 + 2]; grid[0] = got;"),
+    ] {
+        assert_eq!(
+            translate(name, &program(store)).unwrap_err(),
+            reason,
+            "{name}"
+        );
+    }
+    // The last element, and the address of the end, are in the array.
+    crate::common::check(
+        "index-last",
+        &program("int *end = &grid[4]; grid[3] = 1; shelf.slots[2] = (int)(end - grid);"),
+        &[&[], &["1", "2", "3", "4", "5"]],
+        "",
+    );
+}

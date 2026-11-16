@@ -1420,6 +1420,12 @@ impl Lower<'_> {
                 );
             }
         }
+        if let Some(at) = beyond(self.program, stmts) {
+            self.listed(unsupported(
+                "a constant index beyond its array: the compiler refuses it",
+                at,
+            ))?;
+        }
         if let Some(at) = crate::normalise::steps_before(self.program, stmts) {
             self.listed(unsupported("a cursor that steps before its array", at))?;
         }
@@ -1589,4 +1595,39 @@ fn returns_only_zero(stmts: &[Stmt], program: &Program, facts: &Facts) -> bool {
         Stmt::LetSome { otherwise, .. } => only_zero(otherwise),
         _ => true,
     })
+}
+
+/// Where the statements read or store an element of an array of a fixed
+/// length at a constant index that the array does not have. C leaves it
+/// undefined, and a C program may hold it where it never runs; Rust's
+/// compiler refuses the index wherever it stands. The address of the
+/// element one past the end is no such index.
+fn beyond(program: &Program, stmts: &[Stmt]) -> Option<u32> {
+    // Whether a constant index is outside its array (`Some(false)`) or
+    // names its end (`Some(true)`).
+    let outside = |expr: &Expr| {
+        let ExprKind::Index(base, index) = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Decay(array) = &base.kind else {
+            return None;
+        };
+        let (Type::Array(_, Some(len)), Some(at)) = (&array.ty, index.constant(program)) else {
+            return None;
+        };
+        let len = i128::from(*len);
+        (at < 0 || at >= len).then_some(at == len)
+    };
+    let (mut found, mut ends, mut addresses) = (None, Vec::new(), 0);
+    any_expr(stmts, &program.vars, &mut |expr| {
+        match (outside(expr), &expr.kind) {
+            (Some(true), _) => ends.push(expr.at),
+            (Some(false), _) => found = Some(expr.at),
+            (None, ExprKind::AddrOf(place)) if outside(place) == Some(true) => addresses += 1,
+            _ => {}
+        }
+        found.is_some()
+    });
+    // Each address of the end is one of the elements at the end.
+    found.or_else(|| (ends.len() > addresses).then(|| ends[0]))
 }

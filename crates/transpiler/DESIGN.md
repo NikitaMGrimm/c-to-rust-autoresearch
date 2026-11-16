@@ -942,9 +942,12 @@ become a fact and a refusal:
   store through and the array itself, as `char *p = s; memmove(p + 1, s,
   3);` does, is translated and does not compile, as is the same with a
   parameter `s`, whose memory the analysis does not follow.
-- An operation whose two operands are the same expression, `x / x` or
-  `a - a`, is translated as written and does not compile: Rust's lints
-  deny it.
+- The compiler follows constants through locals and refuses arithmetic
+  that it proves to overflow, also in a statement that never runs: `char
+  data = CHAR_MAX; char twice = data * INT_MAX;` in a function that the
+  program does not call for its inputs is translated and does not
+  compile. An operation that the lints refuse as written (`x - x`, `x &
+  0`, a constant index beyond its array) is refused.
 - A copy of a function with one parameter for two (R53) still declares
   the locals that were pointers of the two: `int *p = a, *q = b;` in
   `f(void *a, void *b)` called as `f(x, x)` is one `&mut` and one `&` of
