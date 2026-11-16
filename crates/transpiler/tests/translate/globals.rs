@@ -1,4 +1,4 @@
-use crate::common::{assert_lines, check};
+use crate::common::{assert_lines, check, translate};
 
 #[test]
 fn globals_that_change_are_passed_as_one_struct() {
@@ -174,4 +174,92 @@ int main(void) {
             "globals.kept.w *= 3;",
         ],
     );
+}
+
+#[test]
+fn a_pointer_field_that_never_changes_is_the_place_it_names() {
+    let rust = check(
+        "fixed-fields",
+        r#"#include <stdio.h>
+int fuel = 40;
+int marks[3] = { 2, 4, 6 };
+struct tank { int size; int *level; int *row; };
+struct tank small = { .level = &fuel, .size = 5, .row = marks };
+struct tank big = { 9, &marks[1], &marks[0] };
+struct tank *main_tank = &big;
+static int peek(int *at) { return *at + 1; }
+static int use(void) {
+    static struct tank spare = { 3, &fuel, marks };
+    spare.size += 2;
+    return spare.size + *spare.level;
+}
+int main(int argc, char *argv[]) {
+    *small.level -= argc;
+    printf("%d %d %d\n", small.size, *small.level, peek(small.level));
+    printf("%d %d %d\n", *big.level, main_tank->row[2], main_tank->size);
+    int first = use();
+    printf("%d %d\n", first, use());
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "static BIG: Tank = Tank { size: 9 };",
+            "globals.fuel -= args.len() as i32;",
+            "println!(\"{} {} {}\", MARKS[1], MARKS[0..][2], BIG.size);",
+            "globals.spare.size + globals.fuel",
+        ],
+    );
+}
+
+#[test]
+fn a_pointer_field_that_changes_or_is_reached_otherwise_is_refused() {
+    let owned = "it owns memory and also points into a variable";
+    let prelude = "#include <stdio.h>\n#include <string.h>\nint k = 1, j = 2;\nstruct hold { int *p; int n; };\n";
+    let cases = [
+        (
+            "stored",
+            "struct hold h = { &k, 1 };\nint main(void) { h.p = &j; return *h.p; }\n",
+        ),
+        (
+            "null",
+            "struct hold h = { &k, 1 }, e = { 0, 2 };\nint main(void) { return *h.p + e.n; }\n",
+        ),
+        (
+            "arrow",
+            "struct hold h = { &k, 1 };\nstatic int f(struct hold *q) { return *q->p; }\nint main(void) { return f(&h); }\n",
+        ),
+        (
+            "local",
+            "struct hold h = { &k, 1 };\nint main(void) { struct hold l = { &j, 2 }; return *h.p + *l.p; }\n",
+        ),
+        (
+            "sized",
+            "struct hold h = { &k, 1 };\nint main(void) { return *h.p + (int)sizeof(struct hold); }\n",
+        ),
+        (
+            "copied",
+            "struct hold h = { &k, 1 }, g = { &j, 2 };\nint main(void) { g = h; return *g.p; }\n",
+        ),
+        (
+            "memcpy",
+            "struct hold h = { &k, 1 }, g = { &j, 2 };\nint main(void) { memcpy(&g, &h, 16); return *g.p; }\n",
+        ),
+        (
+            "address",
+            "struct hold h = { &k, 1 };\nint main(void) { int **at = &h.p; return **at; }\n",
+        ),
+        (
+            "itself",
+            "struct hold h = { &h.n, 1 };\nint main(void) { return *h.p; }\n",
+        ),
+    ];
+    for (name, body) in cases {
+        let error = translate(name, &format!("{prelude}{body}")).unwrap_err();
+        assert!(error.contains(owned), "{name}: {error}");
+    }
 }

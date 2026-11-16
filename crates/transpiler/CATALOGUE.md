@@ -1376,3 +1376,30 @@ Entry format, newest last:
   pointers without a prototype; no development program needs it
 - Changes: R42 refused every pointer without a prototype together with
   the variadic ones; a variadic one keeps its own refusal
+
+## R64: a pointer field that never changes is the place it names
+
+- C: a field of pointer type, not to a function, of a record whose every
+  variable is a global or a `static` local with an initialiser that gives
+  the field a place as R62 allows (`&x`, `&s.f`, `&a[2]`, an array), by
+  position or designator; nothing stores to the field (`v.p = …`,
+  `q->p = …`, `v.p++`), takes its address, stores a whole record of the
+  type, converts a pointer to one (`memcpy`, `malloc`), takes its size, or
+  makes one otherwise (a local, a parameter, a result, an element, a field
+  of another record, a compound literal)
+- Rust: every read `v.p`, and `q->p` for a pointer `q` that R62 replaced
+  by `&v`, is `v`'s place, so that `*v.p` is `x`; two globals give their
+  own places; the record has no such field
+- Needs: `normalise::places`, after R62's replacement and before the first
+  analysis
+- Refused: a field that is NULL, missing or anything else in some
+  initialiser, that changes or whose address is taken, of a record that
+  is reached through a pointer, copied, sized or not a global, or that
+  points into a record of its own type, `` the field `p`: it owns memory
+  and also points into a variable ``, as before; a compound literal's
+  address as the field's initialiser, `` a pointer to a compound literal:
+  no rule yet ``, as before
+- Motivation: programs outside the development set name a global through
+  a pointer field of a global record that never changes; no development
+  program needs it
+- Changes: extends R62 from global pointers to such fields

@@ -36,7 +36,7 @@ Clang's JSON -> clang -> c::Program -> unions, voids, protos, places, join, ends
 | Front end | `src/clang.rs` | Reads Clang's JSON into the C tree | Clang's JSON; nothing about Rust |
 | C tree | `src/c.rs` | Types, expressions and statements with their C types, and walks over them | C |
 | Analysis | `src/facts.rs` | Facts about each pointer, variable, global and function | The whole program |
-| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias` and `narrow` |
+| Rewrites | `src/normalise.rs` | Rewrites C to C so that one statement means one thing: `unions` makes a union that holds the bits of a number an integer, `voids` gives a `void` pointer the one type it holds, `protos` gives a pointer to a function without a prototype the parameters of the functions it holds, `places` replaces a global pointer, or a pointer field of global records, that never changes by the place it names, `join` declares a local where it gets its first value, `ends` makes the end that `strtol` stores a result of the call, `found` makes a local that only holds what a search found and is only tested an `Option<usize>`, `same` gives a call that hands one pointer in several arguments a copy of the function with one parameter for them, `cursors` makes a pointer that walks an array an index, `alias` makes a local pointer that only names one place, and that Rust would reject as a borrow, that place, `narrow` names a pointer that a test found not to be NULL | The facts, for `same`, `cursors`, `alias` and `narrow` |
 | Rules | `src/lower/` | Translates each construct into a `syn` tree | The facts, one construct at a time |
 | Names | `src/names.rs` | The Rust name of each C name: snake case for functions, variables and fields, camel case for records, a record without a tag after the variable or field that has it, upper case for constants and enumerators. Two C names in one Rust scope never share a name | Rust's naming and keywords |
 | Output | `src/rust.rs` | Builds `syn` expressions and prints the file with `prettyplease` | Rust's syntax |
@@ -193,6 +193,16 @@ own, which has the pointer's name. Other global pointers are refused: one
 that changes or whose address is taken, because a global pointer is an
 owner and the address of a variable is none, and one that is NULL or has
 no initialiser.
+
+A pointer field of a record is such a place too when every record of the
+type is a global or `static` with an initialiser that gives the field
+such an address, and nothing stores to the field, takes its address,
+stores a whole record, converts a pointer to one, or takes the record's
+size: `places` replaces each read `v.p`, and `(&v)->p` that R62 left, by
+`v`'s place, and takes the field out of the record, its initialisers and
+the numbers of the fields after it (R64). Records of the type that are
+locals, parameters, results, elements, fields or reached through a
+pointer keep the field, and are refused as before.
 
 A local pointer that is declared without a value and never assigned counts
 as NULL: reading it is undefined in C, and `None` is a value that Rust can
@@ -520,7 +530,10 @@ place:
   needs a fact that says so.
 - **Global pointers.** A global pointer that is NULL and never changes
   waits for a rule that reads each use as NULL; one that changes needs a
-  slot for a borrow of a global. The address of a compound literal other
+  slot for a borrow of a global. A pointer field that never changes is
+  its place only where every record of the type is a global (R64); one
+  reached through a pointer, or of a record copied or sized, waits for
+  the same slot. The address of a compound literal other
   than as a global pointer's initialiser, and of an array's, as a local's
   initialiser or an argument, is refused: such a literal needs a variable
   of its own where it is written.

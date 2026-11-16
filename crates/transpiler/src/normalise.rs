@@ -68,7 +68,7 @@ pub use unions::unions;
 pub use voids::voids;
 
 use crate::c::{
-    BinOp, Expr, ExprKind, Program, Stmt, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,
+    BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,
     holds_statements,
 };
 use crate::facts::{Facts, Slot};
@@ -119,16 +119,193 @@ pub fn places(program: &mut Program) {
             .then(|| (global, init.clone()))
         })
         .collect();
-    if fixed.is_empty() {
+    if !fixed.is_empty() {
+        rewrite(program, |expr| {
+            match expr.kind {
+                ExprKind::Var(var) => fixed.iter().find(|(global, _)| *global == var),
+                _ => None,
+            }
+            .map(|(_, init)| init.clone())
+        });
+        program
+            .globals
+            .retain(|global| !fixed.iter().any(|(var, _)| var == global));
+    }
+    for record in 0..program.records.len() {
+        for field in (0..program.records[record].fields.len()).rev() {
+            fixed_field(program, record, field);
+        }
+    }
+}
+
+/// R64: replaces every read `v.p` of a pointer field that no store changes
+/// by the place that `v`'s initialiser gives it, and takes the field out of
+/// the record. Every record of the type must be a global with an
+/// initialiser, so that which one a read names, and its place, is known.
+fn fixed_field(program: &mut Program, record: usize, field: usize) {
+    let declared = &program.records[record];
+    let ty = &declared.fields[field].ty;
+    if !declared.own || declared.union || !ty.is_pointer() || ty.function().is_some() {
         return;
     }
-    let replace = |expr: &mut Expr| {
-        if let ExprKind::Var(var) = expr.kind
-            && let Some((_, init)) = fixed.iter().find(|(global, _)| *global == var)
+    let ours = |ty: &Type| matches!(ty, Type::Record(r) if *r == record);
+    let pointer = |ty: &Type| matches!(ty, Type::Pointer(inner) if ours(inner));
+    // The records of the type and their places for the field.
+    let mut places = Vec::new();
+    for (id, var) in program.vars.iter().enumerate() {
+        if !ours(&var.ty) {
+            if holds(&var.ty, record, program) {
+                return;
+            }
+            continue;
+        }
+        let Some(Expr {
+            kind: ExprKind::InitList(items),
+            ..
+        }) = &var.init
+        else {
+            return;
+        };
+        let place = match items.get(field) {
+            Some(place) if var.kind.is_global() && place.ty == *ty => place,
+            _ => return,
+        };
+        let any_record =
+            |expr: &Expr| matches!(expr.kind, ExprKind::Var(v) if ours(&program.vars[v].ty));
+        if !names_place(place, program) || place.any(&mut |part| any_record(part)) {
+            return;
+        }
+        places.push((id, place.clone()));
+    }
+    let returns = program
+        .functions
+        .iter()
+        .any(|f| holds(&f.ret, record, program));
+    let nested = program.records.iter().enumerate().any(|(other, r)| {
+        other != record && r.fields.iter().any(|f| holds(&f.ty, record, program))
+    });
+    if places.is_empty() || returns || nested {
+        return;
+    }
+    let this_field = |expr: &Expr| matches!(&expr.kind, ExprKind::Member { record: r, field: f, .. } if *r == record && *f == field);
+    // The global that a read of the field names: `v.p`, or `(&v)->p` where
+    // R62 replaced a pointer to `v`.
+    let named = |expr: &Expr| match &expr.kind {
+        ExprKind::Member { base, arrow, .. } if this_field(expr) => match (&base.kind, arrow) {
+            (ExprKind::Var(var), false) => Some(*var),
+            (ExprKind::AddrOf(inner), true) => match inner.kind {
+                ExprKind::Var(var) => Some(var),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    };
+    let initialiser = |expr: &Expr| {
+        places.iter().any(|(var, _)| {
+            program.vars[*var]
+                .init
+                .as_ref()
+                .is_some_and(|init| std::ptr::eq(init, expr))
+        })
+    };
+    let mut refused = |expr: &Expr| match &expr.kind {
+        ExprKind::Assign { target, .. } | ExprKind::IncDec { target, .. } => {
+            this_field(target) || ours(&target.ty)
+        }
+        ExprKind::AddrOf(place) => this_field(place),
+        ExprKind::Member { .. } if this_field(expr) => {
+            named(expr).is_none_or(|var| !places.iter().any(|(v, _)| *v == var))
+        }
+        // `memcpy` and `malloc` reach a record through `void *`.
+        ExprKind::Cast(inner) => pointer(&expr.ty) || pointer(&inner.ty),
+        ExprKind::SizeOf(ty) => holds(ty, record, program),
+        ExprKind::Var(_) => false,
+        ExprKind::InitList(_) if initialiser(expr) => false,
+        _ => ours(&expr.ty),
+    };
+    let in_bodies = program
+        .functions
+        .iter()
+        .any(|function| any_expr(&function.body, &program.vars, &mut refused));
+    let in_globals = program.globals.iter().any(|&global| {
+        let init = program.vars[global].init.as_ref();
+        init.is_some_and(|init| init.any(&mut refused))
+    });
+    if in_bodies || in_globals {
+        return;
+    }
+    rewrite(program, |expr| {
+        let var = named(expr)?;
+        places
+            .iter()
+            .find(|(v, _)| *v == var)
+            .map(|(_, place)| place.clone())
+    });
+    program.records[record].fields.remove(field);
+    let mut shift = |expr: &mut Expr| {
+        if let ExprKind::Member {
+            record: r,
+            field: f,
+            ..
+        } = &mut expr.kind
+            && *r == record
+            && *f > field
         {
-            *expr = init.clone();
+            *f -= 1;
         }
     };
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        each_expr_mut(&mut body, &mut program.vars, &mut shift);
+        program.functions[function].body = body;
+    }
+    for (var, _) in places {
+        let init = program.vars[var].init.as_mut();
+        if let Some(Expr {
+            kind: ExprKind::InitList(items),
+            ..
+        }) = init
+        {
+            items.remove(field);
+        }
+    }
+    // A `static` local's initialiser is in its function's body as well.
+    let globals = program.globals.clone();
+    for global in globals {
+        if let (VarKind::Global, Some(init)) =
+            (program.vars[global].kind, &mut program.vars[global].init)
+        {
+            init.each_mut(&mut shift);
+        }
+    }
+}
+
+/// Whether a value of the type holds a record of `record`'s type, as
+/// itself, an element or a field, or a function's type takes or gives one.
+fn holds(ty: &Type, record: usize, program: &Program) -> bool {
+    match ty {
+        Type::Record(r) => {
+            *r == record
+                || program.records[*r]
+                    .fields
+                    .iter()
+                    .any(|field| holds(&field.ty, record, program))
+        }
+        Type::Array(inner, _) => holds(inner, record, program),
+        Type::Function { ret, params, .. } => {
+            holds(ret, record, program) || params.iter().any(|p| holds(p, record, program))
+        }
+        Type::Pointer(inner) => {
+            matches!(**inner, Type::Function { .. }) && holds(inner, record, program)
+        }
+        _ => false,
+    }
+}
+
+/// Replaces each expression for which `place` gives a value by that
+/// value, and reads `*&x` as `x` and `(&s)->a` as `s.a`.
+fn rewrite(program: &mut Program, place: impl Fn(&Expr) -> Option<Expr>) {
     let simplify = |expr: &mut Expr| match &mut expr.kind {
         ExprKind::Deref(inner) if matches!(inner.kind, ExprKind::AddrOf(_)) => {
             let ExprKind::AddrOf(place) = std::mem::replace(&mut inner.kind, ExprKind::Zero) else {
@@ -148,7 +325,9 @@ pub fn places(program: &mut Program) {
         _ => {}
     };
     let mut both = |expr: &mut Expr| {
-        replace(expr);
+        if let Some(value) = place(expr) {
+            *expr = value;
+        }
         // The children are visited after the node: simplify at each level.
         simplify(expr);
     };
@@ -163,9 +342,6 @@ pub fn places(program: &mut Program) {
             init.each_mut(&mut both);
         }
     }
-    program
-        .globals
-        .retain(|global| !fixed.iter().any(|(var, _)| var == global));
 }
 
 /// Whether the initialiser is the address of a global, or of a field or an
