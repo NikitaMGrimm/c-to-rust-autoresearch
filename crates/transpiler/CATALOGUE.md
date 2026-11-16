@@ -1277,9 +1277,11 @@ Entry format, newest last:
   `struct s *p = &(struct s){ 1, 2 };`, with designators and nested records
 - Rust: no pointer: every use is the place, so that `*p` is `x`, `p->a` is
   `s.a` and `p[i]` is `table[i]` by R9's constants and the fields of
-  `Globals`; an index through a pointer to an element, `p[n]` for
-  `&a[2]`, is `a[2 + n]` for a constant, an `int` or a `long` `n`, which
-  may be negative; the compound literal is a global of its own that holds its
+  `Globals`; an index or an offset through a pointer to an element,
+  `p[n]`, `*(p + n)`, `*(p - n)` and `(p + n)->f` for `&a[2]`, is `a[2 +
+  n]`, `a[2 - n]` and `a[2 + n].f`, for an `n` that may be negative: a
+  constant, an `int` or a `long` is added in its type, and any other
+  integer as `long`; the compound literal is a global of its own that holds its
   value, under the pointer's name (or the fallback that the names stage
   gives a global whose name is taken), a constant or a field of `Globals`
   where the program stores through the pointer
@@ -1339,8 +1341,9 @@ Entry format, newest last:
   at a constant index, or such an array used as a pointer, `T *p = &x;`,
   `int *e = &m[1][2];`, `char *c = buf;`, `int (*r)[4] = rows;`
 - Rust: every use of the pointer names the place, `*p` is `x`, `p->f` is
-  `x.f`, `p[i]` is `buf[i]`, `f(p)` is `f(&mut x)`; the pointer and its
-  store are left out
+  `x.f`, `p[i]` is `buf[i]`, `f(p)` is `f(&mut x)`, and for `e = &m[2]` an index or an offset, `e[n]`
+  and `*(e - n)`, is `m[2 + n]` and `m[2 - n]`; the pointer and its store
+  are left out
 - Needs: `Facts::in_use_by`; only a pointer that `Facts::in_use` would
   refuse is rewritten, so a borrow that compiles stays a borrow
 - Refused: a pointer stored to twice, in a branch or a loop, moved, a

@@ -391,6 +391,140 @@ fn rewrite(program: &mut Program, place: impl Fn(&Expr) -> Option<Expr>) {
     for global in globals {
         if let Some(init) = &mut program.vars[global].init {
             init.each_mut(&mut both);
+            init.each_mut(&mut offsets);
+        }
+    }
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        each_expr_mut(&mut body, &mut program.vars, &mut offsets);
+        program.functions[function].body = body;
+    }
+}
+
+/// Reads a place that is an offset from the address of an element as the
+/// element that far on: `*(&a[2] - n)` and `(&a[2])[-n]` are `a[2 - n]`,
+/// and `(&a[2] + n)->f` is `a[2 + n].f`. A pointer into the middle of an
+/// array is the rest of the array in Rust, which has nothing before it.
+pub(crate) fn offsets(expr: &mut Expr) {
+    let element = |pointer: &mut Expr| {
+        let ExprKind::AddrOf(place) = std::mem::replace(&mut pointer.kind, ExprKind::Zero) else {
+            unreachable!("`fold` leaves the address of an element")
+        };
+        *place
+    };
+    match &mut expr.kind {
+        ExprKind::Deref(pointer) => {
+            if fold(pointer) {
+                *expr = element(pointer);
+            }
+        }
+        ExprKind::Member { base, arrow, .. } if *arrow => {
+            if fold(base) {
+                **base = element(base);
+                *arrow = false;
+            }
+        }
+        ExprKind::Index(base, by) => {
+            if fold(base) {
+                let ExprKind::Index(array, at) = element(base).kind else {
+                    unreachable!("`fold` leaves the address of an element")
+                };
+                let by = take(by);
+                expr.kind = ExprKind::Index(array, Box::new(sum(BinOp::Add, *at, by)));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The expression, with nothing left in its place.
+fn take(expr: &mut Expr) -> Expr {
+    Expr {
+        ty: expr.ty.clone(),
+        kind: std::mem::replace(&mut expr.kind, ExprKind::Zero),
+        at: expr.at,
+    }
+}
+
+/// Makes a pointer that is an offset from the address of an element,
+/// `&a[k] + n` or `n + &a[k]` or `&a[k] - n`, the address of the element
+/// that far on, `&a[k + n]`, and says whether the pointer is now the
+/// address of an element.
+fn fold(pointer: &mut Expr) -> bool {
+    let ExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), left, right) = &mut pointer.kind else {
+        return matches!(&pointer.kind, ExprKind::AddrOf(place) if matches!(place.kind, ExprKind::Index(..)));
+    };
+    let op = *op;
+    let (base, by) = match (left.ty.is_pointer(), right.ty.is_pointer(), op) {
+        (true, false, _) => (left, right),
+        (false, true, BinOp::Add) => (right, left),
+        _ => return false,
+    };
+    if !by.ty.is_integer() || !fold(base) {
+        return false;
+    }
+    let by = take(by);
+    let mut address = std::mem::replace(&mut base.kind, ExprKind::Zero);
+    if let ExprKind::AddrOf(place) = &mut address
+        && let ExprKind::Index(_, at) = &mut place.kind
+    {
+        **at = sum(op, take(at), by);
+    }
+    pointer.kind = address;
+    true
+}
+
+/// The index `at + by` or `at - by`. Two constants are one, and an `int`
+/// or a `long` is added in its type to a constant or to an index of that
+/// type; anything else
+/// is added as `long`, which holds every index and every offset that C
+/// allows, where a narrower or an unsigned type would wrap or stop.
+fn sum(op: BinOp, mut at: Expr, by: Expr) -> Expr {
+    let long = Type::Int {
+        bits: 64,
+        signed: true,
+    };
+    let plain = matches!(
+        by.ty,
+        Type::Int {
+            bits: 32 | 64,
+            signed: true
+        }
+    );
+    match (&at.kind, &by.kind) {
+        (ExprKind::Int(start), ExprKind::Int(more)) => {
+            at.kind = ExprKind::Int(match op {
+                BinOp::Add => start + more,
+                _ => start - more,
+            });
+            at
+        }
+        (start, _) if plain && (matches!(start, ExprKind::Int(_)) || at.ty == by.ty) => {
+            at.ty = by.ty.clone();
+            Expr {
+                at: by.at,
+                ty: by.ty.clone(),
+                kind: ExprKind::Binary(op, Box::new(at), Box::new(by)),
+            }
+        }
+        _ => {
+            let widen = |expr: Expr| match (&expr.kind, expr.ty == long) {
+                (_, true) => expr,
+                (ExprKind::Int(_), _) => Expr {
+                    ty: long.clone(),
+                    ..expr
+                },
+                _ => Expr {
+                    at: expr.at,
+                    ty: long.clone(),
+                    kind: ExprKind::Cast(Box::new(expr)),
+                },
+            };
+            Expr {
+                at: by.at,
+                ty: long.clone(),
+                kind: ExprKind::Binary(op, Box::new(widen(at)), Box::new(widen(by))),
+            }
         }
     }
 }

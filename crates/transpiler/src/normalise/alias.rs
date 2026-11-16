@@ -30,6 +30,9 @@ pub fn alias(program: &mut Program, facts: &Facts) -> bool {
                         };
                     }
                 });
+                // `p[-1]` for `p = &a[2]` is `a[1]`, which is before what
+                // a pointer to `a[2]` holds in Rust.
+                each_expr_mut(&mut body, &mut program.vars, &mut super::offsets);
                 changed = true;
             }
         }

@@ -876,9 +876,10 @@ become a fact and a refusal:
 - A pointer into the middle of an array that is no cursor is the rest of
   the array from there (`&a[1..]`), so an index or a step back before it
   (`p[-1]`) stops the program where C reads the element. A global pointer
-  or field that never changes is not such a pointer where it is indexed
-  by a constant, an `int` or a `long` (R62); with another index type, or
-  as `*(p - 1)`, it is.
+  or field that never changes (R62, R64) and a local that R61 replaces
+  are no such pointers: `normalise::offsets` reads `p[n]`, `*(p + n)`,
+  `*(p - n)` and `(p + n)->f` as an element of the array itself. A
+  parameter, and a local that stays a borrow, are.
 - A cursor that steps one before its array stops the program there. C
   leaves that undefined, the sanitizers do not report it, and compiled C
   runs on. It is refused where the statements show it (see Cursors), and

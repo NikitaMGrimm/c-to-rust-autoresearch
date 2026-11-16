@@ -295,3 +295,57 @@ fn a_pointer_field_that_changes_or_is_reached_otherwise_is_refused() {
         assert!(error.contains(owned), "{name}: {error}");
     }
 }
+
+/// An offset from a fixed pointer to an element is an element of the
+/// array, also before the one it points to, and with an index of any
+/// integer type: `&a[2..]` has nothing before it, and a `short` of -2 is
+/// no `usize`.
+#[test]
+fn an_offset_from_a_fixed_pointer_into_an_array_is_an_element_of_the_array() {
+    let rust = check(
+        "fixed-offsets",
+        r#"
+#include <stdio.h>
+#include <stddef.h>
+struct cell { int low, high; };
+long row[6] = {11, 22, 33, 44, 55, 66};
+struct cell cells[4] = {{1, 2}, {3, 4}, {5, 6}, {7, 8}};
+long *third = &row[3];
+struct cell *last = &cells[3];
+struct view { int count; long *from; };
+struct view view = {6, &row[2]};
+int main(int argc, char **argv) {
+    int back = -argc;
+    short narrow = (short)(argc - 4);
+    signed char tiny = (signed char)-argc;
+    unsigned wide = (unsigned)argc;
+    unsigned char byte = (unsigned char)argc;
+    size_t size = (size_t)argc;
+    printf("%ld %ld %ld %ld\n", *(third + back), *(back + third), *(third - argc), *(third - 3));
+    printf("%ld %ld %ld %ld %ld\n", third[narrow], third[tiny], third[wide], third[byte], third[size]);
+    printf("%ld %ld\n", *(third + back + 1), *(third - wide));
+    printf("%d %d %d\n", (last - 1)->low, (last + back)->high, (last - argc - 1)->low);
+    printf("%ld %ld\n", *(view.from + back), view.from[narrow + 1]);
+    *(third - 2) = 7;
+    (last - 3)->high += 40;
+    printf("%ld %d\n", row[1], cells[0].high);
+    return 0;
+}
+"#,
+        &[&[], &["more"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "globals.row[(3 + back) as usize],",
+            "globals.row[(3 - args.len() as i32) as usize],",
+            "globals.row[0],",
+            "globals.row[(3 + narrow as i64) as usize],",
+            "globals.row[(3 + back + 1) as usize],",
+            "globals.row[(3 - wide as i64) as usize],",
+            "globals.cells[(3 + back) as usize].high,",
+            "globals.row[1] = 7;",
+        ],
+    );
+}

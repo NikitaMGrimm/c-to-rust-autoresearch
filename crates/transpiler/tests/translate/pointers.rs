@@ -633,3 +633,29 @@ fn a_pointer_to_a_pointer_that_is_more_than_a_name_is_refused() {
         assert!(translate(name, c).is_err(), "{name}");
     }
 }
+
+/// R61: an index before the element that a replaced pointer names is an
+/// element of the array.
+#[test]
+fn an_offset_from_a_replaced_pointer_into_an_array_is_an_element_of_the_array() {
+    let rust = check(
+        "alias-offsets",
+        r#"
+#include <stdio.h>
+int main(int argc, char **argv) {
+    int steps[5] = {10, 20, 30, 40, 50};
+    int *mid = &steps[2];
+    int back = -argc;
+    unsigned char one = 1;
+    steps[1] = 21;
+    printf("%d %d %d %d\n", mid[back], *(mid + back), mid[-1], *(mid - 1));
+    steps[0] = 3;
+    printf("%d %d\n", mid[-2], mid[one]);
+    return 0;
+}
+"#,
+        &[&[], &["more"]],
+        "",
+    );
+    assert_lines(&rust, &["steps[(2 + back) as usize],", "steps[1],"]);
+}
