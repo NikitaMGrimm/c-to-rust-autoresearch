@@ -962,6 +962,22 @@ int main(void) { show(5); return 0; }
             "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 6",
         ),
         (
+            "goto_into_static",
+            r#"#include <stdio.h>
+static void show(int n) {
+    if (n < 0) goto in;
+    {
+        static int w = 7;
+        printf("%d\n", w);
+    in:
+        w = n;
+    }
+}
+int main(void) { show(-1); show(5); return 0; }
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 5",
+        ),
+        (
             "goto_into_address",
             r#"#include <stdio.h>
 static void put(int *p, int x) { *p = x; }

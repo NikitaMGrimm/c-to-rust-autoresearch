@@ -1579,4 +1579,5 @@ Entry format, newest last:
   translated: the declaration moves to the start of the function,
   `let mut v: i32;`, which the compiler checks is stored to before every
   read, and its initialiser stays where it was, as a store that entering at
-  the label skips
+  the label skips; a `static` there stays refused, since its initialiser
+  runs once

@@ -179,7 +179,10 @@ fn rewrite(
             let mut rest = before[index + 1..].to_vec();
             rest.extend(after.iter().cloned());
             let declared = &program.vars[var];
+            // A static keeps its value between calls, and its initialiser
+            // runs once.
             if declared.len.is_some()
+                || declared.kind != VarKind::Local
                 || !matches!(
                     declared.ty,
                     Type::Int { .. } | Type::Float { .. } | Type::Bool | Type::Char
