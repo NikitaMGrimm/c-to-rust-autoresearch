@@ -244,6 +244,32 @@ A local pointer that is declared without a value and never assigned counts
 as NULL: reading it is undefined in C, and `None` is a value that Rust can
 write for it.
 
+### Numbers in bytes
+
+A pointer to bytes cast to a pointer to a number, `*(T *)p`, reads or
+stores a number that C keeps in the bytes (R69). The bytes stay a slice of
+`u8` and the number is made from them; a slice too short stops the Rust
+program where C reads beyond the array. The host is little-endian, but the
+translation says what C does, the bytes in the machine's order.
+
+| Shape | Rust |
+| --- | --- |
+| The number: `short`, `int`, `long`, `long long`, signed or unsigned, `int16_t` to `uint64_t`, `float`, `double` | `i16` to `u64`, `f32`, `f64` |
+| The number: `long double` | refused, as the type is |
+| The bytes: `char *`, `unsigned char *`, `uint8_t *`, an array, a parameter, a local, a field, memory from `malloc`, `const` or not | the slice the pointer reads as elsewhere; the analysis marks it an array |
+| The bytes: `signed char *`, `int8_t *` | refused: `i8` elements |
+| A read `*(T *)p`, `((T *)p)[0]` | `i32::from_ne_bytes(p[..4].try_into().unwrap())` |
+| A read `((T *)p)[i]` | `i32::from_ne_bytes(p[i as usize * 4..][..4].try_into().unwrap())`, `p[8..][..4]` for a constant `i` of 2 |
+| `((T *)p)[i]` for a negative constant `i` | refused |
+| A store `*(T *)p = v` | `p[..4].copy_from_slice(&i32::to_ne_bytes(v))` |
+| `*(T *)p += v`, `++*(T *)p`, `&*(T *)p`, `&((T *)p)[i]`, a store used as a value | refused |
+| `(T *)(p + k)`, `(T *)&a[k]` | the slice from `k`, `p[k..][..4]` |
+| A local `T *q = (T *)p` that nothing stores to again or takes the address of, only used as `*q` and `q[i]`, whose cast names only locals and parameters that do not change in the function, their arrays, constants, and sums and elements of those | the cast at each use (`normalise::casts`), before the first analysis |
+| A cast pointer that is kept: stored, returned, handed to a function, compared, advanced; such a local whose cast reads a variable that changes, a field, an element as a value or a call | refused |
+| The bytes of a number, `(unsigned char *)&n` read as `b[i]` | refused |
+| A cast between pointers to numbers of different sizes, `(int *)longs` | refused |
+| A cast to or from a pointer to a record | refused |
+
 ### Pointers to pointers
 
 `T **pp` is a pointer to a place that itself holds a pointer. The place is
@@ -698,6 +724,12 @@ place:
   that return a pointer (`strchr`, `strstr`, `strtok`), a width in `%s`, and above all a `String`
   for a buffer that the program only fills and reads as a whole, which
   needs a fact that says so.
+- **Numbers in bytes.** A number read or stored at once through a cast
+  of a pointer to bytes is made from the bytes (R69). Still to build: the
+  bytes of a number, `(unsigned char *)&n`, which is `n.to_ne_bytes()[i]`
+  where the bytes are only read; a cast pointer that is kept, which needs
+  a slot that holds a slice of bytes and the number's size; `signed char`
+  bytes; and an update in place, `*(T *)p += v`.
 - **Global pointers.** A global pointer that is NULL and never changes
   waits for a rule that reads each use as NULL; one that changes needs a
   slot for a borrow of a global. A pointer field that never changes is

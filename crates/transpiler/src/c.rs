@@ -202,6 +202,21 @@ impl Type {
         }
     }
 
+    /// A type of one byte that a program reads memory through.
+    pub fn is_byte(&self) -> bool {
+        matches!(self, Type::Char | Type::Int { bits: 8, .. })
+    }
+
+    /// The size in bytes of a number that has `from_ne_bytes` in Rust.
+    pub fn number_size(&self) -> Option<usize> {
+        match *self {
+            Type::Int { bits, .. } | Type::Float { bits } if matches!(bits, 16 | 32 | 64) => {
+                Some(usize::from(bits / 8))
+            }
+            _ => None,
+        }
+    }
+
     /// Bits and signedness of an integer type as C computes with it.
     pub fn int(&self) -> Option<(u8, bool)> {
         match *self {
@@ -523,6 +538,24 @@ impl Expr {
 }
 
 impl Expr {
+    /// R69: `*(T *)p` or `((T *)p)[i]` for a pointer `p` to bytes and a
+    /// number `T`: the cast pointer, the number's size and the index.
+    pub fn number_in_bytes(&self) -> Option<(&Expr, usize, Option<&Expr>)> {
+        let (pointer, index) = match &self.kind {
+            ExprKind::Deref(pointer) => (pointer, None),
+            ExprKind::Index(pointer, index) => (pointer, Some(&**index)),
+            _ => return None,
+        };
+        let ExprKind::Cast(bytes) = &pointer.kind else {
+            return None;
+        };
+        let size = pointer.ty.element()?.number_size()?;
+        match &bytes.ty {
+            Type::Pointer(element) if element.is_byte() => Some((pointer, size, index)),
+            _ => None,
+        }
+    }
+
     /// The expressions directly inside this one, in evaluation order.
     pub fn children(&self) -> Vec<&Expr> {
         match &self.kind {

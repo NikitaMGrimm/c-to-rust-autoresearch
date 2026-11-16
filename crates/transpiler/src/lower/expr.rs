@@ -88,6 +88,9 @@ impl Lower<'_> {
                 Ok(rust::name(self.names.enumerator(*index)))
             }
             ExprKind::Zero => self.zero(&expr.ty, at),
+            ExprKind::Index(..) | ExprKind::Deref(_) if expr.number_in_bytes().is_some() => {
+                self.number_from_bytes(expr)
+            }
             ExprKind::Var(_)
             | ExprKind::Member { .. }
             | ExprKind::Index(..)
@@ -834,6 +837,20 @@ impl Lower<'_> {
                 };
                 Ok(rust::field(base, self.names.field(*record, *field)))
             }
+            // R69 makes the number from the bytes as a value, which no
+            // place, borrow or update can name.
+            ExprKind::Index(..) | ExprKind::Deref(_) if place.number_in_bytes().is_some() => {
+                match write {
+                    true => unsupported(
+                        "a number in bytes changed other than by `=`: no rule yet",
+                        place.at,
+                    ),
+                    false => unsupported(
+                        "a number in bytes used as a place, such as its address: no rule yet",
+                        place.at,
+                    ),
+                }
+            }
             ExprKind::Index(base, index) => {
                 if index.constant(program) == Some(0) && self.points_to_one(base) {
                     return self.pointee(base, write, false);
@@ -1142,6 +1159,10 @@ impl Lower<'_> {
             let value = self.pointer(value, repr);
             self.walking = None;
             return Ok(rust::assign(self.place(target, true)?, value?));
+        }
+        if op.is_none() && target.number_in_bytes().is_some() {
+            let value = self.init(&target.ty, None, value)?;
+            return self.number_into_bytes(target, value);
         }
         let width = self.bit_field(target);
         let Some((op, compute)) = op else {

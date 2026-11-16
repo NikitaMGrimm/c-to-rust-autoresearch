@@ -4,7 +4,9 @@
 //! the place at every use, so every use names it instead.
 
 use super::names;
-use crate::c::{Expr, ExprKind, Program, Stmt, Type, Var, VarId, VarKind, any_expr, each_expr_mut};
+use crate::c::{
+    BinOp, Expr, ExprKind, Program, Stmt, Type, Var, VarId, VarKind, any_expr, each_expr_mut,
+};
 use crate::facts::Facts;
 
 /// Rewrites the pointers that `Facts::in_use` finds and that only name one
@@ -95,6 +97,119 @@ pub fn pointers(program: &mut Program) {
         }
         program.functions[function].body = body;
     }
+}
+
+/// R69: rewrites every local `T *q = (T *)p` for a pointer `p` to bytes and
+/// a number `T`, that nothing stores to again and that is only used as
+/// `*q` or `q[i]`, to the cast at each use, which `lower` reads as a
+/// number made from the bytes. The variables of the cast must not change
+/// in the function, so that the cast means the same pointer at each use.
+pub fn casts(program: &mut Program) {
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        for pointer in 0..program.vars.len() {
+            let var = &program.vars[pointer];
+            let Some(cast) = var.init.as_ref().filter(|cast| cast.ty == var.ty) else {
+                continue;
+            };
+            let ExprKind::Cast(bytes) = &cast.kind else {
+                continue;
+            };
+            if var.ty.element().and_then(Type::number_size).is_none()
+                || !bytes.ty.element().is_some_and(Type::is_byte)
+            {
+                continue;
+            }
+            if var.kind != VarKind::Local
+                || var.len.is_some()
+                || !fixed(bytes, &body, program)
+                || stores(&body, &program.vars, pointer) > 0
+                || !only_read_through(&body, program, pointer)
+                || !undeclare(&mut body, pointer)
+            {
+                continue;
+            }
+            let cast = cast.clone();
+            each_expr_mut(&mut body, &mut program.vars, &mut |expr| {
+                if matches!(expr.kind, ExprKind::Var(var) if var == pointer) {
+                    *expr = Expr {
+                        at: expr.at,
+                        ..cast.clone()
+                    };
+                }
+            });
+        }
+        program.functions[function].body = body;
+    }
+}
+
+/// Whether the pointer means the same address wherever the function reads
+/// it: it names only locals and parameters that the function never
+/// changes, arrays of them, constants, and sums and elements of those. A
+/// field, an element read as a value or a call may change between uses.
+fn fixed(pointer: &Expr, body: &[Stmt], program: &Program) -> bool {
+    let vars = &program.vars;
+    let unchanged = |var: VarId| {
+        matches!(vars[var].kind, VarKind::Local | VarKind::Param)
+            && !super::assigns(body, vars, var)
+            && stores(body, vars, var) == 0
+            && !hides(body, vars, var)
+    };
+    let index = |at: &Expr| {
+        at.constant(program).is_some()
+            || matches!(at.uncast().kind, ExprKind::Var(var) if unchanged(var))
+    };
+    match &pointer.kind {
+        ExprKind::Var(var) => unchanged(*var),
+        ExprKind::Cast(inner) => fixed(inner, body, program),
+        ExprKind::Decay(array) => matches!(array.kind, ExprKind::Var(var) if unchanged(var)),
+        ExprKind::Binary(BinOp::Add, left, right) => match left.ty.is_pointer() {
+            true => fixed(left, body, program) && index(right),
+            false => fixed(right, body, program) && index(left),
+        },
+        ExprKind::AddrOf(place) => match &place.kind {
+            ExprKind::Index(base, at) => fixed(base, body, program) && index(at),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether the statements use the pointer only as `*pointer` and
+/// `pointer[i]`.
+fn only_read_through(stmts: &[Stmt], program: &Program, pointer: VarId) -> bool {
+    let is_pointer = |expr: &Expr| matches!(expr.kind, ExprKind::Var(var) if var == pointer);
+    let (mut uses, mut through) = (0, 0);
+    any_expr(stmts, &program.vars, &mut |expr| {
+        match &expr.kind {
+            ExprKind::Var(var) if *var == pointer => uses += 1,
+            ExprKind::Deref(inner) | ExprKind::Index(inner, _) if is_pointer(inner) => through += 1,
+            _ => {}
+        }
+        false
+    });
+    uses == through
+}
+
+/// Takes the declaration of the variable out of the statements, and says
+/// whether it found it.
+fn undeclare(stmts: &mut Vec<Stmt>, var: VarId) -> bool {
+    if let Some(at) = stmts
+        .iter()
+        .position(|stmt| matches!(stmt, Stmt::Decl(declared) if *declared == var))
+    {
+        stmts.remove(at);
+        return true;
+    }
+    stmts.iter_mut().any(|stmt| match stmt {
+        Stmt::Block(body)
+        | Stmt::While(_, body)
+        | Stmt::DoWhile(body, _)
+        | Stmt::Switch(_, body)
+        | Stmt::For { body, .. } => undeclare(body, var),
+        Stmt::If(_, then, other) => undeclare(then, var) || undeclare(other, var),
+        _ => false,
+    })
 }
 
 /// Whether the statements use the pointer only as `*pointer` and

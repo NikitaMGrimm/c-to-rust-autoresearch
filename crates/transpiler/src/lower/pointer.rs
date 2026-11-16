@@ -606,8 +606,89 @@ impl Lower<'_> {
         match (cast.ty.element(), inner.ty.element()) {
             (Some(Type::Void), _) | (_, Some(Type::Void)) => Ok(()),
             (to, from) if to == from => Ok(()),
+            (Some(to), Some(from)) if to.number_size().is_some() && from.is_byte() => unsupported(
+                "a pointer to bytes cast to a pointer to a number that is kept rather than read or stored at once: no rule yet",
+                cast.at,
+            ),
+            (Some(to), Some(from)) if to.is_byte() && from.number_size().is_some() => unsupported(
+                "the bytes of a number read through a cast pointer: no rule yet",
+                cast.at,
+            ),
+            (Some(Type::Record(_)), _) | (_, Some(Type::Record(_))) => {
+                unsupported("a cast to or from a pointer to a record", cast.at)
+            }
+            (Some(to), Some(from))
+                if to.number_size().is_some() && from.number_size().is_some() =>
+            {
+                unsupported(
+                    "a cast between pointers to numbers of different sizes",
+                    cast.at,
+                )
+            }
             _ => unsupported("a cast between pointers to different types", cast.at),
         }
+    }
+
+    /// R69: the bytes that `*(T *)p` or `((T *)p)[i]` reads or stores, as
+    /// a slice of the number's size: `bytes[..4]`, `bytes[i * 4..][..4]`.
+    fn bytes_of_number(&mut self, place: &Expr, write: bool) -> R<syn::Expr> {
+        let Some((pointer, size, index)) = place.number_in_bytes() else {
+            return unsupported("a number in bytes with no rule", place.at);
+        };
+        let ExprKind::Cast(bytes) = &pointer.kind else {
+            return unsupported("a number in bytes with no rule", place.at);
+        };
+        if matches!(bytes.ty.element(), Some(Type::Int { signed: true, .. })) {
+            return unsupported(
+                "a number read or stored through a pointer to `signed char`: no rule yet",
+                place.at,
+            );
+        }
+        let mut slice = self.slice(bytes, write)?;
+        let size_value = rust::int(size as i128, "");
+        if let Some(index) = index {
+            let start = match index.constant(self.program) {
+                Some(0) => None,
+                Some(at) if at > 0 => Some(rust::int(at * size as i128, "")),
+                Some(_) => {
+                    return unsupported(
+                        "a number in bytes before the pointer to the bytes: no rule yet",
+                        place.at,
+                    );
+                }
+                _ => Some(rust::binary(
+                    self.index_value(index)?,
+                    "*",
+                    size_value.clone(),
+                )),
+            };
+            if let Some(start) = start {
+                slice = rust::index(slice, rust::from(start));
+            }
+        }
+        Ok(rust::index(slice, rust::until(size_value)))
+    }
+
+    /// R69: the number that `*(T *)p` reads from bytes:
+    /// `i32::from_ne_bytes(bytes[..4].try_into().unwrap())`.
+    pub(super) fn number_from_bytes(&mut self, place: &Expr) -> R<syn::Expr> {
+        let bytes = self.bytes_of_number(place, false)?;
+        let array = rust::method(rust::method(bytes, "try_into", []), "unwrap", []);
+        let ty = self.ty(&place.ty, place.at)?;
+        Ok(parse_quote!(#ty::from_ne_bytes(#array)))
+    }
+
+    /// R69: `*(T *)p = value` stores the bytes of the number:
+    /// `bytes[..4].copy_from_slice(&i32::to_ne_bytes(value))`.
+    pub(super) fn number_into_bytes(&mut self, place: &Expr, value: syn::Expr) -> R<syn::Expr> {
+        let bytes = self.bytes_of_number(place, true)?;
+        let ty = self.ty(&place.ty, place.at)?;
+        let value: syn::Expr = parse_quote!(#ty::to_ne_bytes(#value));
+        Ok(rust::method(
+            bytes,
+            "copy_from_slice",
+            [rust::borrow(false, value)],
+        ))
     }
 
     /// Converts the value of a slot of representation `from` for one of

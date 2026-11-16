@@ -1581,3 +1581,28 @@ Entry format, newest last:
   read, and its initialiser stays where it was, as a store that entering at
   the label skips; a `static` there stays refused, since its initialiser
   runs once
+
+## R69: a number read or written through a cast of a pointer to bytes
+
+- C: `*(T *)p`, `((T *)p)[i]`, `(T *)(p + k)` and `(T *)&a[k]` read or
+  stored with `=`, for a pointer `p` to `char`, `unsigned char` or
+  `uint8_t` and a number `T` of 2, 4 or 8 bytes, integer or floating; a
+  local `T *q = (T *)p` that only names the cast
+- Rust: `i32::from_ne_bytes(p[k..][..4].try_into().unwrap())` and
+  `p[k..][..4].copy_from_slice(&i32::to_ne_bytes(v))`, with `i as usize *
+  4..` for an index `i`; the local is the cast at each use
+- Needs: the bytes marked an array (`many`) by the analysis;
+  `normalise::casts`, before the first analysis, for the local, which
+  repeats the cast only where it means the same address at each use
+- Refused: a cast pointer that is kept (stored, returned, handed on,
+  compared, advanced), such a local whose cast reads anything but
+  unchanged locals and parameters, their arrays and constants, an update
+  in place, the address of the number, a store used as a value, a
+  negative constant index, `signed char` bytes, the bytes of a
+  number `(unsigned char *)&n`, a cast between pointers to numbers of
+  different sizes, and one to or from a pointer to a record, each with its
+  own reason; other casts between pointers to different types as before
+- Motivation: `g5_memchra2` read an `int` through a local `int *` that
+  named the cast of its `unsigned char *` parameter
+- Changes: narrows the refusal of a cast between pointers to different
+  types

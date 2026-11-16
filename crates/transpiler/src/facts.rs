@@ -936,8 +936,10 @@ impl<'a> Walk<'a> {
                     self.moves(slot);
                 }
             }
+            // R69: the number is made from an array of bytes.
+            ExprKind::Deref(pointer) if expr.number_in_bytes().is_some() => self.many(pointer),
             ExprKind::Index(base, index) => {
-                if index.constant(program) != Some(0) {
+                if index.constant(program) != Some(0) || expr.number_in_bytes().is_some() {
                     self.many(base);
                 }
                 self.bytes(base);

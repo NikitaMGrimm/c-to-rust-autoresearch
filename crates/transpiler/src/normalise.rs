@@ -69,7 +69,7 @@ mod same;
 mod unions;
 mod voids;
 
-pub use alias::{alias, pointers};
+pub use alias::{alias, casts, pointers};
 pub use cursors::{cursors, steps_before};
 pub use ends::ends;
 pub use enter::enter;
