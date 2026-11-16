@@ -1561,11 +1561,22 @@ Entry format, newest last:
   to it, and a store of 0 that nothing reads is left out
 - Needs: `normalise::enter`, before the first analysis
 - Refused: a jump into a `for` loop, past its initialiser; past a
-  declaration that the part after the label reads; into a statement that
+  declaration that the part after the label may read before it stores to
+  the whole variable, on some path, in a condition, a call's argument or
+  past a label, or, without an initialiser, that the part before the label
+  or the next round of a loop may read first; past one of an array, a
+  record, a pointer or a variable-length array, of a variable whose address
+  is taken, or of one whose name another variable of the function or a
+  global it uses has; into a statement that
   another moved label enters too, as one flag cannot say which; a jump from the
   statement that holds the label, such as from the other branch of the same
   `if`, as before; into a `switch`, as before
 - Motivation: programs outside the development set jump into the branch of
   an `if` or into a loop's body; no development program needs it
 - Changes: R48's and R49's refusal of a jump into a block from outside it
-  now holds only where R68 leaves the jump
+  now holds only where R68 leaves the jump. A jump past the declaration of
+  a number that the part after the label stores to before it reads it is
+  translated: the declaration moves to the start of the function,
+  `let mut v: i32;`, which the compiler checks is stored to before every
+  read, and its initialiser stays where it was, as a store that entering at
+  the label skips

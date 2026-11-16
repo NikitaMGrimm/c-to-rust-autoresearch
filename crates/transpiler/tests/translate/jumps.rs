@@ -849,7 +849,8 @@ int main(int argc, char *argv[]) {
 }
 
 /// R68 refuses a jump into a `for` loop, one past a declaration that the
-/// part after the label reads, one into a statement that another label
+/// part after the label may read before it stores to it, or that is an
+/// array, hides another variable of its name or has its address taken, one into a statement that another label
 /// enters too, and one into a `case`.
 #[test]
 fn a_goto_into_a_block_that_the_flag_cannot_enter_is_refused() {
@@ -882,13 +883,121 @@ int main(void) {
     if (k > 4) {
         int half = k / 2;
     mid:
-        half = 1;
+        if (k > 1) half = 1;
         printf("%d\n", half);
     }
     return 0;
 }
 "#,
             "unsupported: `goto mid` into a block past a declaration that the part after the label reads: no rule yet, at line 7",
+        ),
+        (
+            "goto_into_read_in_test",
+            r#"#include <stdio.h>
+static void show(int n) {
+    if (n < 0) goto in;
+    if (n > 3) {
+        int w = 6;
+    in:
+        if (w > n) w = n;
+        printf("%d\n", w);
+    }
+}
+int main(void) { show(5); return 0; }
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 5",
+        ),
+        (
+            "goto_into_read_in_call",
+            r#"#include <stdio.h>
+static int twice(int x) { return 2 * x; }
+static void show(int n) {
+    if (n < 0) goto in;
+    if (n > 3) {
+        int w = 6;
+    in:
+        w = twice(w);
+        printf("%d\n", w);
+    }
+}
+int main(void) { show(5); return 0; }
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 6",
+        ),
+        (
+            "goto_into_array",
+            r#"#include <stdio.h>
+static void show(int n) {
+    if (n < 0) goto in;
+    if (n > 3) {
+        int pair[2];
+        pair[1] = 0;
+    in:
+        pair[0] = n;
+        pair[1] = n;
+        printf("%d\n", pair[0] + pair[1]);
+    }
+}
+int main(void) { show(5); return 0; }
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 5",
+        ),
+        (
+            "goto_into_shadow",
+            r#"#include <stdio.h>
+static void show(int n) {
+    int w = 1;
+    if (n < 0) goto in;
+    if (n > 3) {
+        int w;
+        puts("big");
+    in:
+        w = n;
+        printf("%d\n", w);
+    }
+    printf("%d\n", w);
+}
+int main(void) { show(5); return 0; }
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 6",
+        ),
+        (
+            "goto_into_address",
+            r#"#include <stdio.h>
+static void put(int *p, int x) { *p = x; }
+static void show(int n) {
+    if (n < 0) goto in;
+    if (n > 3) {
+        int w;
+        puts("big");
+    in:
+        put(&w, n);
+        printf("%d\n", w);
+    }
+}
+int main(void) { show(5); return 0; }
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 6",
+        ),
+        (
+            "goto_into_next_round",
+            r#"#include <stdio.h>
+int main(void) {
+    int i = 0, sum = 0;
+    goto in;
+    while (i < 4) {
+        int w;
+        sum += w;
+    in:
+        w = i;
+        sum += w;
+        i++;
+    }
+    printf("%d\n", sum);
+    return 0;
+}
+"#,
+            "unsupported: `goto in` into a block past a declaration that the part after the label reads: no rule yet, at line 6",
         ),
         (
             "goto_into_twice",
@@ -936,4 +1045,83 @@ int main(void) {
     ] {
         assert_eq!(translate(name, c).unwrap_err(), refusal, "{name}");
     }
+}
+
+/// R68 enters a block past a declaration of a number that the part after
+/// the label stores to before it reads it: the declaration moves to the
+/// start of the function, and its initialiser stays where it was.
+#[test]
+fn a_goto_into_a_block_passes_a_declaration_stored_to_first() {
+    let runs: &[&[&str]] = &[&["0"], &["1"], &["2"], &["7"], &["-4"]];
+    let rust = check(
+        "goto_into_stored",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+
+static int calls = 0;
+static int next(void) { return ++calls * 3; }
+
+static int measure(int n) {
+    int scale = 2;
+    if (n < 0) goto fresh;
+    scale = n + 1;
+    if (n > 1) {
+        int got = next() + scale;
+        double part = got / 4.0;
+        printf("got %d %.2f\n", got, part);
+    fresh:
+        if (n == -4) {
+            return -1;
+        }
+        if (n & 1) {
+            got = 10;
+        } else {
+            got = scale * 5;
+        }
+        part = got * 0.5;
+        printf("then %d %.2f\n", got, part);
+    }
+    return calls;
+}
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    int n = atoi(argv[1]);
+    printf("%d\n", measure(n));
+    printf("%d\n", measure(-n - 1));
+    return 0;
+}
+"#,
+        runs,
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["got = next(globals) + scale;", "if !(entered != 0) {"],
+    );
+    let rust = check(
+        "goto_into_round",
+        r#"#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) return 2;
+    int n = atoi(argv[1]);
+    int i = 0, sum = 0;
+    if (n > 0) goto in;
+    while (i < 5) {
+        int w;
+        sum += i;
+    in:
+        w = i * 3;
+        sum += w;
+        i++;
+    }
+    printf("%d %d\n", i, sum);
+    return 0;
+}
+"#,
+        runs,
+        "",
+    );
+    assert_lines(&rust, &["w = i * 3;"]);
 }

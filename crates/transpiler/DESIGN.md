@@ -619,6 +619,16 @@ clears the flag. A store of 0 to the flag that nothing reads afterwards is
 left out, as the compiler refuses it. R48 translates a jump that now comes
 before the label, R49 one that comes after it.
 
+C enters the scope of a declaration before the label without its value.
+Where the part after the label stores to the whole variable before it reads
+it on every path, the declaration moves to the start of the function, as
+`let mut v: i32;` without a value (`Program::unset`), and its initialiser
+stays where it was, as a store that entering at the label skips, so that it
+keeps its time. The check is conservative: a read in a condition, in a
+call's argument, after a branch that may not store, or past a label is a
+read. A declaration without an initialiser needs the same of the part
+before the label after it, and of a loop's next round.
+
 | The label stands in | The jump comes from | Rust form |
 | --- | --- | --- |
 | the branch of an `if (c) { A; L: B; }` | before the `if`, or after it | `L: if (entered \|\| c) { if (!entered) { A; } entered = 0; B; }` |
@@ -628,7 +638,9 @@ before the label, R49 one that comes after it.
 | a plain block `{ A; L: B; }` | before the block, or after it | `L: { if (!entered) { A; } entered = 0; B; }` |
 | any of these inside another of them | before the outer statement | both rewritten, the outer one without `entered = 0` |
 | the body of a `for` | outside it | refused: `` `goto L` into a `for` loop, past its initialiser `` |
-| a block after a declaration in `A` that `B` reads, or of a variable-length array | outside it | refused: `` `goto L` into a block past a declaration that the part after the label reads `` (C rejects a jump into the scope of a variable-length array) |
+| a block after a declaration of a number in `A` that `B` stores to before it reads it | outside it | `let mut v: i32;` at the function's start, and `v = init;` in `if (!entered) { … }` |
+| a block after a declaration in `A` that `B` may read first, of an array, a record or a pointer, of a variable whose address is taken or whose name another variable of the function has | outside it | refused: `` `goto L` into a block past a declaration that the part after the label reads `` |
+| a block after a variable-length array | outside it | C rejects it |
 | a statement that another moved label enters too: two labels of one block, or one in the branch and one in the `else` | outside it | refused: `` `goto L` into a block that another label of the same statement enters `` |
 | the other branch of the same `if`, or a block that the jump's own statement holds | the statement itself | refused as before: `` `goto L` into a block from outside it `` |
 | a `case` of a `switch` | outside it | refused as before: `` `goto L` to a label under a `case` `` |
@@ -733,8 +745,9 @@ place:
   proves shared, and `RefCell` only where it is also written; neither is a
   default.
 - **Others.** `goto` into a `for` loop or into a block from a statement
-  that holds it, past a declaration that the part after the label reads,
-  into a statement that another label enters too (R68), to a label under
+  that holds it, past a declaration that the part after the label may read
+  before it stores to it, or of an array, a record or a pointer, into a
+  statement that another label enters too (R68), to a label under
   a `case`, from a `switch` into a block entered at a label, and a
   local of one part of such a block that a later part uses (a jump forward
   is a `break` of a labelled block, R48, and one back a loop entered at a

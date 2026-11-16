@@ -874,6 +874,10 @@ impl Lower<'_> {
             return Ok(vec![parse_quote!(let #mutability #name: #ty = #value;)]);
         }
         let ty = self.ty(&var.ty, var.at)?;
+        // R68: the compiler checks that a store comes before every read.
+        if init.is_none() && self.program.unset.contains(&id) {
+            return Ok(vec![parse_quote!(let #mutability #name: #ty;)]);
+        }
         let value = match init {
             Some(init) => self.init(&var.ty, None, init)?,
             None => self.zero(&var.ty, var.at)?,

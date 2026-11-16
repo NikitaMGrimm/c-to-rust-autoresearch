@@ -23,6 +23,9 @@ pub struct Program {
     /// The names of the program's functions that return a place in their
     /// first argument or NULL, as the library's searches do (R51).
     pub searches: Vec<String>,
+    /// The locals that R68 declares at the start of their function without
+    /// a value: every read of one follows a store to it.
+    pub unset: Vec<VarId>,
 }
 
 impl Program {
