@@ -170,13 +170,7 @@ fn gate(args: &Args) -> Result<bool, String> {
             let steady = steady || steady_rules;
             rejection(scores("dev"), scores("validation"), steady, args.dev_only)
         })
-        .or_else(|| {
-            let judged = if args.dev_only { &sets[..1] } else { &sets[..] };
-            let wrong = judged
-                .iter()
-                .map(|(set, _)| newly_wrong(&before, &after, set));
-            (wrong.sum::<usize>() > 0).then(|| NEWLY_WRONG.to_owned())
-        });
+        .or_else(|| wrong_rejection(&before, &after, args.dev_only));
 
     let summary: serde_json::Map<String, serde_json::Value> = sets
         .iter()
@@ -360,6 +354,18 @@ fn newly_wrong(before: &Results, after: &Results, set: &str) -> usize {
         .count()
 }
 
+/// The rejection for a newly wrong program, on the development set and,
+/// unless `dev_only`, on the private sets.
+fn wrong_rejection(before: &Results, after: &Results, dev_only: bool) -> Option<String> {
+    let judged: &[&str] = if dev_only {
+        &["dev"]
+    } else {
+        &["dev", "validation", "dev_variants"]
+    };
+    let wrong = |set: &&str| newly_wrong(before, after, set) > 0;
+    judged.iter().any(wrong).then(|| NEWLY_WRONG.to_owned())
+}
+
 /// Whether the subject of every commit from `base` to `candidate` in the
 /// repository at `dir` starts with one of `kinds`.
 fn commits_are(dir: &Path, base: &str, candidate: &str, kinds: &[&str]) -> Result<bool, String> {
@@ -443,6 +449,23 @@ mod tests {
         assert_eq!(newly_wrong(&before, &after, "validation"), 0);
         assert_eq!(newly_wrong(&before, &after, "dev_variants"), 0);
         assert_eq!(newly_wrong(&before, &before, "dev"), 0);
+        // A program that the base does not have is not counted.
+        let fewer = results(&[TranspileFail], &[]);
+        assert_eq!(newly_wrong(&fewer, &after, "dev"), 1);
+
+        let wrong = |before: &Results, after: &Results, dev_only| {
+            wrong_rejection(before, after, dev_only).is_some()
+        };
+        assert!(wrong(&before, &after, false) && wrong(&before, &after, true));
+        assert!(!wrong(&before, &before, false));
+        assert!(!wrong(&Results::new(), &Results::new(), false));
+        // Each private set rejects, but not where only development decides.
+        for set in ["validation", "dev_variants"] {
+            let stages = |stage| BTreeMap::from([("p".to_owned(), stage)]);
+            let before = Results::from([(set, stages(TranspileFail))]);
+            let after = Results::from([(set, stages(Panic))]);
+            assert!(wrong(&before, &after, false) && !wrong(&before, &after, true));
+        }
         // The loop agent reads the reason.
         for word in ["dev", "validation", "variant", "p0"] {
             assert!(!NEWLY_WRONG.contains(word));
