@@ -1094,7 +1094,7 @@ become a fact and a refusal:
   data = CHAR_MAX; char twice = data * INT_MAX;` in a function that the
   program does not call for its inputs is translated and does not
   compile. An operation that the lints refuse as written (`x - x`, `x &
-  0`, a constant index beyond its array) is refused. A store of a place
+  0`, `30 + x <= x + 30`, a constant index beyond its array) is refused. A store of a place
   to itself, `x = x;`, is left out as a statement and refused where its
   value is used.
 - Other code that the compiler or its lints refuse as written is still

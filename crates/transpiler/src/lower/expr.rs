@@ -435,7 +435,7 @@ impl Lower<'_> {
         if matches!(
             op,
             BinOp::Sub | BinOp::Div | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
-        ) && same_value(left, right)
+        ) && same_operands(left, right)
         {
             return unsupported(
                 format!(
@@ -570,7 +570,7 @@ impl Lower<'_> {
                 // The same test twice is one test, and the compiler's
                 // lints refuse it twice. What `same_value` knows has no
                 // effect.
-                if same_value(left, right) {
+                if same_operands(left, right) {
                     return self.cond(left);
                 }
                 let (left, right) = (self.cond(left)?, self.cond(right)?);
@@ -677,7 +677,7 @@ impl Lower<'_> {
                 _ => unsupported("an ordering of a pointer and NULL", at),
             };
         }
-        if same_value(left, right) {
+        if same_operands(left, right) {
             // `x != x` holds only for a NaN, and Rust has a name for the
             // test.
             if let (BinOp::Eq | BinOp::Ne, Type::Float { .. }) = (op, &left.ty) {
@@ -1495,10 +1495,24 @@ fn calls_realloc(expr: &Expr) -> bool {
 }
 
 pub(crate) fn same_value(left: &Expr, right: &Expr) -> bool {
+    alike(left, right, false)
+}
+
+/// Whether two operands are the same value as the compiler's lints see
+/// it, which also take `30 + x` for `x + 30` where the operator is Rust's
+/// own, and look through a cast to the type the value has.
+fn same_operands(left: &Expr, right: &Expr) -> bool {
+    alike(left, right, true)
+}
+
+fn alike(left: &Expr, right: &Expr, lints: bool) -> bool {
+    let same_value = |left, right| alike(left, right, lints);
+    let (left, right) = (bare(left, lints), bare(right, lints));
     left.ty == right.ty
         && match (&left.kind, &right.kind) {
             (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
             (ExprKind::Int(one), ExprKind::Int(other)) => one == other,
+            (ExprKind::Float(one), ExprKind::Float(other)) => lints && one == other,
             (ExprKind::Char(one), ExprKind::Char(other)) => one == other,
             (ExprKind::Enumerator(one), ExprKind::Enumerator(other)) => one == other,
             (
@@ -1526,10 +1540,28 @@ pub(crate) fn same_value(left: &Expr, right: &Expr) -> bool {
                 same_value(one, other) && same_value(at, other_at)
             }
             (ExprKind::Binary(op, one, two), ExprKind::Binary(other_op, other, other_two)) => {
-                op == other_op && same_value(one, other) && same_value(two, other_two)
+                // Unsigned `+` and `*` are methods, whose order the lints
+                // keep.
+                let turns = match op {
+                    BinOp::Add | BinOp::Mul => !matches!(left.ty.int(), Some((_, false))),
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => true,
+                    _ => false,
+                };
+                op == other_op
+                    && (same_value(one, other) && same_value(two, other_two)
+                        || lints && turns && same_value(one, other_two) && same_value(two, other))
             }
             _ => false,
         }
+}
+
+/// The value inside a cast to its own type, which changes nothing, where
+/// the lints look through it.
+fn bare(expr: &Expr, lints: bool) -> &Expr {
+    match &expr.kind {
+        ExprKind::Cast(inner) if lints && inner.ty == expr.ty => bare(inner, lints),
+        _ => expr,
+    }
 }
 
 /// The place itself where the value is `*&place`, which a pointer that

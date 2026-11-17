@@ -439,6 +439,7 @@ int main(int argc, char *argv[]) {
     double xs[2] = {0.5, d};
     printf("%d %d %d\n", d != d, f == f, d == d ? 1 : 0);
     printf("%d %d %d\n", p.a != p.a, xs[argc - 1] == xs[argc - 1], p.a != p.b);
+    printf("%d\n", (d + 2.0) == (2.0 + d));
     return 0;
 }
 "#,
@@ -453,6 +454,8 @@ int main(int argc, char *argv[]) {
             "i32::from(p.a.is_nan()),",
             "i32::from(!xs[(args.len() as i32 - 1) as usize].is_nan()),",
             "i32::from(p.a != p.b),",
+            // Equal for the lints too, with the sum turned round.
+            "println!(\"{}\", i32::from(!(d + 2.0).is_nan()));",
         ],
     );
 }
@@ -473,6 +476,23 @@ fn the_same_value_on_both_sides_is_refused_where_the_lints_refuse_it() {
     );
     assert_eq!(
         refused("self-minus", "(argc + 1) - (argc + 1)"),
+        "unsupported: the same value on both sides of `-`: no rule yet, at line 2"
+    );
+    // The lints take operands that differ only in the order of `+`, `*`,
+    // `&`, `|` or `^`, or in a cast to the type they have, for the same.
+    for (name, value) in [
+        ("turned-sum", "30 + argc <= argc + 30"),
+        ("turned-product", "(argc * 3) != (3 * argc)"),
+        ("turned-bits", "((argc & 6) | 1) == (1 | (6 & argc))"),
+        ("turned-cast", "((long)argc ^ 2) < (2 ^ (long)(long)argc)"),
+    ] {
+        assert_eq!(
+            refused(name, value),
+            "unsupported: a comparison of a value with itself: no rule yet, at line 2"
+        );
+    }
+    assert_eq!(
+        refused("turned-minus", "(argc + 1) - (1 + argc)"),
         "unsupported: the same value on both sides of `-`: no rule yet, at line 2"
     );
     // Clippy's `erasing_op` is an error too.

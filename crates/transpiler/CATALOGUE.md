@@ -511,7 +511,10 @@ Entry format, newest last:
 - Rust: `x.is_nan()` and `!x.is_nan()`, which is what the comparison
   asks; the compiler's lints refuse `x != x`. Refused, since the same
   lints refuse them: any other comparison of a value with itself, and the
-  same value on both sides of `-`, `/`, `&`, `|` or `^`, and `x & 0`,
+  same value on both sides of `-`, `/`, `&`, `|` or `^`, also where the
+  two sides differ only in the order of the operands of a `+` or `*` that
+  is no method, of `&`, `|` or `^`, or in a cast to the type the value
+  has, `30 + x <= x + 30`, as the lints take them for the same, and `x & 0`,
   `0 * x` and `0 / x`, which are 0 whatever `x` is; an unsigned `*`, a
   method, and a 0 that is an enumerator are no such case. Two constants
   are no such case: a comparison of two constants is its value as C's
@@ -525,7 +528,8 @@ Entry format, newest last:
   `u <= 0`, is `==`. The lints refuse each of these as written
 - Needs: `Facts::truth`, which decides a comparison of constants
 - Motivation: `g3_maxnmin` tests `d != d` before it converts `d` to `int`,
-  and did not compile
+  and did not compile; the order of the operands: programs outside the development set
+  compared `30 + x` with `x + 30`; no development program needs it
 - Changes: extends R2
 
 ## R26: `fprintf`, `fputs` and `fputc` on `stdout` and `stderr`
