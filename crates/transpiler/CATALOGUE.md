@@ -159,7 +159,18 @@ Entry format, newest last:
   binding of an owner or an `Option`. A store through `&s->items[i]`, an
   element behind a pointer that a record holds, is a store through the
   pointer to the record as well, which Rust reaches the element through
-- Motivation: skeleton
+- Refused, too: a local borrow read out of a record, `t = a->next`, `a.f`,
+  `a[i].f`, `(*pp)->f`, from a local, a parameter or a global `a`, that is
+  used after `a` was used through the field that the path names first, or
+  as a whole (indexed, dereferenced, a global): stored to or through, or
+  handed to a function of the program that stores through it or keeps it,
+  and, where the pointer is stored through, also read; and one printed
+  beside such a read in one `printf`, whose macro borrows all its
+  arguments at once (`Facts::part_in_use`). A use of another field of `a`
+  leaves the borrow alone, as Rust tells the fields apart
+- Motivation: skeleton; programs outside the development set hold such a
+  pointer while they read the record by its own path, and the translation
+  did not compile; no development program needs it
 - Changes: none
 
 ## R8: heap

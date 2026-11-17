@@ -142,6 +142,9 @@ pub enum Root {
     Other,
 }
 
+/// Where `Facts::in_use`, `Facts::moved` and `Facts::part_in_use` are.
+type Found = (Option<u32>, Option<u32>, Option<u32>);
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Facts {
     pointers: HashMap<Slot, Pointer>,
@@ -157,8 +160,10 @@ pub struct Facts {
     idle: HashSet<FuncId>,
     /// Where each function first uses a local pointer to one of its
     /// variables after the variable itself was used meanwhile, and first
-    /// reads a local owner after its memory went to another owner.
-    in_use: HashMap<FuncId, (Option<u32>, Option<u32>)>,
+    /// reads a local owner after its memory went to another owner, and
+    /// first uses a local pointer to a part of a record after the record
+    /// was used meanwhile.
+    in_use: HashMap<FuncId, Found>,
     /// The local pointers whose use `in_use` finds.
     borrowers: HashSet<VarId>,
     /// False for the facts before the first round, which know nothing.
@@ -189,6 +194,10 @@ const STORES: [(&str, usize, bool); 20] = [
     ("strtod", 1, false),
     ("strtof", 1, false),
 ];
+
+/// The library functions that become a format macro, which borrows its
+/// arguments for the whole call.
+const FORMATS: [&str; 4] = ["printf", "fprintf", "sprintf", "snprintf"];
 
 /// The library functions whose result is fresh memory that `free` takes.
 pub const ALLOCATORS: [&str; 2] = ["malloc", "calloc"];
@@ -280,6 +289,14 @@ impl Facts {
     /// before anything stored to it: Rust moved the `Box` away.
     pub fn moved(&self, function: FuncId) -> Option<u32> {
         self.in_use.get(&function).and_then(|found| found.1)
+    }
+
+    /// Where the function first uses a local pointer that borrows a part
+    /// of a record, `t = a->next`, after `a` was stored to or through, or
+    /// read or handed on while the pointer is stored through: Rust rejects
+    /// the borrow of `a` that the pointer is.
+    pub fn part_in_use(&self, function: FuncId) -> Option<u32> {
+        self.in_use.get(&function).and_then(|found| found.2)
     }
 
     /// The value of a condition that the facts decide: a constant, or a
@@ -775,10 +792,11 @@ impl<'a> Walk<'a> {
                     program,
                     found: None,
                     moved: None,
+                    part: None,
                     borrowers: &mut borrowers,
                 };
                 walk.stmts(&function.body, &mut Some(Order::default()));
-                (id, (walk.found, walk.moved))
+                (id, (walk.found, walk.moved, walk.part))
             })
             .collect();
         Facts {
@@ -1514,6 +1532,22 @@ struct Order {
     /// The local owners whose memory went to another owner, and that
     /// nothing has stored to since.
     moved: HashSet<VarId>,
+    /// The local borrows that got a pointer out of a record, `t = a->f`,
+    /// with the parts they borrow, and whether one of them was used since
+    /// in a way the borrow forbids.
+    parts: HashMap<VarId, (HashSet<Part>, bool)>,
+}
+
+/// A variable and the field of it that a path names first, `a` and `f` in
+/// `a->f->g`; no field where the path indexes or dereferences `a` first,
+/// or `a` is a global, which Rust reaches as one field of the globals.
+/// Rust tells the fields of one variable apart, so a use of `a->g` leaves
+/// a borrow of `a->f` alone.
+type Part = (VarId, Option<usize>);
+
+/// Whether a use of one part touches the other.
+fn overlap(one: Part, other: Part) -> bool {
+    one.0 == other.0 && (one.1.is_none() || other.1.is_none() || one.1 == other.1)
 }
 
 /// A local pointer to a variable of the function is a borrow of it in
@@ -1525,12 +1559,15 @@ struct Order {
 /// step twice, so that everything in a loop also follows itself.
 ///
 /// In the same order it finds the first read of a local owner after its
-/// memory went to another owner: Rust moves the `Box` there.
+/// memory went to another owner: Rust moves the `Box` there; and the first
+/// use of a local borrow of a part of a record after the record was stored
+/// to or through, or read or handed on while the borrow is stored through.
 struct InUse<'a> {
     pointers: &'a HashMap<Slot, Pointer>,
     program: &'a Program,
     found: Option<u32>,
     moved: Option<u32>,
+    part: Option<u32>,
     borrowers: &'a mut HashSet<VarId>,
 }
 
@@ -1632,6 +1669,11 @@ impl InUse<'_> {
                     entry.1 |= touched;
                 }
                 first.moved.extend(second.moved);
+                for (pointer, (records, touched)) in second.parts {
+                    let entry = first.parts.entry(pointer).or_default();
+                    entry.0.extend(records);
+                    entry.1 |= touched;
+                }
             }
             (None, second) => *state = second,
             (Some(_), None) => {}
@@ -1652,12 +1694,12 @@ impl InUse<'_> {
                     _ => match target.root_var() {
                         Some(var) => {
                             self.parts(target, state);
-                            self.stored(var, state);
+                            self.stored_in(var, target, state);
                         }
                         None => {
                             self.expr(target, state);
                             if let Some(pointer) = through(target) {
-                                self.stored(pointer, state);
+                                self.stored_in(pointer, target, state);
                             }
                         }
                     },
@@ -1668,19 +1710,47 @@ impl InUse<'_> {
                     if !matches!(target.kind, ExprKind::Var(_)) || !target.ty.is_pointer() =>
                 {
                     self.parts(target, state);
-                    self.stored(var, state);
+                    self.stored_in(var, target, state);
                 }
                 _ => {
                     self.expr(target, state);
                     if let Some(pointer) = through(target) {
-                        self.stored(pointer, state);
+                        self.stored_in(pointer, target, state);
                     }
                 }
             },
             ExprKind::Var(var) => self.read(*var, expr.at, state),
+            // A field read leaves a borrow of another field of the
+            // variable alone.
+            ExprKind::Member { base, field, .. } if matches!(base.kind, ExprKind::Var(var) if !self.program.vars[var].kind.is_global()) =>
+            {
+                let ExprKind::Var(var) = base.kind else {
+                    unreachable!()
+                };
+                self.read_part((var, Some(*field)), base.at, state);
+            }
             _ => {
                 for child in expr.children() {
                     self.expr(child, state);
+                }
+                // A format macro borrows all its arguments at once, so a
+                // borrow read before a use of its record in the same
+                // call is still in use there.
+                if let ExprKind::Call(callee, args) = &expr.kind
+                    && callee
+                        .function()
+                        .is_some_and(|name| FORMATS.contains(&name))
+                    && let Some(order) = state
+                {
+                    for arg in args {
+                        let mut late = |inner: &Expr| {
+                            matches!(inner.kind, ExprKind::Var(var)
+                                if order.parts.get(&var).is_some_and(|part| part.1))
+                        };
+                        if arg.any(&mut late) {
+                            self.part.get_or_insert(expr.at);
+                        }
+                    }
                 }
                 if let ExprKind::Call(callee, args) = &expr.kind
                     && let Some(function) = callee
@@ -1689,6 +1759,14 @@ impl InUse<'_> {
                 {
                     for (&param, arg) in self.program.functions[function].params.iter().zip(args) {
                         self.move_into(arg, Slot::Var(param), state);
+                        if self
+                            .pointers
+                            .get(&Slot::Var(param))
+                            .is_some_and(|pointer| pointer.written || pointer.owned)
+                            && let Some(part) = lent(self.program, arg)
+                        {
+                            self.handed(part, state);
+                        }
                         // R65: `&p` lent to a `T **` that is written is a
                         // store to `p`.
                         if to_pointer(&self.program.vars[param].ty)
@@ -1739,9 +1817,28 @@ impl InUse<'_> {
     }
 
     fn read(&mut self, var: VarId, at: u32, state: &mut Borrows) {
+        self.read_part((var, None), at, state);
+    }
+
+    /// A read of the variable, or of one field of it.
+    fn read_part(&mut self, part: Part, at: u32, state: &mut Borrows) {
+        let var = part.0;
         let Some(order) = state else { return };
         if order.moved.contains(&var) {
             self.moved.get_or_insert(at);
+        }
+        if let Some((_, true)) = order.parts.get(&var) {
+            self.part.get_or_insert(at);
+        }
+        let written = |pointer| {
+            self.pointers
+                .get(&Slot::Var(pointer))
+                .is_some_and(|p| p.written)
+        };
+        for (pointer, (parts, touched)) in order.parts.iter_mut() {
+            if parts.iter().any(|&other| overlap(part, other)) && written(*pointer) {
+                *touched = true;
+            }
         }
         let borrows = &mut order.borrows;
         if let Some((_, true)) = borrows.get(&var) {
@@ -1760,10 +1857,34 @@ impl InUse<'_> {
         }
     }
 
+    /// A store to the place, which is the variable or reached through it.
+    fn stored_in(&mut self, var: VarId, place: &Expr, state: &mut Borrows) {
+        self.stored_only(var, state);
+        let part = part(self.program, place).filter(|part| part.0 == var);
+        self.handed(part.unwrap_or((var, None)), state);
+    }
+
     fn stored(&mut self, var: VarId, state: &mut Borrows) {
+        self.stored_only(var, state);
+        self.handed((var, None), state);
+    }
+
+    fn stored_only(&mut self, var: VarId, state: &mut Borrows) {
         let Some(order) = state else { return };
         for (targets, touched) in order.borrows.values_mut() {
             if targets.contains(&var) {
+                *touched = true;
+            }
+        }
+    }
+
+    /// A store to or through a record, or the record handed to a function
+    /// that stores through it or keeps it, which a borrow of a part of it
+    /// forbids.
+    fn handed(&mut self, part: Part, state: &mut Borrows) {
+        let Some(order) = state else { return };
+        for (parts, touched) in order.parts.values_mut() {
+            if parts.iter().any(|&other| overlap(part, other)) {
                 *touched = true;
             }
         }
@@ -1783,6 +1904,30 @@ impl InUse<'_> {
             return;
         }
         let Some(order) = state else { return };
+        // A borrow that gets a pointer out of a record borrows the record,
+        // and what the record borrows; a copy borrows what its source does.
+        let mut parts = HashSet::new();
+        let owned = self
+            .pointers
+            .get(&Slot::Var(var))
+            .is_some_and(|pointer| pointer.owned);
+        let root = match value.uncast().kind {
+            ExprKind::Var(from) => Some(from),
+            _ => path_root(program, value).map(|part| {
+                if part.0 != var {
+                    parts.insert(part);
+                }
+                part.0
+            }),
+        };
+        if let Some((more, _)) = root.and_then(|root| order.parts.get(&root)) {
+            parts.extend(more.iter().copied());
+        }
+        if parts.is_empty() || owned {
+            order.parts.remove(&var);
+        } else {
+            order.parts.insert(var, (parts, false));
+        }
         let borrows = &mut order.borrows;
         let mut targets = HashSet::new();
         addresses(program, value, &mut targets);
@@ -1824,6 +1969,64 @@ fn through(place: &Expr) -> Option<VarId> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// The part that a value read out of a record is reached through: `a`
+/// and `f` in `a->f`, `a->f->g` and `a.f`, `a` in `a[i].f` and
+/// `(*pp)->f`.
+fn path_root(program: &Program, value: &Expr) -> Option<Part> {
+    let mut place = value.uncast();
+    let mut field = false;
+    loop {
+        place = match &place.kind {
+            ExprKind::Member { base, .. } => {
+                field = true;
+                base
+            }
+            ExprKind::Deref(base)
+            | ExprKind::Index(base, _)
+            | ExprKind::Decay(base)
+            | ExprKind::Cast(base) => base,
+            ExprKind::Var(_) => return field.then(|| part(program, value)).flatten(),
+            _ => return None,
+        }
+    }
+}
+
+/// The variable at the root of a place and the field of it that the
+/// place names first.
+fn part(program: &Program, place: &Expr) -> Option<Part> {
+    let mut place = place.uncast();
+    let mut first = None;
+    loop {
+        place = match &place.kind {
+            ExprKind::Member { base, field, .. } => {
+                first = Some(*field);
+                base
+            }
+            ExprKind::Deref(base)
+            | ExprKind::Index(base, _)
+            | ExprKind::Decay(base)
+            | ExprKind::Cast(base) => {
+                first = None;
+                base
+            }
+            ExprKind::Var(var) => {
+                let global = program.vars[*var].kind.is_global();
+                return Some((*var, first.filter(|_| !global)));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The part whose record a pointer argument lends: `a` itself, or a part
+/// of it, `&a->f`.
+fn lent(program: &Program, arg: &Expr) -> Option<Part> {
+    match &arg.uncast().kind {
+        ExprKind::AddrOf(place) => part(program, place),
+        _ => part(program, arg),
     }
 }
 

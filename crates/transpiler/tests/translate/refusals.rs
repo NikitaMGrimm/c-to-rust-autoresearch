@@ -448,3 +448,48 @@ fn a_constant_index_beyond_its_array_is_refused() {
         "",
     );
 }
+
+/// A local pointer read out of a record, `t = a->next`, borrows the field
+/// of `a` that it names first, so `a` may not be used through that field,
+/// nor as a whole, while the pointer is used later: stored to or through
+/// where the pointer is only read, and read, handed on or printed beside
+/// it where it is stored through.
+#[test]
+fn a_record_used_while_a_pointer_to_a_part_of_it_is_in_use_is_refused() {
+    const LINKS: &str = "#include <stdio.h>\n#include <stdlib.h>\nstruct link { int load; struct link *rest; };\nstatic void grow(struct link *l) { l->load += 2; }\nstatic struct link *fresh(struct link *rest) { struct link *l = malloc(sizeof *l); l->load = 1; l->rest = rest; return l; }\n";
+    let refused = |name, body: &str| translate(name, &format!("{LINKS}{body}")).unwrap_err();
+    let message = |line| {
+        format!(
+            "unsupported: a record that is used while a pointer to a part of it is in use, at line {line}"
+        )
+    };
+    let cases = [
+        // Read by its own path while the pointer is stored through.
+        (
+            "part_read",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    printf(\"%d\\n\", top->rest->load);\n    second->load = 4;\n    return 0;\n}\n",
+            10,
+        ),
+        // Stored through while the pointer is only read.
+        (
+            "part_stored",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    top->rest->load = 3;\n    return second->load;\n}\n",
+            10,
+        ),
+        // Handed to a function that stores through it.
+        (
+            "part_handed",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    grow(top);\n    return second->load;\n}\n",
+            10,
+        ),
+        // Printed beside it in one call.
+        (
+            "part_printed",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    second->load = 5;\n    printf(\"%d %d\\n\", second->load, top->rest->load);\n    return 0;\n}\n",
+            10,
+        ),
+    ];
+    for (name, body, line) in cases {
+        assert_eq!(refused(name, body), message(line), "{name}");
+    }
+}

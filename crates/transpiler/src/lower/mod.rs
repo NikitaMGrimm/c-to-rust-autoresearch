@@ -1459,6 +1459,12 @@ impl Lower<'_> {
                 at,
             ))?;
         }
+        if let Some(at) = self.function.and_then(|id| self.facts.part_in_use(id)) {
+            self.listed(unsupported(
+                "a record that is used while a pointer to a part of it is in use",
+                at,
+            ))?;
+        }
         if let Some(at) = self.function.and_then(|id| self.facts.moved(id)) {
             self.listed(unsupported(
                 "a pointer that is used after its memory went to another owner",

@@ -160,7 +160,15 @@ refuses with the reason instead:
   the address from another pointer, or through a narrowing, is not
   followed. A copy of a local pointer that owns or is stored through
   borrows that pointer in the same way: `q = p; p->n += 1; p = p->next;`
-  with a later read of `q` is refused. Where such a pointer gets one value
+  with a later read of `q` is refused. A local borrow read out of a
+  record, `t = a->next`, borrows the field of `a` that its path names
+  first, or all of `a` where the path indexes or dereferences `a` first
+  or `a` is a global (`Facts::part_in_use`). It is refused where it is
+  used after `a` was used through that field or as a whole: stored to or
+  through, handed to a function of the program that stores through it or
+  keeps it, and read too where `t` is stored through; also where a
+  `printf` prints `t` beside such a read, since its macro borrows all its
+  arguments at once. A use of another field leaves it alone. Where such a pointer gets one value
   only, in its declaration or a statement of its block before anything
   reads it, and that value is the address of a place that stays the same
   place (a variable that is no pointer, a field of one, an element at a
@@ -1096,9 +1104,7 @@ become a fact and a refusal:
 - A borrow of an element of an array of pointers that is held across a
   store to another element, `t = a[i]; a[j] = t->next;` with a later read
   of `t`, is translated and does not compile; so is a record that is
-  read through a second name (`r = s;`) while a field of it is moved out,
-  and a local that borrows a part of a record, `t = a->next;`, held
-  while a statement reads `a->next` by its own path.
+  read through a second name (`r = s;`) while a field of it is moved out.
 - A conditional that moves a local owner on one side, `take(k ? s->p :
   other)`, followed by `if (k) free(other);`, is translated and does not
   compile: the compiler does not know that the two tests agree.

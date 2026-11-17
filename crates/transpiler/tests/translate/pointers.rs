@@ -659,3 +659,34 @@ int main(int argc, char **argv) {
     );
     assert_lines(&rust, &["steps[(2 + back) as usize],", "steps[1],"]);
 }
+
+/// A local pointer read out of one field of a record stays a borrow of
+/// that field while another field of the record is stored to: Rust tells
+/// the fields apart.
+#[test]
+fn a_pointer_to_a_part_of_a_record_beside_another_field() {
+    let rust = check(
+        "part_beside",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct link { int load; struct link *rest; };
+int main(void) {
+    struct link *top = malloc(sizeof *top);
+    top->rest = malloc(sizeof *top);
+    top->rest->load = 6;
+    top->rest->rest = NULL;
+    struct link *second = top->rest;
+    top->load = 2;
+    second->load += top->load;
+    printf("%d %d\n", second->load, top->load);
+    free(top->rest);
+    free(top);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(&rust, &["top.load = 2;"]);
+}
