@@ -491,7 +491,8 @@ fn a_constant_index_beyond_its_array_is_refused() {
 /// of `a` that it names first, so `a` may not be used through that field,
 /// nor as a whole, while the pointer is used later: stored to or through
 /// where the pointer is only read, and read, handed on or printed beside
-/// it where it is stored through.
+/// it where it is stored through. Each pointer here is handed to a
+/// function too, so R70 does not name its path.
 #[test]
 fn a_record_used_while_a_pointer_to_a_part_of_it_is_in_use_is_refused() {
     const LINKS: &str = "#include <stdio.h>\n#include <stdlib.h>\nstruct link { int load; struct link *rest; };\nstatic void grow(struct link *l) { l->load += 2; }\nstatic struct link *fresh(struct link *rest) { struct link *l = malloc(sizeof *l); l->load = 1; l->rest = rest; return l; }\n";
@@ -505,25 +506,25 @@ fn a_record_used_while_a_pointer_to_a_part_of_it_is_in_use_is_refused() {
         // Read by its own path while the pointer is stored through.
         (
             "part_read",
-            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    printf(\"%d\\n\", top->rest->load);\n    second->load = 4;\n    return 0;\n}\n",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    printf(\"%d\\n\", top->rest->load);\n    second->load = 4;\n    grow(second);\n    return 0;\n}\n",
             10,
         ),
         // Stored through while the pointer is only read.
         (
             "part_stored",
-            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    top->rest->load = 3;\n    return second->load;\n}\n",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    top->rest->load = 3;\n    grow(second);\n    return second->load;\n}\n",
             10,
         ),
         // Handed to a function that stores through it.
         (
             "part_handed",
-            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    grow(top);\n    return second->load;\n}\n",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    grow(top);\n    grow(second);\n    return second->load;\n}\n",
             10,
         ),
         // Printed beside it in one call.
         (
             "part_printed",
-            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    second->load = 5;\n    printf(\"%d %d\\n\", second->load, top->rest->load);\n    return 0;\n}\n",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    second->load = 5;\n    printf(\"%d %d\\n\", second->load, top->rest->load);\n    grow(second);\n    return 0;\n}\n",
             10,
         ),
     ];
@@ -641,4 +642,48 @@ int main(int argc, char *argv[]) {
         refusal.contains("a variable that is used while a pointer to it is in use"),
         "{refusal}"
     );
+}
+
+/// R70 names the path only where nothing between the pointer's value and
+/// its last use may change what the path names; elsewhere the pointer
+/// stays a borrow and is refused.
+#[test]
+fn a_pointer_to_a_part_of_a_record_that_may_name_another_stays_refused() {
+    const LINKS: &str = "#include <stdio.h>\n#include <stdlib.h>\nstruct link { int load; struct link *rest; };\nstatic void grow(struct link *l) { l->load += 2; }\nstatic struct link *fresh(struct link *rest) { struct link *l = malloc(sizeof *l); l->load = 1; l->rest = rest; return l; }\n";
+    let refused = |name, body: &str| translate(name, &format!("{LINKS}{body}")).unwrap_err();
+    let message = |line| {
+        format!(
+            "unsupported: a record that is used while a pointer to a part of it is in use, at line {line}"
+        )
+    };
+    let cases = [
+        // The field is stored to between: C's pointer still names the old record.
+        (
+            "part_relinked",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    second->load = 2;\n    top->rest = fresh(NULL);\n    printf(\"%d %d\\n\", second->load, top->rest->load);\n    return 0;\n}\n",
+            11,
+        ),
+        // A function of the program is called between.
+        (
+            "part_called",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    second->load = 2;\n    grow(top->rest);\n    printf(\"%d %d\\n\", second->load, top->rest->load);\n    return 0;\n}\n",
+            11,
+        ),
+        // Named by its path, a store would store the place to itself,
+        // which Clippy denies.
+        (
+            "part_itself",
+            "int main(void) {\n    struct link *top = fresh(fresh(NULL));\n    struct link *second = top->rest;\n    printf(\"%d\\n\", top->rest->load);\n    second->load = top->rest->load;\n    printf(\"%d\\n\", second->load);\n    return 0;\n}\n",
+            10,
+        ),
+        // The pointer is stepped.
+        (
+            "part_stepped",
+            "int main(void) {\n    struct link *top = fresh(fresh(fresh(NULL)));\n    struct link *second = top->rest;\n    second = second->rest;\n    second->load = 2;\n    printf(\"%d %d\\n\", second->load, top->rest->load);\n    return 0;\n}\n",
+            11,
+        ),
+    ];
+    for (name, body, line) in cases {
+        assert_eq!(refused(name, body), message(line), "{name}");
+    }
 }

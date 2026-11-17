@@ -50,7 +50,178 @@ pub fn alias(program: &mut Program, facts: &Facts) -> bool {
         }
         program.functions[function].body = body;
     }
+    parts(program, facts) || changed
+}
+
+/// R70: rewrites every local pointer that `Facts::part_in_use` finds and
+/// that only names a part of a record, `t = a->f` with one value in its
+/// declaration, to that path at each use. Nothing after the declaration
+/// may change what the path names: no store to `a`, to a field of the
+/// path or to a whole record, no address of them taken, no field of the
+/// path read as a value that may move it, no `free` and no call of a
+/// function of the program; and `t` is only used as `t->g`, `*t` and
+/// `t[i]`.
+fn parts(program: &mut Program, facts: &Facts) -> bool {
+    let mut changed = false;
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        for pointer in 0..program.vars.len() {
+            let var = &program.vars[pointer];
+            if var.kind != VarKind::Local
+                || !var.ty.is_pointer()
+                || var.len.is_some()
+                || !facts.part_in_use_by(pointer)
+            {
+                continue;
+            }
+            let Some(path) = var.init.clone().filter(|init| init.ty == var.ty) else {
+                continue;
+            };
+            // Clippy denies a store of a place to itself, which the
+            // function may hold or the path may make; the borrow's refusal
+            // then stays.
+            if any_expr(&body, &program.vars, &mut |expr| {
+                matches!(&expr.kind, ExprKind::Assign { op: None, target, value }
+                    if same_place(target, value, (pointer, &path)))
+            }) {
+                continue;
+            }
+            if let Some(region) = named_part(&mut body, program, pointer, &path) {
+                each_expr_mut(region, &mut program.vars, &mut |expr| {
+                    if matches!(expr.kind, ExprKind::Var(named) if named == pointer) {
+                        *expr = Expr {
+                            at: expr.at,
+                            ..path.clone()
+                        };
+                    }
+                });
+                changed = true;
+            }
+        }
+        program.functions[function].body = body;
+    }
     changed
+}
+
+/// The fields of a path `a->f->g` or `a.f`, with its variable `a`, a local
+/// or a parameter.
+fn path_fields(path: &Expr, program: &Program) -> Option<(VarId, Vec<(usize, usize)>)> {
+    let mut fields = Vec::new();
+    let mut place = path;
+    loop {
+        match &place.kind {
+            ExprKind::Member {
+                base,
+                record,
+                field,
+                arrow,
+            } => {
+                fields.push((*record, *field));
+                if let ExprKind::Var(root) = base.kind {
+                    let declared = &program.vars[root];
+                    return (matches!(declared.kind, VarKind::Local | VarKind::Param)
+                        && declared.ty.is_pointer() == *arrow)
+                        .then_some((root, fields));
+                }
+                place = base;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Takes the declaration of the pointer out of its block and gives the
+/// statements after it, where every condition of `parts` holds.
+fn named_part<'a>(
+    stmts: &'a mut Vec<Stmt>,
+    program: &Program,
+    pointer: VarId,
+    path: &Expr,
+) -> Option<&'a mut [Stmt]> {
+    let vars = &program.vars;
+    let Some(decl) = stmts
+        .iter()
+        .position(|stmt| matches!(stmt, Stmt::Decl(var) if *var == pointer))
+    else {
+        return stmts.iter_mut().find_map(|stmt| match stmt {
+            Stmt::Block(body)
+            | Stmt::While(_, body)
+            | Stmt::DoWhile(body, _)
+            | Stmt::Switch(_, body)
+            | Stmt::For { body, .. } => named_part(body, program, pointer, path),
+            Stmt::If(_, then, other) => match named_part(then, program, pointer, path) {
+                Some(region) => Some(region),
+                None => named_part(other, program, pointer, path),
+            },
+            _ => None,
+        });
+    };
+    let (root, fields) = path_fields(path, program)?;
+    // Up to the last use of the pointer: what comes after does not read it.
+    let end = (decl + 1..stmts.len())
+        .rfind(|&at| names(&stmts[at], vars, pointer))
+        .map_or(decl + 1, |last| last + 1);
+    let region = &stmts[decl + 1..end];
+    let named = |expr: &Expr| {
+        matches!(&expr.uncast().kind, ExprKind::Member { record, field, .. }
+            if fields.contains(&(*record, *field)))
+    };
+    let is = |expr: &Expr, var: VarId| matches!(expr.kind, ExprKind::Var(named) if named == var);
+    let mut uses = 0;
+    let mut through = 0;
+    let changes = any_expr(region, vars, &mut |expr| match &expr.kind {
+        ExprKind::Var(var) => {
+            uses += usize::from(*var == pointer);
+            false
+        }
+        ExprKind::Member { base, .. } | ExprKind::Deref(base) | ExprKind::Index(base, _) => {
+            through += usize::from(is(base, pointer));
+            false
+        }
+        ExprKind::Assign { target, value, .. } => {
+            named(target) || named(value) || matches!(target.ty, Type::Record(_))
+        }
+        ExprKind::IncDec { target, .. } => named(target),
+        ExprKind::AddrOf(place) => named(place),
+        ExprKind::Call(callee, args) => match callee.function() {
+            Some("printf") => false,
+            Some(name) => {
+                program.function(name).is_some()
+                    || ["free", "realloc"].contains(&name)
+                    || args.iter().any(&named)
+            }
+            None => true,
+        },
+        _ => false,
+    });
+    if changes
+        || uses != through
+        || stores(region, vars, root) > 0
+        || stores(region, vars, pointer) > 0
+        || hides(region, vars, root)
+        || !plain(region, vars, &named)
+    {
+        return None;
+    }
+    stmts.remove(decl);
+    Some(&mut stmts[decl..end - 1])
+}
+
+/// Whether the statements are only plain ones, without a jump, and no
+/// declaration or `return` takes a field that `named` names as its value.
+fn plain(stmts: &[Stmt], vars: &[Var], named: &dyn Fn(&Expr) -> bool) -> bool {
+    stmts.iter().all(|stmt| match stmt {
+        Stmt::Expr(_) | Stmt::Break | Stmt::Continue | Stmt::Case(_) | Stmt::Default => true,
+        Stmt::Return(value) => !value.as_ref().is_some_and(named),
+        Stmt::Decl(var) => !vars[*var].init.as_ref().is_some_and(named),
+        Stmt::Block(body)
+        | Stmt::While(_, body)
+        | Stmt::DoWhile(body, _)
+        | Stmt::Switch(_, body) => plain(body, vars, named),
+        Stmt::For { init, body, .. } => plain(init, vars, named) && plain(body, vars, named),
+        Stmt::If(_, then, other) => plain(then, vars, named) && plain(other, vars, named),
+        _ => false,
+    })
 }
 
 /// Rewrites every local `T **` that only ever holds `&p`, for a local or a
@@ -429,6 +600,39 @@ fn is_fixed(place: &Expr, program: &Program) -> bool {
             ExprKind::Decay(array) => index.constant(program).is_some() && is_fixed(array, program),
             _ => false,
         },
+        _ => false,
+    }
+}
+
+/// Whether two expressions name the same place, where the pointer is
+/// the path it names.
+fn same_place(one: &Expr, other: &Expr, named: (VarId, &Expr)) -> bool {
+    let name = |expr: &Expr| -> Expr {
+        match expr.uncast().kind {
+            ExprKind::Var(var) if var == named.0 => named.1.clone(),
+            _ => expr.uncast().clone(),
+        }
+    };
+    let (one, other) = (name(one), name(other));
+    match (&one.kind, &other.kind) {
+        (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
+        (
+            ExprKind::Member {
+                base: one,
+                field: one_field,
+                ..
+            },
+            ExprKind::Member {
+                base: other,
+                field: other_field,
+                ..
+            },
+        ) => one_field == other_field && same_place(one, other, named),
+        (ExprKind::Decay(one), ExprKind::Decay(other))
+        | (ExprKind::Deref(one), ExprKind::Deref(other)) => same_place(one, other, named),
+        (ExprKind::Index(one, at), ExprKind::Index(other, other_at)) => {
+            same_place(one, other, named) && same_place(at, other_at, named)
+        }
         _ => false,
     }
 }

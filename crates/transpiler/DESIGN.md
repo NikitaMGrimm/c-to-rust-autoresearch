@@ -169,7 +169,16 @@ refuses with the reason instead:
   through, handed to a function of the program that stores through it or
   keeps it, and read too where `t` is stored through; also where a
   `printf` prints `t` beside such a read, since its macro borrows all its
-  arguments at once. A use of another field leaves it alone. Where such a pointer gets one value
+  arguments at once. A use of another field leaves it alone. Where such
+  a local gets its one value in its declaration, a path of fields from a
+  local or a parameter, and nothing up to its last use may change what
+  the path names (no store to the variable, to a field of the path or to
+  a whole record, no address of them, no read of such a field as a
+  pointer value that may move it, no `free`, no call of a function of the
+  program, no jump), it is only used as `t->f`, `*t` and `t[i]`, and no
+  store of the function stores a place to itself once it is the path,
+  `normalise::alias` names the path at each use and leaves the local out
+  (R70). Where such a pointer gets one value
   only, in its declaration or a statement of its block before anything
   reads it, and that value is the address of a place that stays the same
   place (a variable that is no pointer, a field of one, an element at a

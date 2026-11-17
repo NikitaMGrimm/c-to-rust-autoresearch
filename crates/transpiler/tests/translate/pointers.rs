@@ -749,3 +749,55 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+/// R70: a local pointer that only names a part of a record, while the
+/// record is used by its own path, is that path at each use.
+#[test]
+fn a_pointer_that_only_names_a_part_of_a_record_is_the_path() {
+    let rust = check(
+        "part_named",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct link { int load; struct link *rest; };
+struct strip { int width; long *cells; };
+static struct link *fresh(int load, struct link *rest) {
+    struct link *l = malloc(sizeof *l);
+    l->load = load;
+    l->rest = rest;
+    return l;
+}
+int main(int argc, char **argv) {
+    int step = argc + 4;
+    struct link *top = fresh(8, fresh(9, fresh(10, NULL)));
+    struct link *second = top->rest;
+    second->load = (top->rest->rest->load + step) % 100;
+    printf("%d %d\n", second->load, top->rest->load);
+    struct strip row;
+    row.width = 3;
+    row.cells = calloc(3, sizeof *row.cells);
+    long *view = row.cells;
+    for (int k = 0; k < row.width; k++) {
+        view[k] = k * step;
+        printf("%ld\n", row.cells[k] + view[k]);
+    }
+    free(row.cells);
+    free(top->rest->rest);
+    free(top->rest);
+    free(top);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "top.rest.as_deref_mut().unwrap().load = (top",
+            "top.rest.as_deref().unwrap().load,",
+            "row.cells[k as usize] = (k * step) as i64;",
+            "println!(\"{}\", row.cells[k as usize] + row.cells[k as usize]);",
+        ],
+    );
+}

@@ -168,6 +168,8 @@ pub struct Facts {
     in_use: HashMap<FuncId, Found>,
     /// The local pointers whose use `in_use` finds.
     borrowers: HashSet<VarId>,
+    /// The local pointers whose use `part_in_use` finds.
+    part_borrowers: HashSet<VarId>,
     /// False for the facts before the first round, which know nothing.
     settled: bool,
 }
@@ -284,6 +286,11 @@ impl Facts {
     /// Whether `in_use` finds a use of this local pointer.
     pub fn in_use_by(&self, pointer: VarId) -> bool {
         self.borrowers.contains(&pointer)
+    }
+
+    /// Whether `part_in_use` finds a use of this local pointer.
+    pub fn part_in_use_by(&self, pointer: VarId) -> bool {
+        self.part_borrowers.contains(&pointer)
     }
 
     /// Where the function first reads a local owner after it gave its
@@ -812,6 +819,7 @@ impl<'a> Walk<'a> {
             })
             .collect();
         let mut borrowers = HashSet::new();
+        let mut part_borrowers = HashSet::new();
         let in_use = program
             .functions
             .iter()
@@ -825,6 +833,7 @@ impl<'a> Walk<'a> {
                     part: None,
                     split: None,
                     borrowers: &mut borrowers,
+                    part_borrowers: &mut part_borrowers,
                 };
                 walk.stmts(&function.body, &mut Some(Order::default()));
                 (id, (walk.found, walk.moved, walk.part, walk.split))
@@ -833,6 +842,7 @@ impl<'a> Walk<'a> {
         Facts {
             in_use,
             borrowers,
+            part_borrowers,
             pointers: self.pointers,
             mutated: self.mutated,
             through: self.through,
@@ -1604,6 +1614,7 @@ struct InUse<'a> {
     part: Option<u32>,
     split: Option<u32>,
     borrowers: &'a mut HashSet<VarId>,
+    part_borrowers: &'a mut HashSet<VarId>,
 }
 
 impl InUse<'_> {
@@ -1780,12 +1791,15 @@ impl InUse<'_> {
                 {
                     for arg in args {
                         let mut late = |inner: &Expr| {
-                            matches!(inner.kind, ExprKind::Var(var)
-                                if order.parts.get(&var).is_some_and(|part| part.1))
+                            if let ExprKind::Var(var) = inner.kind
+                                && order.parts.get(&var).is_some_and(|part| part.1)
+                            {
+                                self.part.get_or_insert(expr.at);
+                                self.part_borrowers.insert(var);
+                            }
+                            false
                         };
-                        if arg.any(&mut late) {
-                            self.part.get_or_insert(expr.at);
-                        }
+                        arg.any(&mut late);
                     }
                 }
                 if let ExprKind::Call(callee, args) = &expr.kind
@@ -1899,6 +1913,7 @@ impl InUse<'_> {
         }
         if let Some((_, true)) = order.parts.get(&var) {
             self.part.get_or_insert(at);
+            self.part_borrowers.insert(var);
         }
         let written = |pointer| {
             self.pointers

@@ -1703,3 +1703,36 @@ Entry format, newest last:
   messages in arrays much longer than their first text; no development
   program needs it
 - Changes: lifts R6's refusal of a string in a much longer array
+
+## R70: a local pointer that only names a part of a record
+
+- C: a local pointer whose one value, in its declaration, is a path of
+  fields from a local or a parameter, a pointer or a record,
+  `struct cell *mid = base->next;`, `int *alias = store.data;`, used while
+  the record is used by its own path
+- Rust: every use of the pointer names the path, `mid->val` is
+  `base->next->val`, `alias[k]` is `store.data[k]`; the pointer and its
+  declaration are left out, so `printf("%d %d", mid->val,
+  base->next->val)` reads one place twice and needs no borrow
+- Needs: `Facts::part_in_use_by`; only a pointer that `Facts::part_in_use`
+  would refuse is rewritten, so a borrow that compiles stays a borrow. From
+  the declaration to the last statement of its block that uses the
+  pointer: no store to the variable or its address; no store to, address
+  of, or read as a pointer value of a field of the path's record and
+  name, through any pointer; no store of a whole record; no call of a
+  function of the program, through a pointer, of `free` or `realloc`, nor
+  of another library function with such a field; no other variable with
+  the variable's name; no `return` or declaration that takes such a field;
+  no jump; the pointer is used only as `t->f`, `*t` and `t[i]`; and no
+  store in the function stores a place to itself once the pointer is the
+  path, which Clippy denies (`*p = *p;`, `t->v = a->f->v;`)
+- Refused: everything else stays refused by R7's reason: a pointer stored
+  to again or stepped, freed, handed to a function, returned or stored; a
+  field of the path stored to between (`base->next = other;`, where C's
+  pointer still names the old record), a call that may relink the record,
+  a second local read out of the path, a path through an index, a
+  dereference or a global
+- Motivation: programs outside the development set hold a pointer to a
+  part of a record while they read the record by its path; no development
+  program needs it
+- Changes: `normalise::alias` rewrites these pointers after R61's
