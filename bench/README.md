@@ -321,7 +321,7 @@ inputs. The tool prints counts only.
 
 The gate evaluates the set where the private directory has it. Its passes
 are logged and decide nothing; a candidate with which one of its programs
-newly runs wrong is rejected, as on the other sets.
+newly runs wrong or newly does not compile is rejected, as on the other sets.
 
 ## Regenerating
 

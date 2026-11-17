@@ -117,7 +117,8 @@ development score rises, or for a fix or a refactoring does not drop, and
 otherwise drops it;
 it may also require that the validation score does not drop, and it may count
 only strict passes in its scores. It also drops a commit with which a
-program that had no running translation runs wrong. The next
+program that had no running translation runs wrong, or a refused one gets
+Rust that does not compile. The next
 iteration starts in a fresh checkout of the kept commits, whose `ROUNDS.md`
 adds the commit, the development results and the decision. Do not run the
 gate or the benchmark tools yourself. Overfitting the development programs
