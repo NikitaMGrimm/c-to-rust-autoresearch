@@ -620,3 +620,27 @@ fn a_compound_literal_that_is_a_place_is_refused() {
         "unsupported: a pointer to a compound literal: no rule yet, at line 2"
     );
 }
+
+#[test]
+fn a_pointer_field_that_nothing_stores_holds_null() {
+    let rust = check(
+        "unlinked",
+        r#"
+#include <stdio.h>
+struct knot { int weight; struct knot *below; };
+struct tray { int used; int *slots; };
+int main(void) {
+    struct tray t;
+    t.used = 3;
+    printf("%d\n", t.used);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["below: Option<Box<Knot>>,", "slots: Option<Box<i32>>,"],
+    );
+}

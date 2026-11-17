@@ -728,6 +728,27 @@ impl<'a> Walk<'a> {
                 });
             }
         }
+        // The same holds for a pointer in a record that nothing stores:
+        // a record that the program only declares, or never links.
+        for (id, record) in program.records.iter().enumerate() {
+            for (index, field) in record.fields.iter().enumerate() {
+                let slot = Slot::Field(id, index);
+                let stored = self.flows.iter().any(|flow| flow.to == slot)
+                    || self
+                        .joins
+                        .iter()
+                        .any(|&(one, other)| one == slot || other == Some(slot));
+                if field.ty.is_pointer() && field.ty.function().is_none() && !stored {
+                    self.flows.push(Flow {
+                        from: Source::Null,
+                        to: slot,
+                        function: None,
+                        holder: None,
+                        set: false,
+                    });
+                }
+            }
+        }
         self.solve();
         let state: HashSet<VarId> = program
             .globals

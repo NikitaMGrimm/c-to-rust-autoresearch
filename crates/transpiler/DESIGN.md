@@ -254,7 +254,8 @@ pointer keep the field, and are refused as before.
 
 A local pointer that is declared without a value and never assigned counts
 as NULL: reading it is undefined in C, and `None` is a value that Rust can
-write for it.
+write for it. So does a pointer field of a record that nothing stores a
+pointer in.
 
 ### Numbers in bytes
 

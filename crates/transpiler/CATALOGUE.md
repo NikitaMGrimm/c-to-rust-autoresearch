@@ -301,7 +301,11 @@ Entry format, newest last:
   NULL
 - Motivation: `g3_012_uninit_int_ptr` did not compile: `let data: &i32;`
   was read without a value. `g2_011_uninit_char_ptr` has the same shape
-- Changes: extends R10
+- Changes: extends R10. A pointer field of a record that nothing stores a
+  pointer in, as in a record that the program only declares, is `None`
+  in the same way, so that `struct node { int key; struct node *next; }`
+  is `next: Option<Box<Node>>` and no longer refused as a record that
+  owns a record of its own type
 
 ## R13: text
 
