@@ -302,6 +302,7 @@ fn take_store(
         }
         None => return None,
     };
+    let place = element(place, program);
     let root = match &place.kind {
         ExprKind::AddrOf(inner) | ExprKind::Decay(inner) => inner.root_var(),
         _ => None,
@@ -317,6 +318,33 @@ fn take_store(
     }
     stmts.remove(decl);
     Some(place)
+}
+
+/// `a + 2` for an array `a` and a constant that is not negative is
+/// `&a[2]`, the address of an element.
+fn element(place: Expr, program: &Program) -> Expr {
+    let ExprKind::Binary(BinOp::Add, array, index) = &place.kind else {
+        return place;
+    };
+    let Some(to) = place.ty.element() else {
+        return place;
+    };
+    if !matches!(array.kind, ExprKind::Decay(_))
+        || array.ty != place.ty
+        || index.constant(program).is_none_or(|index| index < 0)
+    {
+        return place;
+    }
+    let element = Expr {
+        ty: to.clone(),
+        kind: ExprKind::Index(array.clone(), index.clone()),
+        at: place.at,
+    };
+    Expr {
+        ty: place.ty.clone(),
+        kind: ExprKind::AddrOf(Box::new(element)),
+        at: place.at,
+    }
 }
 
 /// Whether a call in the statements takes the pointer, as it is or as

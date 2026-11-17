@@ -1423,7 +1423,9 @@ Entry format, newest last:
   rewrite leaves for `*p`, is `x`, so that a store through the pointer is
   a store to the variable for every other pointer to it, and `alias` runs
   until it finds no more: `int *p = &x, *q = &x; *p = 1;` with a later
-  `*q` makes both `x`
+  `*q` makes both `x`. An address written
+  as a sum, `a + 2` for an array `a` and a constant that is not negative,
+  is the element's, `&a[2]`
 
 ## R63: a pointer to a function without a prototype
 

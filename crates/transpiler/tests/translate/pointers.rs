@@ -719,3 +719,33 @@ int main(int argc, char *argv[]) {
         ],
     );
 }
+
+#[test]
+fn an_array_plus_a_constant_names_an_element() {
+    let rust = check(
+        "array_plus",
+        r#"
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int y = argc;
+    int marks[5] = {y, 21, y * 3, 44, 50};
+    int *third = marks + 2;
+    int *first = marks + 0;
+    marks[(y % 5 + 5) % 5] = -y;
+    *third = (*third + marks[(y % 5 + 5) % 5]) % 100;
+    *first += third[1];
+    printf("%d %d %d %d\n", marks[0], first[0], third[0], third[2]);
+    return 0;
+}
+"#,
+        &[&[], &["a", "b"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "marks[2] = (marks[2] + marks[((y % 5 + 5) % 5) as usize]) % 100;",
+            "marks[0] += marks[3];",
+        ],
+    );
+}
