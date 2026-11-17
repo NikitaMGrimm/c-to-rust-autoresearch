@@ -9,43 +9,23 @@
 //! translation for.
 
 use crate::c::{
-    BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind, holds_statements,
+    BinOp, Expr, ExprKind, Program, Stmt, Type, UnOp, Var, VarId, VarKind, any_expr, each_expr_mut,
+    holds_statements,
 };
 use crate::facts::{Facts, Slot, is_argv};
 use std::collections::{HashMap, HashSet};
 
 pub fn cursors(program: &mut Program, facts: &Facts) {
+    let bound = bind_ends(program, facts);
     for function in 0..program.functions.len() {
         if holds_statements(&program.functions[function].body, &program.vars) {
             continue;
         }
         let mut body = std::mem::take(&mut program.functions[function].body);
         let params = program.functions[function].params.clone();
-        let scan = Scan::of(program, facts, &params, &body);
-        let mut groups = scan.groups();
-        let taken = [scan.declared.as_slice(), program.globals.as_slice()].concat();
-        // Every value of a cursor must have an index in its array. A group
-        // with one that has none is no group of cursors.
-        loop {
-            let mut rewrite = Rewrite::new(program, facts, groups.clone(), &scan.ends, &taken);
-            let without: HashSet<&String> = groups
-                .iter()
-                .filter(|(cursor, (key, _))| {
-                    let values = scan.values.get(cursor).into_iter().flatten();
-                    values
-                        .chain(scan.moves.get(cursor).into_iter().flatten())
-                        .any(|value| rewrite.index_of(value, key).is_none())
-                })
-                .map(|(_, (key, _))| key)
-                .collect();
-            if without.is_empty() {
-                break;
-            }
-            let without: HashSet<String> = without.into_iter().cloned().collect();
-            groups.retain(|_, (key, _)| !without.contains(key));
-        }
+        let (groups, ends, taken) = find(program, facts, &params, &body, &bound);
         if !groups.is_empty() {
-            let mut rewrite = Rewrite::new(program, facts, groups, &scan.ends, &taken);
+            let mut rewrite = Rewrite::new(program, facts, groups, &ends, &taken, &bound);
             rewrite.stmts(&mut body);
             let Rewrite {
                 added,
@@ -64,6 +44,221 @@ pub fn cursors(program: &mut Program, facts: &Facts) {
             program.vars.extend(reads);
         }
         program.functions[function].body = body;
+    }
+}
+
+/// The cursors of a function with the bases of their groups, the ends of
+/// numbers among them, and the variables in whose scope the function is.
+fn find(
+    program: &Program,
+    facts: &Facts,
+    params: &[VarId],
+    body: &[Stmt],
+    bound: &Bound,
+) -> (Groups, HashSet<VarId>, Vec<VarId>) {
+    let scan = Scan::of(program, facts, params, body);
+    let mut groups = scan.groups(bound);
+    let taken = [scan.declared.as_slice(), program.globals.as_slice()].concat();
+    // Every value of a cursor must have an index in its array. A group
+    // with one that has none is no group of cursors.
+    loop {
+        let mut rewrite = Rewrite::new(program, facts, groups.clone(), &scan.ends, &taken, bound);
+        let without: HashSet<&String> = groups
+            .iter()
+            .filter(|(cursor, (key, _))| {
+                let values = scan.values.get(cursor).into_iter().flatten();
+                values
+                    .chain(scan.moves.get(cursor).into_iter().flatten())
+                    .any(|value| rewrite.index_of(value, key).is_none())
+            })
+            .map(|(_, (key, _))| key)
+            .collect();
+        if without.is_empty() {
+            break;
+        }
+        let without: HashSet<String> = without.into_iter().cloned().collect();
+        groups.retain(|_, (key, _)| !without.contains(key));
+    }
+    (groups, scan.ends, taken)
+}
+
+/// R73: the parameters that are the end of another parameter's array, each
+/// with that parameter. `end` in `f(const int *p, const int *end)` is one
+/// where every call hands it an offset of the array that `p` gets.
+type Bound = HashMap<VarId, VarId>;
+
+/// Finds the ends that the calls prove, and makes each argument for one
+/// the index of the end in the array that `p` gets.
+fn bind_ends(program: &mut Program, facts: &Facts) -> Bound {
+    // A function whose name is read other than to call it may be called
+    // through a pointer, with arguments that prove nothing.
+    let mut named: HashMap<String, usize> = HashMap::new();
+    let mut called: HashMap<String, Vec<Vec<Expr>>> = HashMap::new();
+    let mut count = |expr: &Expr| {
+        match &expr.kind {
+            ExprKind::Function(name) => *named.entry(name.clone()).or_default() += 1,
+            ExprKind::Call(callee, args) => {
+                if let Some(name) = callee.function() {
+                    called
+                        .entry(name.to_owned())
+                        .or_default()
+                        .push(args.clone());
+                }
+            }
+            _ => {}
+        }
+        false
+    };
+    for function in &program.functions {
+        any_expr(&function.body, &program.vars, &mut count);
+    }
+    for var in &program.globals {
+        for part in program.vars[*var].init.iter() {
+            part.any(&mut count);
+        }
+    }
+    let mut bound = Bound::new();
+    // For each function, the position of each end, of its `p`, and the
+    // index of the end at each call, in the order of the calls.
+    let mut indices: HashMap<String, Vec<(usize, Vec<Expr>)>> = HashMap::new();
+    for function in &program.functions {
+        let calls = called.get(&function.name).map_or(&[][..], Vec::as_slice);
+        if function.variadic
+            || calls.is_empty()
+            || named.get(&function.name) != Some(&calls.len())
+            || holds_statements(&function.body, &program.vars)
+        {
+            continue;
+        }
+        let params = &function.params;
+        // An end is compared with a pointer or subtracted from one, or is
+        // the value of a local that is; a parameter that is only read is
+        // another array to the function.
+        let scan = Scan::of(program, facts, params, &function.body);
+        let cursor_like = |end: VarId| {
+            scan.compared.contains(&end)
+                || scan.values.iter().any(|(var, values)| {
+                    (scan.compared.contains(var) || scan.moved.contains(var))
+                        && values.iter().any(|value| root_var(value) == Some(end))
+                })
+        };
+        let fits = |var: VarId| {
+            let ty = &program.vars[var].ty;
+            ty.is_pointer()
+                && !facts.addressed(var)
+                && !matches!(
+                    ty.element(),
+                    None | Some(Type::Void | Type::Function { .. })
+                )
+        };
+        for (at_end, &end) in params.iter().enumerate() {
+            if !fits(end) || !cursor_like(end) || facts.mutated(end) || bound.contains_key(&end) {
+                continue;
+            }
+            for (at_p, &p) in params.iter().enumerate() {
+                if p == end
+                    || !fits(p)
+                    || program.vars[p].ty != program.vars[end].ty
+                    || bound.contains_key(&p)
+                    || bound.values().any(|&other| other == p)
+                {
+                    continue;
+                }
+                let Some(at_calls) = calls
+                    .iter()
+                    .map(|args| {
+                        (args.len() == params.len())
+                            .then(|| end_index(program, facts, &args[at_p], &args[at_end]))?
+                    })
+                    .collect::<Option<Vec<Expr>>>()
+                else {
+                    continue;
+                };
+                // The function must walk `p` with `end` as one group.
+                let mut trial = Bound::new();
+                trial.insert(end, p);
+                let (groups, ..) = find(program, facts, params, &function.body, &trial);
+                let key = |var: VarId| groups.get(&var).map(|(key, _)| key);
+                if key(end).is_none() || key(end) != key(p) {
+                    continue;
+                }
+                bound.insert(end, p);
+                indices
+                    .entry(function.name.clone())
+                    .or_default()
+                    .push((at_end, at_calls));
+                break;
+            }
+        }
+    }
+    let mut next: HashMap<String, usize> = HashMap::new();
+    for function in 0..program.functions.len() {
+        let mut body = std::mem::take(&mut program.functions[function].body);
+        each_expr_mut(&mut body, &mut program.vars, &mut |expr| {
+            if let ExprKind::Call(callee, args) = &mut expr.kind
+                && let Some(name) = callee.function()
+                && let Some(ends) = indices.get(name)
+            {
+                let call = next.entry(name.to_owned()).or_default();
+                for (at_end, at_calls) in ends {
+                    args[*at_end] = at_calls[*call].clone();
+                }
+                *call += 1;
+            }
+        });
+        program.functions[function].body = body;
+    }
+    bound
+}
+
+/// The index of `end` in the array that `p` gets, where both are offsets
+/// of one base that name the same memory, and the end is known not to be
+/// before `p`: Rust stops on an index below zero, where C compares.
+fn end_index(program: &Program, facts: &Facts, p: &Expr, end: &Expr) -> Option<Expr> {
+    let split = |pointer: &'_ Expr| -> Option<(String, bool, Option<Expr>)> {
+        let mut pointer = pointer;
+        while let ExprKind::Cast(inner) = &pointer.kind
+            && inner.ty == pointer.ty
+        {
+            pointer = inner;
+        }
+        let (base, offset) = match &pointer.kind {
+            ExprKind::Binary(BinOp::Add, base, offset)
+                if base.ty.is_pointer() && offset.ty.is_integer() =>
+            {
+                (&**base, Some((**offset).clone()))
+            }
+            ExprKind::AddrOf(place) => match &place.kind {
+                ExprKind::Index(base, offset) => (&**base, Some((**offset).clone())),
+                _ => return None,
+            },
+            _ => (pointer, None),
+        };
+        let key = match &base.kind {
+            // A pointer variable is read once for both arguments.
+            ExprKind::Var(var) if base.ty.is_pointer() => format!("v{var}"),
+            ExprKind::Decay(_) => stable(program, facts, base, &HashSet::new())?,
+            _ => return None,
+        };
+        if offset.as_ref().is_some_and(|offset| !offset.is_pure()) {
+            return None;
+        }
+        Some((key, matches!(base.kind, ExprKind::Decay(_)), offset))
+    };
+    let (from, array, start) = split(p)?;
+    let (to, _, stop) = split(end)?;
+    if from != to {
+        return None;
+    }
+    let constant = |offset: &Option<Expr>| match offset {
+        None => Some(0),
+        Some(offset) => offset.constant(program),
+    };
+    match (constant(&start), constant(&stop)) {
+        (Some(start), Some(stop)) if start <= stop => Some(index_literal(stop - start, end.at)),
+        // Past the start of an array C has no offset below zero.
+        (Some(0), None) if array => Some(as_index(stop.as_ref()?, program)),
+        _ => None,
     }
 }
 
@@ -281,7 +476,7 @@ impl<'a> Scan<'a> {
     }
 
     /// The variables that become indices, each with the base of its group.
-    fn groups(&self) -> Groups {
+    fn groups(&self, bound: &Bound) -> Groups {
         let vars = &self.program.vars;
         let fits = |var: VarId| {
             let declared = &vars[var];
@@ -322,7 +517,11 @@ impl<'a> Scan<'a> {
         let mut members: Vec<VarId> = (0..vars.len())
             .filter(|var| {
                 fits(*var)
-                    && (self.moved.contains(var) || compared(*var) || self.ends.contains(var))
+                    && (self.moved.contains(var)
+                        || compared(*var)
+                        || self.ends.contains(var)
+                        || self.declared.contains(var)
+                            && (bound.contains_key(var) || bound.values().any(|p| p == var)))
             })
             .collect();
         // So does a local that a member gets a value from: `q` in
@@ -346,9 +545,21 @@ impl<'a> Scan<'a> {
         let moved_params: HashSet<VarId> = members
             .iter()
             .copied()
-            .filter(|var| vars[*var].kind == VarKind::Param)
+            .filter(|var| vars[*var].kind == VarKind::Param && !bound.contains_key(var))
             .collect();
         for &member in &members {
+            // An end joins the group of its `p`, whose array it indexes.
+            if let Some(p) = bound.get(&member) {
+                if group.contains_key(p) {
+                    let (old, new) = (group[&member], group[p]);
+                    for joined in group.values_mut().filter(|joined| **joined == old) {
+                        *joined = new;
+                    }
+                } else {
+                    failed.insert(member);
+                }
+                continue;
+            }
             if vars[member].kind == VarKind::Param {
                 let own = Expr {
                     ty: vars[member].ty.clone(),
@@ -540,6 +751,7 @@ impl<'a> Rewrite<'a> {
         groups: Groups,
         ends: &HashSet<VarId>,
         taken: &[VarId],
+        bound: &Bound,
     ) -> Self {
         let mut text: HashSet<String> = groups
             .values()
@@ -570,7 +782,13 @@ impl<'a> Rewrite<'a> {
         cursors.sort_unstable();
         for cursor in cursors {
             let var = &program.vars[cursor];
-            if var.kind == VarKind::Param {
+            if bound.contains_key(&cursor) {
+                // The end is a parameter that is its own index.
+                rewrite.index.insert(cursor, cursor);
+                let mut changed = var.clone();
+                changed.ty = Type::Index;
+                rewrite.changed.insert(cursor, changed);
+            } else if var.kind == VarKind::Param {
                 rewrite.moved_params.insert(cursor);
                 rewrite
                     .index

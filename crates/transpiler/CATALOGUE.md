@@ -1736,3 +1736,33 @@ Entry format, newest last:
   part of a record while they read the record by its path; no development
   program needs it
 - Changes: `normalise::alias` rewrites these pointers after R61's
+
+## R73: a parameter that is the end of another parameter's array
+
+- C: a function `f(const T *p, const T *end)` that walks `p` up to `end`
+  (`p != end`, `p < end`, `p == end`, `end - p`, `*(end - 1)`,
+  `end[-1]`, a local `q = end` that is moved or compared), in either
+  order of the parameters, where every call hands both an offset of one
+  base: `f(a + j, a + k)`, `f(&a[j], &a[k])`, `f(a, a)`
+- Rust: `end` becomes an index into `p`'s slice, `fn f(p: &[T], end:
+  usize)`, and `p` an index `p_at` from zero as in R24; a call hands the
+  index `k - j`, `f(&a[1..], 4)`, or `n as usize` for `f(a, a + n)` of an
+  array `a`
+- Needs: `normalise::cursors`, which checks the calls before it rewrites
+  any function: the function is not variadic and its name is only
+  called; the base of both arguments is one pointer variable or one
+  array, the offsets have no side effect, and `k - j` is known not to be
+  below zero (two constants, or `j` zero for an array); `end` is never
+  assigned and its address is never taken; and `end` joins the group of
+  `p` in the function
+- Refused: as before (a comparison of two addresses) where a call fails
+  one of these: two bases (`f(q, a + 2)`), a call through a pointer, an
+  end before `p` (`f(a + 3, a)`), a variable offset of a pointer that may
+  point inside an array, an offset that calls a function
+  (`s + strlen(s)`), NULL, a function that moves `end` or calls itself
+  with `end`, and an end handed on to another function
+- Motivation: programs outside the development set walk a parameter up
+  to another one that every call sets to the end of the same array; no
+  development program needs it
+- Changes: extends R24, whose cursors had a base of their own or of a
+  local

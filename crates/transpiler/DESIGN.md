@@ -402,6 +402,7 @@ where it is, under its own name, and the pointer variable becomes a `usize`.
 | `p - q` | `p as i64 - q as i64` |
 | `f(p)`, `return p;`, `q = p` for a `q` that is no cursor | `f(&a[p..])`: C may hand on the end of the array, where Rust has an empty rest and no element |
 | a parameter `char *s` that the function itself moves | `s` stays the slice, and a local `s_at` is the index |
+| a parameter `end` that every call hands the end of `p`'s array, `f(a + 1, a + 5)` | `end: usize`, an index into `p`'s slice, and the call `f(&a[1..], 4)` |
 | `if (p)`, `p == NULL` | the same test of `a`: `a + n` is NULL only where `a` is |
 
 The **base** of a cursor is the expression for the array it walks, and it
@@ -409,7 +410,14 @@ must mean the same memory wherever the cursor is used. So it is one of: a
 pointer variable that is never assigned after its declaration; an array;
 a field of a record that such a variable or pointer holds; an element of
 one of these at a constant index. A parameter that the function moves is its
-own base.
+own base. A parameter that the function compares with one of its cursors,
+or that gives a local cursor its value, joins the group of another
+parameter `p` where every call hands it an offset of `p`'s argument: one
+array or one pointer variable plus an offset that has no side effect and
+that is known to be no less than `p`'s. The calls are checked before any
+function is rewritten, and each hands the difference of the two offsets,
+an index. A call through a pointer, two bases, an end before `p`, or an
+end that the function assigns leave both parameters pointers.
 
 `normalise::cursors` finds the cursors of a function and rewrites it, from C
 to C, before the pointers are analysed:
@@ -790,6 +798,10 @@ place:
   cursor over a program argument needs the bytes of the argument; and a
   cursor that gets the end of a number (`p = end` in a loop over a line)
   needs the end pointer in the cursor's group.
+- **Ends that the calls do not prove.** An end parameter (R73) handed on
+  to another function, `inner(p, end)`, needs the index `end - p_at` and a
+  proof that it is not below zero; so does `f(q, q + n)` for a pointer `q`
+  and a variable `n`, and `f(s, s + strlen(s))` needs the length of text.
 - **Walking a list.** `while (p) { …; p = p->next; }` needs a narrowing for
   loops like the one for `if`; today it uses `is_some()` and `unwrap()`,
   and `p.take().unwrap().next.as_deref_mut()` for the step of a borrow
