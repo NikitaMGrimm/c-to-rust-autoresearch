@@ -197,11 +197,18 @@ Entry format, newest last:
   the one it gives up, `free(a->next->next)`, which stays what it was; and
   a function
   that the program names and that returns an owner out of a record it
-  only borrows, `return p->next;`, which would leave `None` in the record
+  only borrows, `return p->next;`, which would leave `None` in the record;
+  and a conditional of which a side gives a local owner to another owner,
+  `take(k ? a : b)`, when the function names that owner again before a
+  store to it, as `if (k) free(b);`, since Rust may have moved it and
+  does not know that the later test agrees
 - Needs: `Facts::pointer` (`owned`, `many`); `Facts::truth`;
   `Facts::moved` for the first such read, in the order of the statements,
-  where a loop's body follows itself
-- Motivation: skeleton
+  where a loop's body follows itself, and `Facts::moved_on_one_side` for
+  an owner that a conditional moved
+- Motivation: skeleton; the conditional: programs outside the development
+  set moved an owner on one side and freed it on the other; no
+  development program needs it
 - Changes: none
 
 ## R9: globals

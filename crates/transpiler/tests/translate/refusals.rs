@@ -228,6 +228,44 @@ fn an_owner_used_after_it_was_moved_is_refused() {
     );
 }
 
+/// A conditional that hands one of two owners on moves either in Rust,
+/// which does not know that a later test agrees with it.
+#[test]
+fn an_owner_that_a_conditional_moved_and_that_is_named_again_is_refused() {
+    let program = |given: &str, after: &str| {
+        format!(
+            "#include <stdlib.h>\nstruct jar {{ int beans; }};\nstatic int empty(struct jar *j) {{ int n = j->beans; free(j); return n; }}\nint main(int argc, char **argv) {{\n    struct jar *left = malloc(sizeof *left), *right = malloc(sizeof *right);\n    left->beans = 2; right->beans = 5;\n    int odd = argc % 2;\n    int n = empty({given});\n{after}    return n;\n}}\n"
+        )
+    };
+    let reason = |line: u32| {
+        format!(
+            "unsupported: a conditional that moves an owner on one side, which is used again, at line {line}"
+        )
+    };
+    assert_eq!(
+        translate(
+            "split_freed",
+            &program(
+                "odd ? left : right",
+                "    if (odd) free(right); else free(left);\n"
+            )
+        )
+        .unwrap_err(),
+        reason(9)
+    );
+    assert_eq!(
+        translate(
+            "split_nested",
+            &program(
+                "odd ? (argc > 2 ? left : right) : right",
+                "    free(left);\n"
+            )
+        )
+        .unwrap_err(),
+        reason(9)
+    );
+}
+
 /// A global owner that hands its memory to another owner is `None`
 /// afterwards, where C still reads the pointer.
 #[test]

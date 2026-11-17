@@ -1471,6 +1471,15 @@ impl Lower<'_> {
                 at,
             ))?;
         }
+        if let Some(at) = self
+            .function
+            .and_then(|id| self.facts.moved_on_one_side(id))
+        {
+            self.listed(unsupported(
+                "a conditional that moves an owner on one side, which is used again",
+                at,
+            ))?;
+        }
         self.last = last.cloned();
         let body = self.seeded(rest);
         self.last = None;

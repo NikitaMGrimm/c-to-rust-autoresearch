@@ -650,3 +650,39 @@ fn a_field_read_on_the_way_to_the_one_that_is_moved_out_is_not_read_again() {
         );
     }
 }
+
+/// An owner that a conditional hands on is translated where nothing names
+/// it again before a store to it.
+#[test]
+fn a_conditional_hands_on_one_of_two_owners() {
+    let rust = check(
+        "conditional_owner",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct jar { int beans; };
+static int empty(struct jar *j) { int n = j->beans; free(j); return n; }
+static struct jar *fill(int beans) {
+    struct jar *j = malloc(sizeof *j);
+    j->beans = beans;
+    return j;
+}
+int main(int argc, char **argv) {
+    struct jar *left = fill(3), *right = fill(8);
+    int n = empty(argc > 1 ? left : right);
+    left = fill(n);
+    right = fill(n + 1);
+    printf("%d %d %d\n", n, left->beans, right->beans);
+    free(left);
+    free(right);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &["let n = empty(if args.len() as i32 > 1 { left } else { right });"],
+    );
+}

@@ -184,6 +184,10 @@ refuses with the reason instead:
   another owner, a field, a global, a local or a parameter, and before
   anything stored to it (`Facts::moved`), in the same order. A `free` is
   not followed, nor a read in another function.
+- an owner that a side of a conditional gave to another owner, `take(k
+  ? a : b)`, and that the function names again before anything stored
+  to it (`Facts::moved_on_one_side`), in the same order: Rust may have
+  moved it, and does not know that a later `if (k) free(b);` agrees.
 
 An owner whose memory went to another is one of three things, and each
 has its own translation:
@@ -1105,9 +1109,6 @@ become a fact and a refusal:
   store to another element, `t = a[i]; a[j] = t->next;` with a later read
   of `t`, is translated and does not compile; so is a record that is
   read through a second name (`r = s;`) while a field of it is moved out.
-- A conditional that moves a local owner on one side, `take(k ? s->p :
-  other)`, followed by `if (k) free(other);`, is translated and does not
-  compile: the compiler does not know that the two tests agree.
 - A copy of a function with one parameter for two (R53) still declares
   the locals that were pointers of the two: `int *p = a, *q = b;` in
   `f(void *a, void *b)` called as `f(x, x)` is one `&mut` and one `&` of

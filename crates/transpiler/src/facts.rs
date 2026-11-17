@@ -142,8 +142,9 @@ pub enum Root {
     Other,
 }
 
-/// Where `Facts::in_use`, `Facts::moved` and `Facts::part_in_use` are.
-type Found = (Option<u32>, Option<u32>, Option<u32>);
+/// Where `Facts::in_use`, `Facts::moved`, `Facts::part_in_use` and
+/// `Facts::moved_on_one_side` are.
+type Found = (Option<u32>, Option<u32>, Option<u32>, Option<u32>);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Facts {
@@ -162,7 +163,8 @@ pub struct Facts {
     /// variables after the variable itself was used meanwhile, and first
     /// reads a local owner after its memory went to another owner, and
     /// first uses a local pointer to a part of a record after the record
-    /// was used meanwhile.
+    /// was used meanwhile, and first names an owner that one side of a
+    /// conditional moved.
     in_use: HashMap<FuncId, Found>,
     /// The local pointers whose use `in_use` finds.
     borrowers: HashSet<VarId>,
@@ -289,6 +291,13 @@ impl Facts {
     /// before anything stored to it: Rust moved the `Box` away.
     pub fn moved(&self, function: FuncId) -> Option<u32> {
         self.in_use.get(&function).and_then(|found| found.1)
+    }
+
+    /// Where the function first names an owner again after one side of a
+    /// conditional gave its memory away, as `take(k ? a : b)`: Rust may
+    /// have moved it, and does not know that a later test agrees.
+    pub fn moved_on_one_side(&self, function: FuncId) -> Option<u32> {
+        self.in_use.get(&function).and_then(|found| found.3)
     }
 
     /// Where the function first uses a local pointer that borrows a part
@@ -793,10 +802,11 @@ impl<'a> Walk<'a> {
                     found: None,
                     moved: None,
                     part: None,
+                    split: None,
                     borrowers: &mut borrowers,
                 };
                 walk.stmts(&function.body, &mut Some(Order::default()));
-                (id, (walk.found, walk.moved, walk.part))
+                (id, (walk.found, walk.moved, walk.part, walk.split))
             })
             .collect();
         Facts {
@@ -1536,6 +1546,9 @@ struct Order {
     /// with the parts they borrow, and whether one of them was used since
     /// in a way the borrow forbids.
     parts: HashMap<VarId, (HashSet<Part>, bool)>,
+    /// The owners that one side of a conditional gave to another owner,
+    /// and that nothing has stored to since.
+    split: HashSet<VarId>,
 }
 
 /// A variable and the field of it that a path names first, `a` and `f` in
@@ -1568,6 +1581,7 @@ struct InUse<'a> {
     found: Option<u32>,
     moved: Option<u32>,
     part: Option<u32>,
+    split: Option<u32>,
     borrowers: &'a mut HashSet<VarId>,
 }
 
@@ -1674,6 +1688,7 @@ impl InUse<'_> {
                     entry.0.extend(records);
                     entry.1 |= touched;
                 }
+                first.split.extend(second.split);
             }
             (None, second) => *state = second,
             (Some(_), None) => {}
@@ -1793,12 +1808,38 @@ impl InUse<'_> {
                 .get(&slot)
                 .is_some_and(|pointer| pointer.owned)
         };
+        if let ExprKind::Cond(_, then, other) = &value.uncast().kind {
+            self.one_side(then, slot, state);
+            self.one_side(other, slot, state);
+            return;
+        }
         if let (ExprKind::Var(var), Some(order)) = (&value.uncast().kind, state.as_mut()) {
             // A global gives its memory away too: it is `None` afterwards,
             // where C still reads the pointer.
             if Slot::Var(*var) != slot && owns(Slot::Var(*var)) && owns(slot) {
                 order.moved.insert(*var);
             }
+        }
+    }
+
+    /// An owner that a side of a conditional gives to an owning slot.
+    fn one_side(&mut self, side: &Expr, slot: Slot, state: &mut Borrows) {
+        let owns = |slot| {
+            self.pointers
+                .get(&slot)
+                .is_some_and(|pointer| pointer.owned)
+        };
+        match (&side.uncast().kind, state.as_mut()) {
+            (ExprKind::Cond(_, then, other), _) => {
+                self.one_side(then, slot, state);
+                self.one_side(other, slot, state);
+            }
+            (ExprKind::Var(var), Some(order))
+                if Slot::Var(*var) != slot && owns(Slot::Var(*var)) && owns(slot) =>
+            {
+                order.split.insert(*var);
+            }
+            _ => {}
         }
     }
 
@@ -1839,6 +1880,9 @@ impl InUse<'_> {
             if parts.iter().any(|&other| overlap(part, other)) && written(*pointer) {
                 *touched = true;
             }
+        }
+        if order.split.contains(&var) {
+            self.split.get_or_insert(at);
         }
         let borrows = &mut order.borrows;
         if let Some((_, true)) = borrows.get(&var) {
@@ -1897,6 +1941,7 @@ impl InUse<'_> {
         let pointer = &program.vars[var];
         if let Some(order) = state {
             order.moved.remove(&var);
+            order.split.remove(&var);
         }
         // A store to a pointer is a store to what a copy of it borrows.
         self.stored(var, state);
