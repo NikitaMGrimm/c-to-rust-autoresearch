@@ -35,6 +35,16 @@ pub fn alias(program: &mut Program, facts: &Facts) -> bool {
                 // `p[-1]` for `p = &a[2]` is `a[1]`, which is before what
                 // a pointer to `a[2]` holds in Rust.
                 each_expr_mut(&mut body, &mut program.vars, &mut super::offsets);
+                // `*&x` is `x`: a store through the pointer is a store to
+                // the variable, which the other pointers to it must see.
+                each_expr_mut(&mut body, &mut program.vars, &mut |expr| {
+                    if let ExprKind::Deref(inner) = &mut expr.kind
+                        && let ExprKind::AddrOf(place) = &mut inner.kind
+                        && place.ty == expr.ty
+                    {
+                        *expr = super::take(place);
+                    }
+                });
                 changed = true;
             }
         }

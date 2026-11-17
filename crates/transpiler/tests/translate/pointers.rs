@@ -690,3 +690,32 @@ int main(void) {
     );
     assert_lines(&rust, &["top.load = 2;"]);
 }
+
+#[test]
+fn two_pointers_that_only_name_one_variable_are_that_variable() {
+    let rust = check(
+        "two_names",
+        r#"
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int n = argc;
+    int cap = 57 % (n + 8);
+    int *first = &cap;
+    int *second = &cap;
+    *first = (*first < n) + cap / 4;
+    printf("%d %d\n", *first, cap);
+    printf("%d\n", *second + n);
+    return 0;
+}
+"#,
+        &[&[], &["a"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "cap = i32::from(cap < n) + cap / 4;",
+            "println!(\"{}\", cap + n);",
+        ],
+    );
+}

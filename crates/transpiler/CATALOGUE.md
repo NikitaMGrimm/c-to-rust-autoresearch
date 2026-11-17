@@ -1407,7 +1407,11 @@ Entry format, newest last:
   needs it
 - Changes: `normalise::alias` runs after `cursors`, and the facts after it;
   `normalise::pointers` runs after `found`, before the first analysis, and
-  shares the search for the one store with `alias`
+  shares the search for the one store with `alias`. `*&x`, which the
+  rewrite leaves for `*p`, is `x`, so that a store through the pointer is
+  a store to the variable for every other pointer to it, and `alias` runs
+  until it finds no more: `int *p = &x, *q = &x; *p = 1;` with a later
+  `*q` makes both `x`
 
 ## R63: a pointer to a function without a prototype
 

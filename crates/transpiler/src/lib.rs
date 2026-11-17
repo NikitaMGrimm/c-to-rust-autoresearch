@@ -129,7 +129,9 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     }
     normalise::cursors(&mut program, &facts);
     let mut facts = facts::Facts::of(&program);
-    if normalise::alias(&mut program, &facts) {
+    // A store through a pointer that became its variable may show that
+    // another pointer to the variable is in use beside it.
+    while normalise::alias(&mut program, &facts) {
         facts = facts::Facts::of(&program);
     }
     if normalise::follow(&mut program, &facts) {
@@ -176,7 +178,7 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
         }
         normalise::cursors(&mut program, &facts);
         let mut facts = facts::Facts::of(&program);
-        if normalise::alias(&mut program, &facts) {
+        while normalise::alias(&mut program, &facts) {
             facts = facts::Facts::of(&program);
         }
         if normalise::follow(&mut program, &facts) {
