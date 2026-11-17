@@ -1781,6 +1781,14 @@ impl InUse<'_> {
                             && let Some(part) = lent(self.program, arg)
                         {
                             self.handed(part, state);
+                            // The address of a variable handed on to store
+                            // through is a store to it for a pointer that
+                            // borrows it.
+                            if let ExprKind::AddrOf(place) = &arg.uncast().kind
+                                && let Some(var) = place.root_var()
+                            {
+                                self.stored_only(var, state);
+                            }
                         }
                         // R65: `&p` lent to a `T **` that is written is a
                         // store to `p`.
@@ -1947,6 +1955,19 @@ impl InUse<'_> {
         self.stored(var, state);
         if !pointer.ty.is_pointer() || pointer.kind.is_global() {
             return;
+        }
+        // A pointer that is stored through and gets the address of a
+        // variable borrows it alone: an earlier pointer to the variable
+        // sees a store.
+        if self
+            .pointers
+            .get(&Slot::Var(var))
+            .is_some_and(|pointer| pointer.written)
+            && let ExprKind::AddrOf(place) | ExprKind::Decay(place) = &value.uncast().kind
+            && let Some(named) = place.root_var()
+            && named != var
+        {
+            self.stored_only(named, state);
         }
         let Some(order) = state else { return };
         // A borrow that gets a pointer out of a record borrows the record,

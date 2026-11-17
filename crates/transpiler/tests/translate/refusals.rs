@@ -615,3 +615,30 @@ int main(int argc, char *argv[]) {
     );
     crate::common::assert_lines(&rust, &["n = kept as u8 as i8 as i32;"]);
 }
+
+#[test]
+fn a_second_pointer_that_stores_beside_a_first_is_refused() {
+    let refusal = translate(
+        "second_borrow",
+        r#"
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int width = argc;
+    int other = 3;
+    int *seen;
+    int *p = &other;
+    seen = &width;
+    *p += 1;
+    p = &width;
+    *p = *p % (*seen % 10 + 11);
+    printf("%d %d %d\n", width, other, *seen);
+    return 0;
+}
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        refusal.contains("a variable that is used while a pointer to it is in use"),
+        "{refusal}"
+    );
+}

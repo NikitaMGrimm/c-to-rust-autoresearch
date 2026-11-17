@@ -158,7 +158,9 @@ Entry format, newest last:
   it; and a local pointer to a variable of its function
   that is used after the variable itself was stored to since the pointer
   got its address, or read where the pointer is stored through, since the
-  borrow is still in use there; and in the same way a copy of a local
+  borrow is still in use there, also where the store is another pointer
+  that takes the variable's address to store through, `p = &x;`, or a
+  call that gets `&x` to store through; and in the same way a copy of a local
   pointer that owns or is stored through, `q = p`, that is read after `p`
   was stored through or assigned
 - Needs: `Facts::pointer` for each slot, with `local` for a pointer into a
