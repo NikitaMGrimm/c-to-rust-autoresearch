@@ -1648,3 +1648,33 @@ Entry format, newest last:
   named the cast of its `unsigned char *` parameter
 - Changes: narrows the refusal of a cast between pointers to different
   types
+
+## R72: a value compared with itself or taken from itself is a constant
+
+- C: for an integer value that names a variable and has no side effect,
+  `x == x`, `x <= x`, `x >= x` (1), `x != x`, `x < x`, `x > x` (0), `x - x`
+  and `x ^ x` (0); and what holds such a constant: an operator on two
+  constants, `0 && e`, `1 || e`, `e && 0` and `e || 1` for an `e` without
+  an effect, `1 && e` and `0 || e` (`e != 0`), `c ? a : b` for a constant
+  `c`, `!c`, `-c`, `~c`, a conversion to an integer type, `0 * e` and `e
+  & 0` and `e % 1` for an `e` without an effect, and `1 * e`, `e + 0`, `e
+  / 1`, `e << 0` and their like, which are `e`
+- Rust: the constant, `make(0, …)` for `make(y < y, …)`, and the folded
+  expression around it: `if 0 >= m` for `if ((n - n) >= m && m == m)`
+- Needs: `normalise::constants`, a rewrite before the first analysis, and
+  again after `alias`, which may make a pointer the variable it is
+  compared with. An `if` whose test becomes a constant is refused where
+  the branch that runs always leaves (`if (n <= n) break;`): the lints
+  refuse a loop that ends in its first round.
+  Arithmetic that leaves a signed type, a division by zero and a shift
+  beyond the type are left as written. A constant that the program wrote
+  is folded only where it meets one that the rewrite made. Refused: `e &&
+  0` and `e || 1` for an `e` with an effect (`a constant beside an operand
+  with an effect`), and `1 && e` for an `e` that is no integer. Floating-
+  point operands, pointers, and `x / x`, `x % x`, `x & x`, `x | x` stay
+  refused as before
+- Motivation: programs outside the development set that compare a
+  variable with itself or subtract it from itself, which the lints refuse
+  as written; no development program needs it
+- Changes: narrows the refusals `a comparison of a value with itself` and
+  `the same value on both sides of …` of R25

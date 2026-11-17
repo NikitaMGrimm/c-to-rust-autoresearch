@@ -58,6 +58,7 @@
 //! `let Some(p) = p else { return; }` do.
 
 mod alias;
+mod constants;
 mod cursors;
 mod ends;
 mod enter;
@@ -70,6 +71,7 @@ mod unions;
 mod voids;
 
 pub use alias::{alias, casts, pointers};
+pub use constants::constants;
 pub use cursors::{cursors, steps_before};
 pub use ends::ends;
 pub use enter::enter;

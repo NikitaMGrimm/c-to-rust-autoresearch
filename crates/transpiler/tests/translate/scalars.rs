@@ -471,12 +471,12 @@ fn the_same_value_on_both_sides_is_refused_where_the_lints_refuse_it() {
         .unwrap_err()
     };
     assert_eq!(
-        refused("self-equal", "argc == argc"),
+        refused("self-less", "(double)argc < (double)argc"),
         "unsupported: a comparison of a value with itself: no rule yet, at line 2"
     );
     assert_eq!(
-        refused("self-minus", "(argc + 1) - (argc + 1)"),
-        "unsupported: the same value on both sides of `-`: no rule yet, at line 2"
+        refused("self-divided", "(argc + 1) / (argc + 1)"),
+        "unsupported: the same value on both sides of `/`: no rule yet, at line 2"
     );
     // The lints take operands that differ only in the order of `+`, `*`,
     // `&`, `|` or `^`, or in a cast to the type they have, for the same.
@@ -1419,5 +1419,92 @@ int main(int argc, char **argv) {
         )
         .unwrap_err(),
         "unsupported: a store of a place to itself whose value is used, at line 3"
+    );
+}
+
+#[test]
+fn a_value_compared_with_itself_is_a_constant() {
+    let rust = check(
+        "self_compared",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+static int half(int v) { return v / 2; }
+int main(int argc, char *argv[]) {
+    int n = atoi(argv[1]);
+    int m = argc;
+    unsigned u = (unsigned)n;
+    printf("%d %d %u %u\n", half(n < n), (n - n) % 1000, u ^ u, u % 10);
+    if ((n - n) >= m && m == m)
+        printf("first\n");
+    if (n < n || m > 1)
+        printf("second\n");
+    printf("%d\n", (m != m ? n : m) % 7);
+    printf("%d\n", ((n - n) * 3 + (m == m)) * n);
+    return 0;
+}
+"#,
+        &[&["5"], &["-4"]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "println!(\"{} {} {} {}\", half(0), 0, 0u32, u % 10);",
+            "if 0 >= m {",
+            "if m > 1 {",
+            "println!(\"{}\", m % 7);",
+            "println!(\"{}\", n);",
+        ],
+    );
+}
+
+#[test]
+fn a_constant_beside_an_operand_with_an_effect_is_refused() {
+    let refusal = translate(
+        "effect_beside",
+        r#"
+#include <stdio.h>
+static int next(int *v) { *v += 1; return *v; }
+int main(int argc, char *argv[]) {
+    int n = argc;
+    if (next(&n) > 0 && n < n)
+        printf("never\n");
+    printf("%d\n", n);
+    return 0;
+}
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        refusal.contains("a constant beside an operand with an effect"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn a_decided_test_before_a_jump_is_refused() {
+    let refusal = translate(
+        "decided_jump",
+        r#"
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int n = argc;
+    while (n > 0) {
+        if ((n + 1) <= (n + 1))
+            break;
+        n--;
+    }
+    int *p = &n;
+    n = 4;
+    printf("%d %d\n", n, n != *p);
+    return 0;
+}
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        refusal.contains("a test that a value compared with itself decides, before a jump"),
+        "{refusal}"
     );
 }

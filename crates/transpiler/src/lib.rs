@@ -114,6 +114,7 @@ pub fn read(ast: &serde_json::Value) -> Result<c::Program, Unsupported> {
 pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     let mut program = clang::program(ast)?;
     normalise::unions(&mut program)?;
+    normalise::constants(&mut program)?;
     normalise::voids(&mut program)?;
     normalise::protos(&mut program)?;
     normalise::places(&mut program);
@@ -132,6 +133,8 @@ pub fn translate(ast: &serde_json::Value) -> Result<String, Unsupported> {
     // A store through a pointer that became its variable may show that
     // another pointer to the variable is in use beside it.
     while normalise::alias(&mut program, &facts) {
+        // A pointer that became its variable may now be compared with it.
+        normalise::constants(&mut program)?;
         facts = facts::Facts::of(&program);
     }
     if normalise::follow(&mut program, &facts) {
@@ -157,6 +160,9 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
         if let Err(refusal) = normalise::unions(&mut program) {
             listing.add("rewrite", "", refusal);
         }
+        if let Err(refusal) = normalise::constants(&mut program) {
+            listing.add("rewrite", "", refusal);
+        }
         if let Err(refusal) = normalise::voids(&mut program) {
             listing.add("rewrite", "", refusal);
         }
@@ -179,6 +185,9 @@ pub fn blockers(ast: &serde_json::Value) -> Vec<Blocker> {
         normalise::cursors(&mut program, &facts);
         let mut facts = facts::Facts::of(&program);
         while normalise::alias(&mut program, &facts) {
+            if let Err(refusal) = normalise::constants(&mut program) {
+                listing.add("rewrite", "", refusal);
+            }
             facts = facts::Facts::of(&program);
         }
         if normalise::follow(&mut program, &facts) {

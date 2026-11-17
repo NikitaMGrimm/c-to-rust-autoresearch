@@ -3,6 +3,7 @@
 //! `CATALOGUE.md` lists the rules; what has none is `Unsupported`.
 
 mod expr;
+pub(crate) use expr::same_value;
 mod function;
 mod input;
 mod library;
