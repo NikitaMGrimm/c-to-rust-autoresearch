@@ -533,6 +533,49 @@ fn a_record_used_while_a_pointer_to_a_part_of_it_is_in_use_is_refused() {
 }
 
 #[test]
+fn an_argument_that_reads_what_an_earlier_one_lends_is_refused() {
+    let refusal = translate(
+        "lent_and_read",
+        r#"
+#include <stdio.h>
+struct spot { int x; int y; };
+static void shift(struct spot *s, int by) { s->x += by; s->y -= by; }
+static void scale(int by, struct spot *s) { s->x *= by; }
+int main(int argc, char *argv[]) {
+    struct spot at = {argc, 3};
+    scale(at.y, &at);
+    shift(&at, at.x / 4);
+    printf("%d %d\n", at.x, at.y);
+    return 0;
+}
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        refusal,
+        "unsupported: an argument that reads a variable that an earlier argument lends to store through, at line 9"
+    );
+    // Another field than the one that is lent is read beside it.
+    let rust = crate::common::check(
+        "lent_field_and_other_read",
+        r#"
+#include <stdio.h>
+struct spot { int x; int y; };
+static void add(int *to, int by) { *to += by; }
+int main(int argc, char *argv[]) {
+    struct spot at = {argc, 8};
+    add(&at.x, at.y);
+    printf("%d %d\n", at.x, at.y);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    crate::common::assert_lines(&rust, &["add(&mut at.x, at.y);"]);
+}
+
+#[test]
 fn a_value_stored_back_where_it_was_read_is_refused() {
     let refusal = translate(
         "stored_back",

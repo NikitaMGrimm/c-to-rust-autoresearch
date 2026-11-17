@@ -152,7 +152,10 @@ Entry format, newest last:
   call with two arguments that point into the same memory, such as
   `f(a, a + 1)`, when the function stores through one of them, since Rust
   lends memory once to whoever stores there, unless R53 gives the call a
-  copy of the function; and a local pointer to a variable of its function
+  copy of the function; and a call that hands on the address of a
+  variable to store through and reads the variable in a later argument,
+  `shift(&at, at.x / 4)`, since Rust lends the variable before it reads
+  it; and a local pointer to a variable of its function
   that is used after the variable itself was stored to since the pointer
   got its address, or read where the pointer is stored through, since the
   borrow is still in use there; and in the same way a copy of a local

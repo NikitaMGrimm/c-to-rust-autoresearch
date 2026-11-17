@@ -923,6 +923,41 @@ impl Lower<'_> {
             }
             lent.push((position, memory, stores));
         }
+        // `f(&x, x.n)` lends `x` before it reads it, which Rust rejects.
+        for (position, memory, stores) in &lent {
+            if let (true, Some(Part::Var(lent)), false) =
+                (*stores, memory.first(), memory.contains(&Part::Target))
+                // A later pointer into it is two arguments into one memory,
+                // which the check above decides.
+                && let Some(reads) = args[position + 1..].iter().find(|arg| {
+                    // `f(&s.x, s.y)` reads another field than it lends.
+                    let (mut reads, mut apart) = (0, 0);
+                    arg.any(&mut |part| {
+                        match &part.kind {
+                            ExprKind::Var(var) if var == lent => reads += 1,
+                            ExprKind::Member {
+                                base,
+                                field,
+                                arrow: false,
+                                ..
+                            } if matches!(base.kind, ExprKind::Var(var) if var == *lent)
+                                && matches!(memory.get(1), Some(Part::Field(other)) if other != field) =>
+                            {
+                                apart += 1;
+                            }
+                            _ => {}
+                        }
+                        false
+                    });
+                    !arg.ty.is_pointer() && reads > apart
+                })
+            {
+                return unsupported(
+                    "an argument that reads a variable that an earlier argument lends to store through",
+                    reads.at,
+                );
+            }
+        }
         // A global that changes is a field of `Globals`, which the callee
         // borrows as a whole: beside `&Globals` only a shared borrow of a
         // field fits, and beside `&mut Globals` none.
