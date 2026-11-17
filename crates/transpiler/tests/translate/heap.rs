@@ -686,3 +686,42 @@ int main(int argc, char **argv) {
         &["let n = empty(if args.len() as i32 > 1 { left } else { right });"],
     );
 }
+
+#[test]
+fn a_list_freed_by_hand_from_its_end_is_dropped() {
+    let rust = check(
+        "freed_by_hand",
+        r#"
+#include <stdio.h>
+#include <stdlib.h>
+struct knot { int weight; struct knot *below; };
+static struct knot *tie(int weight, struct knot *below) {
+    struct knot *k = malloc(sizeof *k);
+    if (!k) exit(1);
+    k->weight = weight;
+    k->below = below;
+    return k;
+}
+static int doubled(int v) { return 2 * v; }
+int main(void) {
+    struct knot *top = tie(1, tie(2, tie(3, NULL)));
+    printf("%d %d\n", top->below->weight, top->below->below->weight);
+    free(top->below->below);
+    free(top->below);
+    free(top);
+    printf("%d\n", doubled(4));
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "drop(top.below.as_deref_mut().unwrap().below.take());",
+            "drop(top.below.take());",
+            "drop(top);",
+        ],
+    );
+}

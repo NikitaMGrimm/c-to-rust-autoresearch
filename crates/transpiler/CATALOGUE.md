@@ -204,7 +204,10 @@ Entry format, newest last:
   returns at its end, also at another index of the same array or in a
   function of the program that is called, before a store to it, for the
   same reason, but not a field that its statement reads only on the way to
-  the one it gives up, `free(a->next->next)`, which stays what it was; and
+  the one it gives up, `free(a->next->next)`, which stays what it was, and
+  not a field whose records the next statements free one after the other
+  down to the local that leads to it, `free(a->next->next); free(a->next);
+  free(a);`, after which nothing reads it; and
   a function
   that the program names and that returns an owner out of a record it
   only borrows, `return p->next;`, which would leave `None` in the record;

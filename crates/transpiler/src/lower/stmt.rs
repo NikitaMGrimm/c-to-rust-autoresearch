@@ -1453,6 +1453,9 @@ fn read_later<'a>(
         {
             return false;
         }
+        if freed_to_the_root(part, rest.clone(), program) {
+            return false;
+        }
         let reads =
             |within: &Expr| within.any(&mut |read| called(read) || same_place(read, part, false));
         // A call in the statement itself that does not get the field may
@@ -1504,6 +1507,43 @@ fn read_later<'a>(
         false
     });
     later
+}
+
+/// Whether the statements that follow free every record on the way to the
+/// place, one after the other and down to the local that leads to it:
+/// `free(a->b->c); free(a->b); free(a);`. Nothing reads the place after
+/// them.
+fn freed_to_the_root<'a>(
+    place: &Expr,
+    mut rest: impl Iterator<Item = &'a Stmt>,
+    program: &Program,
+) -> bool {
+    let mut holder = place;
+    loop {
+        let ExprKind::Member {
+            base, arrow: true, ..
+        } = &holder.kind
+        else {
+            return false;
+        };
+        holder = base.uncast();
+        let Some(Stmt::Expr(Expr {
+            kind: ExprKind::Call(callee, args),
+            ..
+        })) = rest.next()
+        else {
+            return false;
+        };
+        if callee.function() != Some("free")
+            || args.len() != 1
+            || !same_place(&args[0], holder, true)
+        {
+            return false;
+        }
+        if let ExprKind::Var(var) = holder.kind {
+            return !program.vars[var].kind.is_global();
+        }
+    }
 }
 
 /// Where the statement after `t = place;`, past stores of a place to
