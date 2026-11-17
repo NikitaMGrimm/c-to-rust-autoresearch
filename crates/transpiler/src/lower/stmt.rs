@@ -36,6 +36,12 @@ impl Lower<'_> {
         let outer = self.restored;
         let mut stmts = stmts.iter().peekable();
         while let Some(stmt) = stmts.next() {
+            if let Some(at) = stored_back(stmt, stmts.clone(), self.program) {
+                self.listed(unsupported(
+                    "a value stored back into the place it was just read from: no rule yet",
+                    at,
+                ))?;
+            }
             let nesting = self.nesting.len();
             self.restored = None;
             self.restored_element = self.moved_element(stmt, stmts.clone());
@@ -1498,6 +1504,53 @@ fn read_later<'a>(
         false
     });
     later
+}
+
+/// Where the statement after `t = place;`, past stores of a place to
+/// itself, which are left out, is `place = t;`: the lints take the two
+/// for an exchange that went wrong and refuse them.
+fn stored_back<'a>(
+    stmt: &Stmt,
+    mut rest: impl Iterator<Item = &'a Stmt>,
+    program: &Program,
+) -> Option<u32> {
+    use super::expr::{plain, same_value};
+    let store = |stmt: &'a Stmt| match stmt {
+        Stmt::Expr(Expr {
+            kind:
+                ExprKind::Assign {
+                    op: None,
+                    target,
+                    value,
+                },
+            at,
+            ..
+        }) => Some((&**target, &**value, *at)),
+        _ => None,
+    };
+    let next = rest.find(|next| {
+        !store(next).is_some_and(|(target, value, _)| same_value(target, plain(value)))
+    })?;
+    let (back_to, back, at) = store(next)?;
+    let read =
+        |kept: &Expr, from: &Expr| same_value(back_to, plain(from)) && same_value(back, kept);
+    let found = match stmt {
+        Stmt::Decl(var) => program.vars[*var].init.as_ref().is_some_and(|from| {
+            same_value(back_to, plain(from))
+                && matches!(back.kind, ExprKind::Var(named) if named == *var)
+        }),
+        Stmt::Expr(Expr {
+            kind:
+                ExprKind::Assign {
+                    op: None,
+                    target,
+                    value,
+                },
+            ..
+        }) => read(target, value),
+        _ => false,
+    };
+    found.then_some(at)
 }
 
 /// Whether two places may be one: the same field or element, at any

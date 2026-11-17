@@ -60,9 +60,14 @@ Entry format, newest last:
   literal takes its suffix only where Rust cannot tell its type; `let`, with `mut` only when the variable
   changes, and zero for a missing initialiser. An enumerator is a
   constant of type `i32`; one whose value is beyond `int`, which GNU C
-  allows, is refused
+  allows, is refused. A store of a place to itself without an effect,
+  `x = x;`, `a[k] = a[k];`, `*p = *p;`, `s.f = s.f;`, also `x = *p` where
+  R61 made `p` the place `x`, is left out as a
+  statement, since it does nothing and the lints refuse it, and is
+  refused where its value is used
 - Needs: `Facts::mutated`
-- Motivation: skeleton
+- Motivation: skeleton; the store of a place to itself: programs outside
+  the development set; no development program needs it
 - Changes: none
 
 ## R3: control flow

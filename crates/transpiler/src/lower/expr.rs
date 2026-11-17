@@ -1105,6 +1105,9 @@ impl Lower<'_> {
         if target.is_errno() {
             return unsupported("a store to `errno` other than 0 before a call", expr.at);
         }
+        if op.is_none() && same_value(target, plain(value)) {
+            return unsupported("a store of a place to itself whose value is used", expr.at);
+        }
         if target.ty.function().is_some() && op.is_none() {
             let value = match place_slot(target) {
                 Some(slot) => {
@@ -1318,6 +1321,13 @@ impl Lower<'_> {
             return self.scan_chain(&reads, Vec::new(), None);
         }
         Ok(match &expr.kind {
+            // A store of a place to itself does nothing, and the lints
+            // refuse it.
+            ExprKind::Assign {
+                op: None,
+                target,
+                value,
+            } if same_value(target, plain(value)) => Vec::new(),
             ExprKind::Assign { op, target, value } => {
                 statement(self.assign(expr, op.as_ref(), target, value)?)
             }
@@ -1484,7 +1494,7 @@ fn calls_realloc(expr: &Expr) -> bool {
         || expr.children().into_iter().any(calls_realloc)
 }
 
-fn same_value(left: &Expr, right: &Expr) -> bool {
+pub(crate) fn same_value(left: &Expr, right: &Expr) -> bool {
     left.ty == right.ty
         && match (&left.kind, &right.kind) {
             (ExprKind::Var(one), ExprKind::Var(other)) => one == other,
@@ -1520,6 +1530,18 @@ fn same_value(left: &Expr, right: &Expr) -> bool {
             }
             _ => false,
         }
+}
+
+/// The place itself where the value is `*&place`, which a pointer that
+/// names one place leaves behind.
+pub(super) fn plain(value: &Expr) -> &Expr {
+    match &value.kind {
+        ExprKind::Deref(pointer) => match &pointer.uncast().kind {
+            ExprKind::AddrOf(place) if place.ty == value.ty => plain(place),
+            _ => value,
+        },
+        _ => value,
+    }
 }
 
 /// The integer that `value` converted, where converting `value` to `to`

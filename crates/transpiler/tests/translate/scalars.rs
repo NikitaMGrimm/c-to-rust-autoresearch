@@ -1351,3 +1351,53 @@ int main(void) {
         &["while i < 2 {", "while i <= 1 {", "for i in 1..=1 {"],
     );
 }
+
+/// A store of a place to itself does nothing, and the lints refuse it: as
+/// a statement it is left out, and where its value is used it is refused.
+#[test]
+fn a_store_of_a_place_to_itself_is_left_out() {
+    let rust = check(
+        "self_store",
+        r#"
+#include <stdio.h>
+struct tally { int seen; int kept; };
+int main(int argc, char **argv) {
+    int row[3] = {4, 5, 6};
+    int at = argc - 1;
+    int width = argc * 7;
+    int *mid = &row[1];
+    struct tally t = {2, 9};
+    row[at] = row[at];
+    width = width;
+    *mid = *mid;
+    t.kept = t.kept;
+    for (int i = 0; i < 3; i++) {
+        row[i] = row[i];
+        width += i;
+    }
+    if (width > 7) width = width;
+    int *wide = &width;
+    width = *wide;
+    width += 2;
+    row[0] = *wide;
+    *mid += 1;
+    t.kept++;
+    printf("%d %d %d %d\n", row[at], width, *mid, t.kept);
+    return 0;
+}
+"#,
+        &[&[], &["x"]],
+        "",
+    );
+    assert!(!rust.contains("width = width"), "{rust}");
+    assert!(!rust.contains("] = row["), "{rust}");
+    assert!(!rust.contains("t.kept = t.kept"), "{rust}");
+    assert_eq!(
+        translate(
+            "self_store_value",
+            "int main(int argc, char **argv) {\n    int n = argc;\n    int m = (n = n) + 1;\n    return m - n - 1;\n}\n"
+        )
+        .unwrap_err(),
+        "unsupported: a store of a place to itself whose value is used, at line 3"
+    );
+}

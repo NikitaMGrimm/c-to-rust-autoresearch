@@ -531,3 +531,44 @@ fn a_record_used_while_a_pointer_to_a_part_of_it_is_in_use_is_refused() {
         assert_eq!(refused(name, body), message(line), "{name}");
     }
 }
+
+#[test]
+fn a_value_stored_back_where_it_was_read_is_refused() {
+    let refusal = translate(
+        "stored_back",
+        r#"
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int n = argc;
+    int *p = &n;
+    int kept = *p;
+    *p = *p;
+    *p = kept;
+    printf("%d\n", n);
+    return 0;
+}
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        refusal,
+        "unsupported: a value stored back into the place it was just read from: no rule yet, at line 8"
+    );
+    // A cast that narrows the value stores another one back.
+    let rust = crate::common::check(
+        "stored_back_narrower",
+        r#"
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int n = argc * 130;
+    int kept = n;
+    n = (char)kept;
+    printf("%d\n", n);
+    return 0;
+}
+"#,
+        &[&[], &["a"]],
+        "",
+    );
+    crate::common::assert_lines(&rust, &["n = kept as u8 as i8 as i32;"]);
+}
