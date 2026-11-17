@@ -884,6 +884,14 @@ impl Lower<'_> {
         if init.is_none() && self.program.unset.contains(&id) {
             return Ok(vec![parse_quote!(let #mutability #name: #ty;)]);
         }
+        // R71: `copy_from_slice` stores to the array, so it is `mut`.
+        if let Some((length, text)) = init.and_then(|init| self.long_text(&var.ty, init)) {
+            let (zeros, copy) = self.text_start(parse_quote!(#name), length, text);
+            return Ok(vec![
+                parse_quote!(let mut #name = #zeros;),
+                parse_quote!(#copy;),
+            ]);
+        }
         let value = match init {
             Some(init) => self.init(&var.ty, None, init)?,
             None => self.zero(&var.ty, var.at)?,

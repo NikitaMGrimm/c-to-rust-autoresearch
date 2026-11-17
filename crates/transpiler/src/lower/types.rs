@@ -272,6 +272,39 @@ impl Lower<'_> {
         }
     }
 
+    /// R71: the string that starts an array of bytes much longer than it,
+    /// with the array's length, which the array's zeros and a copy of the
+    /// string give rather than every byte written out.
+    pub(super) fn long_text<'e>(&self, ty: &Type, init: &'e Expr) -> Option<(usize, &'e [u8])> {
+        match (ty, &init.kind) {
+            (Type::Array(element, Some(length)), ExprKind::Str(bytes))
+                if **element == Type::Char && !bytes.is_empty() =>
+            {
+                let length = usize::try_from(*length).ok()?;
+                (length > bytes.len() + 8).then_some((length, bytes.as_slice()))
+            }
+            _ => None,
+        }
+    }
+
+    /// R71: the zeros of an array of `length` bytes, and the copy of `text`
+    /// into the start of `place`. A constant cannot index with a range.
+    pub(super) fn text_start(
+        &self,
+        place: syn::Expr,
+        length: usize,
+        text: &[u8],
+    ) -> (syn::Expr, syn::Expr) {
+        let size = rust::int(length as i128, "");
+        let count = rust::int(text.len() as i128, "");
+        let literal = syn::LitByteStr::new(text, proc_macro2::Span::call_site());
+        let copy = match self.fixed.get() {
+            true => parse_quote!(#place.split_at_mut(#count).0.copy_from_slice(#literal)),
+            false => parse_quote!(#place[..#count].copy_from_slice(#literal)),
+        };
+        (parse_quote!([0u8; #size]), copy)
+    }
+
     /// Whether an initialiser gives the zero of its type and no pointer.
     fn is_zero(&self, init: &Expr) -> bool {
         match &init.kind {
@@ -353,8 +386,13 @@ impl Lower<'_> {
                 if bytes.is_empty() {
                     return self.zero(ty, init.at);
                 }
-                if length > bytes.len() + 8 {
-                    return unsupported("a string in a much longer array: no rule yet", init.at);
+                if let Some((length, text)) = self.long_text(ty, init) {
+                    let (zeros, copy) = self.text_start(parse_quote!(bytes), length, text);
+                    return Ok(parse_quote!({
+                        let mut bytes = #zeros;
+                        #copy;
+                        bytes
+                    }));
                 }
                 let mut bytes = bytes.clone();
                 bytes.resize(length, 0);

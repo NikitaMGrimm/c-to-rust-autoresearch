@@ -1683,3 +1683,23 @@ Entry format, newest last:
   as written; no development program needs it
 - Changes: narrows the refusals `a comparison of a value with itself` and
   `the same value on both sides of …` of R25
+
+## R71: a string at the start of a much longer array of bytes
+
+- C: a `char` array of a constant length initialised from a string
+  literal that is more than 8 bytes shorter than it, `char name[17] =
+  "ember";`, as a local, a `static` local, a global, a field of a
+  record's initialiser or an element of an array of arrays
+- Rust: for a local, `let mut name = [0u8; 17];` and
+  `name[..5].copy_from_slice(b"ember");`; where an expression is needed, a
+  block `{ let mut bytes = [0u8; 17]; bytes[..5].copy_from_slice(b"ember");
+  bytes }`, and in a `static`, whose value is a constant that cannot
+  index with a range, `bytes.split_at_mut(5).0.copy_from_slice(b"ember")`.
+  A shorter array keeps every byte written out, `*b"ember\0\0\0"`, and an
+  empty string the array's zeros. Refused as before: `signed char` and
+  `unsigned char` arrays and a literal with a prefix
+- Needs: nothing
+- Motivation: programs outside the development set keep names and
+  messages in arrays much longer than their first text; no development
+  program needs it
+- Changes: lifts R6's refusal of a string in a much longer array

@@ -94,6 +94,7 @@ Keep to these:
 | `struct s` | `struct S` with `Clone`, and `Copy` and `Default` where its fields allow |
 | A bit-field `unsigned level : 3` | A field `level: u32`; every store keeps the low bits, `value & 7` |
 | `T a[N]` | `[T; N]` |
+| `char name[17] = "ember";`, a string much shorter than its array | `let mut name = [0u8; 17]; name[..5].copy_from_slice(b"ember");`; elsewhere a block with the same two lines that ends in the array, and in a `static` `bytes.split_at_mut(5).0.copy_from_slice(…)`, since a constant cannot index with a range |
 | `T a[n]`, a local whose length is a variable | `Vec<T>`, `vec![zero; n as usize]` |
 | A local without an initialiser | Declared where the block first assigns it, or by the `for` that does; otherwise it starts at zero |
 | A global that never changes | `const` or `static`, in upper case |

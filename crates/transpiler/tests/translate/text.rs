@@ -880,3 +880,65 @@ int main(int argc, char **argv) {
         &["let (d, end, range) = parse_float_checked::<f64>(&args[1]);"],
     );
 }
+
+#[test]
+fn a_string_starts_a_much_longer_array_of_bytes() {
+    let rust = check(
+        "longstr",
+        r#"
+#include <stdio.h>
+#include <string.h>
+#define WIDE 40
+struct tag { int weight; char note[32]; };
+char shelf[WIDE] = "pine";
+const char motto[48] = "still\tthere";
+struct tag fixed_tag = { 4, "steady" };
+struct tag tags[2] = { { 1, "oak" }, { 2, "a\0b" } };
+void grow(const char *more) {
+    static char trail[36] = "<";
+    strcat(trail, more);
+    strcat(shelf, more);
+    printf("%s %s\n", trail, shelf);
+}
+int main(int argc, char *argv[]) {
+    char name[17] = "ember";
+    char words[3][20] = { "x", "yz" };
+    char tiny[6] = "ab";
+    int far = argc + 12;
+    tags[argc].weight += 3;
+    strcat(words[2], "w");
+    grow("-");
+    grow("+");
+    printf("%s %lu %d %s %s\n", name, strlen(name), name[far], motto, tiny);
+    printf("%s %s %s %d %d\n", words[0], words[1], words[2], tags[1].note[2], tags[1].weight);
+    printf("%s %d %s\n", fixed_tag.note, fixed_tag.weight, tags[0].note);
+    return 0;
+}
+"#,
+        &[&[]],
+        "",
+    );
+    assert_lines(
+        &rust,
+        &[
+            "let mut name = [0u8; 17];",
+            "name[..5].copy_from_slice(b\"ember\");",
+            "let mut bytes = [0u8; 20];",
+            "bytes[..2].copy_from_slice(b\"yz\");",
+            "bytes.split_at_mut(11).0.copy_from_slice(b\"still\\tthere\");",
+            "bytes.split_at_mut(6).0.copy_from_slice(b\"steady\");",
+            "bytes[..3].copy_from_slice(b\"a\\0b\");",
+            "bytes[..1].copy_from_slice(b\"<\");",
+            "bytes[..4].copy_from_slice(b\"pine\");",
+        ],
+    );
+}
+
+#[test]
+fn a_string_in_a_long_array_of_other_bytes_is_refused() {
+    let c = "#include <stdio.h>\nint main(void) {\n    unsigned char raw[24] = \"bits\";\n    printf(\"%d\\n\", raw[0]);\n    return 0;\n}\n";
+    assert_eq!(
+        translate("longstr-unsigned", c).unwrap_err(),
+        "unsupported: a string literal as a value: no rule yet, at line 3"
+    );
+}
