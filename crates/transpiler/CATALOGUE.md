@@ -64,7 +64,11 @@ Entry format, newest last:
   `x = x;`, `a[k] = a[k];`, `*p = *p;`, `s.f = s.f;`, also `x = *p` where
   R61 made `p` the place `x`, is left out as a
   statement, since it does nothing and the lints refuse it, and is
-  refused where its value is used
+  refused where its value is used. Refused as well: a value stored back
+  into the place it was just read from, `t = x; x = t;`, also past such a
+  store that is left out, which the lints take for an exchange that went
+  wrong; a cast on the way back, `x = (char)t;`, stores another value and
+  is translated
 - Needs: `Facts::mutated`
 - Motivation: skeleton; the store of a place to itself: programs outside
   the development set; no development program needs it
@@ -155,7 +159,8 @@ Entry format, newest last:
   copy of the function; and a call that hands on the address of a
   variable to store through and reads the variable in a later argument,
   `shift(&at, at.x / 4)`, since Rust lends the variable before it reads
-  it; and a local pointer to a variable of its function
+  it, but not where the call lends one field and reads another,
+  `add(&at.x, at.y)`; and a local pointer to a variable of its function
   that is used after the variable itself was stored to since the pointer
   got its address, or read where the pointer is stored through, since the
   borrow is still in use there, also where the store is another pointer
@@ -526,7 +531,9 @@ Entry format, newest last:
   same value on both sides of `-`, `/`, `&`, `|` or `^`, also where the
   two sides differ only in the order of the operands of a `+` or `*` that
   is no method, of `&`, `|` or `^`, or in a cast to the type the value
-  has, `30 + x <= x + 30`, as the lints take them for the same, and `x & 0`,
+  has, `30 + x <= x + 30`, as the lints take them for the same (with
+  equal floating constants too, `x + 2.0 == 2.0 + x`, which is the test
+  for NaN above), and `x & 0`,
   `0 * x` and `0 / x`, which are 0 whatever `x` is; an unsigned `*`, a
   method, and a 0 that is an enumerator are no such case. Two constants
   are no such case: a comparison of two constants is its value as C's
