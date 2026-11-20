@@ -70,13 +70,23 @@ fi
 # would build or run the transpiler, which is agent code, on the machine
 # that holds the private programs; loop/cargo runs it in a sandbox. A
 # workspace build includes the transpiler too, and so does a build from its
-# directory.
+# directory. The directory is followed through the call's commands in order:
+# a cd into the transpiler's directory counts from there on, and a cd with an
+# absolute path or .. leaves it unless it names that directory again.
 if $driver && [[ $tool == Bash ]]; then
   cargo='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(build|b|check|c|clippy|test|t|run|r|bench|rustc|doc|install)([[:space:]]|$)'
   target='(-p|--package)([[:space:]]+|=)transpiler([^A-Za-z0-9_-]|$)|--workspace([^A-Za-z0-9_-]|$)|--all([^A-Za-z0-9_-]|$)|--manifest-path([[:space:]]+|=)[^[:space:]]*transpiler'
+  cd='^[[:space:]]*cd([[:space:]]+([^[:space:]]*))?'
   in_crate=false
-  [[ $text =~ (^|[^A-Za-z0-9_.-])cd[[:space:]]+[^[:space:]\;\&\|]*crates/transpiler ]] && in_crate=true
   while IFS= read -r part; do
+    if [[ $part =~ $cd ]]; then
+      dir=${BASH_REMATCH[2]}
+      if [[ $dir == *crates/transpiler* ]]; then
+        in_crate=true
+      elif [[ -z $dir || $dir == /* || $dir == ~* || $dir == *..* ]]; then
+        in_crate=false
+      fi
+    fi
     if [[ $part =~ $cargo ]] && { [[ $part =~ $target ]] || $in_crate; }; then
       block "the call runs the transpiler's build outside the sandbox; use loop/cargo"
     fi

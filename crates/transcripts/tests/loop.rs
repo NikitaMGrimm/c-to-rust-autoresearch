@@ -167,6 +167,14 @@ fn the_driver_may_use_its_thread_and_skills_but_not_private_places() {
             "Bash",
             json!({"command": "git log -- crates/transpiler && cargo fmt"}),
         ),
+        (
+            "Bash",
+            json!({"command": "cd crates/transpiler; sed -n 1p DESIGN.md; cd ../..; cargo run -q -p eval"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cd /w; (cargo run -q -p eval -- --quiet > a.log 2>&1) &\ncd crates/transpiler; grep -n fn src/lib.rs"}),
+        ),
     ];
     for (tool, input) in allowed {
         assert_eq!(driver_guard(tool, input.clone()), Some(0), "{tool} {input}");
@@ -211,6 +219,10 @@ fn the_driver_may_use_its_thread_and_skills_but_not_private_places() {
         (
             "Bash",
             json!({"command": "cd crates/transpiler && cargo test"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cd /w; cd crates/transpiler/src; cargo test"}),
         ),
     ];
     for (tool, input) in blocked {
