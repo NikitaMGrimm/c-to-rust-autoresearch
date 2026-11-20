@@ -146,6 +146,27 @@ fn the_driver_may_use_its_thread_and_skills_but_not_private_places() {
         ("Skill", json!({"skill": "file-pr"})),
         ("Read", json!({"file_path": "/h/.claude/skills/x/SKILL.md"})),
         ("Bash", json!({"command": "/repo/loop/judge r1"})),
+        (
+            "Bash",
+            json!({"command": "loop/cargo test -q -p transpiler 2>&1 | tail"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cargo run -q -p eval -- bench/dev --json a.json"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cargo clippy --all-targets -- -D warnings"}),
+        ),
+        ("Bash", json!({"command": "cargo test -p transcripts"})),
+        (
+            "Bash",
+            json!({"command": "cd local/wt-transpiler-x && cargo run -q -p eval -- bench/dev"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "git log -- crates/transpiler && cargo fmt"}),
+        ),
     ];
     for (tool, input) in allowed {
         assert_eq!(driver_guard(tool, input.clone()), Some(0), "{tool} {input}");
@@ -169,6 +190,27 @@ fn the_driver_may_use_its_thread_and_skills_but_not_private_places() {
         (
             "Read",
             json!({"file_path": "/tmp/c2r-eval-812-0/3/rust/translation.rs"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cargo build -q -p transpiler 2>&1"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cd wt && RUSTFLAGS=-g cargo test --package=transpiler"}),
+        ),
+        ("Bash", json!({"command": "cargo test --workspace"})),
+        (
+            "Bash",
+            json!({"command": "cargo clippy --all -- -D warnings"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cargo run --manifest-path crates/transpiler/Cargo.toml -- a.c"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "cd crates/transpiler && cargo test"}),
         ),
     ];
     for (tool, input) in blocked {
