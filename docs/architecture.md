@@ -217,7 +217,9 @@ follows. It is not in a sandbox itself, so three things stand in for one:
   directory that holds only the Rust toolchain and the checkout, and neither
   the corpus cache nor the private directory of any run that `loop/drive`
   prepared, wherever they are. The driver builds and tests the transpiler
-  only so.
+  only so, and the guard blocks its plain cargo builds, tests and runs that
+  name the transpiler or the whole workspace or start in the transpiler's
+  directory.
 
 `loop/judge RUN`, which the driver calls as `local/judge`, runs the gate with
 `--strict --run RUN` on the commit of the driver's worktree against

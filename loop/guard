@@ -66,6 +66,22 @@ done
 if [[ $text =~ (^|[^A-Za-z0-9_.-])c2r-(eval|gate)- ]]; then
   block "the call names a scratch directory of the evaluator"
 fi
+# The driver and the workers it starts run outside a sandbox, so plain cargo
+# would build or run the transpiler, which is agent code, on the machine
+# that holds the private programs; loop/cargo runs it in a sandbox. A
+# workspace build includes the transpiler too, and so does a build from its
+# directory.
+if $driver && [[ $tool == Bash ]]; then
+  cargo='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(build|b|check|c|clippy|test|t|run|r|bench|rustc|doc|install)([[:space:]]|$)'
+  target='(-p|--package)([[:space:]]+|=)transpiler([^A-Za-z0-9_-]|$)|--workspace([^A-Za-z0-9_-]|$)|--all([^A-Za-z0-9_-]|$)|--manifest-path([[:space:]]+|=)[^[:space:]]*transpiler'
+  in_crate=false
+  [[ $text =~ (^|[^A-Za-z0-9_.-])cd[[:space:]]+[^[:space:]\;\&\|]*crates/transpiler ]] && in_crate=true
+  while IFS= read -r part; do
+    if [[ $part =~ $cargo ]] && { [[ $part =~ $target ]] || $in_crate; }; then
+      block "the call runs the transpiler's build outside the sandbox; use loop/cargo"
+    fi
+  done < <(sed -E 's/(&&|\|\||[;|&(])/\n/g' <<<"$text")
+fi
 # Settings, transcripts, memory and the owner's skills are off limits. The
 # agent may read back the tool output that Claude Code saved for it, but a
 # path with .. could climb out of that directory.
