@@ -27,7 +27,8 @@ pub(crate) fn run_sandboxed(
     writable: &Path,
     stdin: &[u8],
 ) -> Result<Run, String> {
-    let scratch = Scratch::new("sandbox")?;
+    // The command can read this directory's name among its mounts.
+    let scratch = Scratch::unnumbered("sandbox")?;
     let proof = scratch.canonicalize().map_err(|err| err.to_string())?;
     let ran = run(
         &mut hiding(&temp(), inner, readable, writable, Some(&proof)),
@@ -40,8 +41,7 @@ pub(crate) fn run_sandboxed(
     Ok(ran)
 }
 
-/// The directory that bubblewrap makes in `proof` once everything else is
-/// set up.
+/// The directory that bubblewrap makes in `proof` after every other mount.
 const STARTED: &str = "started";
 
 /// TMPDIR may put the temporary directory elsewhere than /tmp.
@@ -51,9 +51,9 @@ fn temp() -> PathBuf {
 }
 
 /// `sandboxed` for the temporary directory `temp`. With `proof`, a new
-/// directory outside the sandbox, bubblewrap makes `STARTED` in it as its
-/// last step before the command and then hides it, so the code in the
-/// sandbox can neither make nor remove it.
+/// directory outside the sandbox, bubblewrap makes `STARTED` in it after
+/// every other mount and then hides it, so the code in the sandbox can
+/// neither make nor remove it.
 fn hiding(
     temp: &Path,
     inner: &Command,
@@ -174,5 +174,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(String::from_utf8_lossy(&removed.stdout), "");
+        // Its name, which the code can read, does not count the runs before.
+        let mounts = run(&dir, "cat /proc/self/mountinfo").unwrap();
+        let mounts = String::from_utf8_lossy(&mounts.stdout);
+        let numbered = format!("c2r-sandbox-{}", std::process::id());
+        assert!(mounts.contains("c2r-sandbox-"), "{mounts}");
+        assert!(!mounts.contains(&numbered), "{mounts}");
     }
 }

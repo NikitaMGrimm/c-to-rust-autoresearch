@@ -78,12 +78,14 @@ symlinks as links. Scratch directories are new and private to the user
 A sandbox that does not start says nothing about the code in it, as when
 the kernel refuses a new namespace. For the transpiler, the compile of a
 translation and the Rust program, bubblewrap therefore makes a directory
-outside the sandbox as its last step before the command, and hides it from
-the command. Without that directory after the run, the evaluation stops with
-an error and no result is recorded; the gate then judges nothing. The code
-in the sandbox can neither make nor remove the directory, so it cannot end a
-run that way. A build of the transpiler that fails stops the evaluation in
-any case.
+outside the sandbox after every other mount, and hides it from the command.
+Without that directory after the run, the evaluation stops with an error and
+no result is recorded; the gate then judges nothing. The code in the sandbox
+can neither make nor remove the directory, so it cannot end a run that way,
+and the directory's name is random, so it says nothing about earlier runs. A
+failure after it is made, such as a command that cannot be started, is still
+the run's result. A build of the transpiler that fails stops the evaluation
+in any case.
 
 The transpiler's tests and build scripts are agent code as well. The
 workspace's default members leave the transpiler out, so plain `cargo build`,
