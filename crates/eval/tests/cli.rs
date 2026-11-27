@@ -101,3 +101,47 @@ fn translations_cannot_read_the_program_under_another_tmpdir() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+/// A sandbox that does not start says nothing about a translation, so the
+/// evaluation stops with an error and records no result.
+#[test]
+fn a_sandbox_that_does_not_start_is_an_error_not_a_result() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "a_sandbox_that_does_not_start-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (bench, translations) = (dir.join("bench"), dir.join("translations"));
+    for dir in [&bench, &translations] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(
+        bench.join("g1_hello.c"),
+        "#include <stdio.h>\nint main(void) { puts(\"hi\"); return 0; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        translations.join("g1_hello.rs"),
+        "fn main() {\n    println!(\"hi\");\n}\n",
+    )
+    .unwrap();
+    let json = dir.join("results.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_eval"))
+        .arg(&bench)
+        .arg("--translations")
+        .arg(&translations)
+        .arg("--json")
+        .arg(&json)
+        // The sandbox hides the home directory under an empty one, and
+        // bubblewrap cannot make one where the file system is read-only.
+        .env("HOME", "/no-such-home-for-the-sandbox")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("the sandbox did not start"), "{stderr}");
+    assert!(!json.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

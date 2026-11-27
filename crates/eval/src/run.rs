@@ -6,7 +6,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::sandbox::sandboxed;
+use crate::sandbox::run_sandboxed;
 use crate::spec::Input;
 
 const RUN_TIMEOUT: &str = "10";
@@ -58,21 +58,26 @@ impl Run {
 
 /// Runs the C program `program` on `input` within the run time limit.
 pub fn run_program(program: &Path, input: &Input) -> Run {
-    run_in_place(program, input, false)
+    run(&mut in_place(program, input, false), &input.stdin)
 }
 
-/// Runs `program` from its own directory as `./NAME`, so C and Rust programs
-/// with the same file name see the same `argv[0]` and write files apart.
-pub(crate) fn run_in_place(program: &Path, input: &Input, memory_limit: bool) -> Run {
+/// Runs the translation `program` on `input` in the sandbox and with the
+/// memory limit: only translations are agent-written. The error is the
+/// sandbox's, which did not start.
+pub(crate) fn run_translation(program: &Path, input: &Input) -> Result<Run, String> {
+    let dir = program.parent().unwrap_or(Path::new("."));
+    run_sandboxed(&in_place(program, input, true), &[], dir, &input.stdin)
+}
+
+/// The command that runs `program` from its own directory as `./NAME`, so C
+/// and Rust programs with the same file name see the same `argv[0]` and write
+/// files apart.
+fn in_place(program: &Path, input: &Input, memory_limit: bool) -> Command {
     let name = Path::new(".").join(program.file_name().unwrap_or_default());
     let dir = program.parent().unwrap_or(Path::new("."));
     let mut command = limited(RUN_TIMEOUT, memory_limit);
     command.arg(name).args(&input.args).current_dir(dir);
-    // Only translations get the memory limit, and only they are agent-written.
-    if memory_limit {
-        command = sandboxed(&command, &[], dir);
-    }
-    run(&mut command, &input.stdin)
+    command
 }
 
 /// A command that runs its arguments for at most `seconds`, killing them two

@@ -1,5 +1,6 @@
 //! Paths the tools share, and scratch directories.
 
+use std::io::Read;
 use std::ops::Deref;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,21 @@ impl Scratch {
             std::process::id(),
             CREATED.fetch_add(1, Ordering::Relaxed)
         ));
+        Self::create(path)
+    }
+
+    /// Like `new`, under a random name: agent code can read the name of this
+    /// directory, and a number would tell it how many were made before.
+    pub(crate) fn unnumbered(tool: &str) -> Result<Self, String> {
+        let mut random = [0; 8];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut random))
+            .map_err(|err| format!("cannot read /dev/urandom: {err}"))?;
+        let name = format!("c2r-{tool}-{:016x}", u64::from_ne_bytes(random));
+        Self::create(std::env::temp_dir().join(name))
+    }
+
+    fn create(path: PathBuf) -> Result<Self, String> {
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&path)
