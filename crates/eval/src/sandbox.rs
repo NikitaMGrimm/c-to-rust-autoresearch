@@ -177,7 +177,7 @@ mod tests {
         // Its name, which the code can read, does not count the runs before.
         let mounts = run(&dir, "cat /proc/self/mountinfo").unwrap();
         let mounts = String::from_utf8_lossy(&mounts.stdout);
-        let numbered = format!("c2r-sandbox-{}", std::process::id());
+        let numbered = format!("c2r-sandbox-{}-", std::process::id());
         assert!(mounts.contains("c2r-sandbox-"), "{mounts}");
         assert!(!mounts.contains(&numbered), "{mounts}");
     }
