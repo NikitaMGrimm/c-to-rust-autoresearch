@@ -75,11 +75,15 @@ its checkout's tracked and unignored files, which leaves out `local/` and keeps
 symlinks as links. Scratch directories are new and private to the user
 (`files::Scratch`).
 
-A sandbox that does not start says nothing about the code in it. When
-bubblewrap cannot be run, or stops before the command with its own message
-and the exit code 1, the evaluation stops with an error and no result is
-recorded; the gate then judges nothing. Agent code that ends the same way
-stops the evaluation too, and the error leaves out what it printed.
+A sandbox that does not start says nothing about the code in it, as when
+the kernel refuses a new namespace. For the transpiler, the compile of a
+translation and the Rust program, bubblewrap therefore makes a directory
+outside the sandbox as its last step before the command, and hides it from
+the command. Without that directory after the run, the evaluation stops with
+an error and no result is recorded; the gate then judges nothing. The code
+in the sandbox can neither make nor remove the directory, so it cannot end a
+run that way. A build of the transpiler that fails stops the evaluation in
+any case.
 
 The transpiler's tests and build scripts are agent code as well. The
 workspace's default members leave the transpiler out, so plain `cargo build`,

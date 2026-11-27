@@ -6,7 +6,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::sandbox::{sandboxed, started};
+use crate::sandbox::run_sandboxed;
 use crate::spec::Input;
 
 const RUN_TIMEOUT: &str = "10";
@@ -66,8 +66,7 @@ pub fn run_program(program: &Path, input: &Input) -> Run {
 /// sandbox's, which did not start.
 pub(crate) fn run_translation(program: &Path, input: &Input) -> Result<Run, String> {
     let dir = program.parent().unwrap_or(Path::new("."));
-    let command = in_place(program, input, true);
-    started(run(&mut sandboxed(&command, &[], dir), &input.stdin))
+    run_sandboxed(&in_place(program, input, true), &[], dir, &input.stdin)
 }
 
 /// The command that runs `program` from its own directory as `./NAME`, so C

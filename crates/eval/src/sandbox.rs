@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::run::Run;
+use crate::files::Scratch;
+use crate::run::{Run, run};
 
 /// Wraps agent-written code: no network, a read-only file system except
 /// `writable`, and a hidden home directory, where the private benchmarks and
@@ -14,18 +15,52 @@ use crate::run::Run;
 /// hidden too: the sockets of the user's systemd and D-Bus, Docker and WSL's
 /// interop there would each start a process outside the sandbox.
 pub(crate) fn sandboxed(inner: &Command, readable: &[&Path], writable: &Path) -> Command {
-    // TMPDIR may put the temporary directory elsewhere than /tmp.
-    let temp = std::env::temp_dir();
-    hiding(
-        &temp.canonicalize().unwrap_or(temp),
-        inner,
-        readable,
-        writable,
-    )
+    hiding(&temp(), inner, readable, writable, None)
 }
 
-/// `sandboxed` for the temporary directory `temp`.
-fn hiding(temp: &Path, inner: &Command, readable: &[&Path], writable: &Path) -> Command {
+/// Runs `inner` in the sandbox on `stdin`. The error says that the sandbox
+/// did not start, as when the kernel refuses a new namespace: such a run
+/// says nothing about the code in it, so it must not become a result.
+pub(crate) fn run_sandboxed(
+    inner: &Command,
+    readable: &[&Path],
+    writable: &Path,
+    stdin: &[u8],
+) -> Result<Run, String> {
+    let scratch = Scratch::new("sandbox")?;
+    let proof = scratch.canonicalize().map_err(|err| err.to_string())?;
+    let ran = run(
+        &mut hiding(&temp(), inner, readable, writable, Some(&proof)),
+        stdin,
+    );
+    // Not what the run printed: that may be the code's.
+    if !proof.join(STARTED).is_dir() {
+        return Err("the sandbox did not start (bubblewrap failed); nothing was evaluated".into());
+    }
+    Ok(ran)
+}
+
+/// The directory that bubblewrap makes in `proof` once everything else is
+/// set up.
+const STARTED: &str = "started";
+
+/// TMPDIR may put the temporary directory elsewhere than /tmp.
+fn temp() -> PathBuf {
+    let temp = std::env::temp_dir();
+    temp.canonicalize().unwrap_or(temp)
+}
+
+/// `sandboxed` for the temporary directory `temp`. With `proof`, a new
+/// directory outside the sandbox, bubblewrap makes `STARTED` in it as its
+/// last step before the command and then hides it, so the code in the
+/// sandbox can neither make nor remove it.
+fn hiding(
+    temp: &Path,
+    inner: &Command,
+    readable: &[&Path],
+    writable: &Path,
+    proof: Option<&Path>,
+) -> Command {
     let mut command = Command::new("bwrap");
     command.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
     command.args(["--tmpfs", "/tmp", "--tmpfs", "/run"]);
@@ -52,6 +87,11 @@ fn hiding(temp: &Path, inner: &Command, readable: &[&Path], writable: &Path) -> 
         command.arg("--ro-bind").arg(path).arg(path);
     }
     command.arg("--bind").arg(writable).arg(writable);
+    if let Some(proof) = proof {
+        command.arg("--bind").arg(proof).arg(proof);
+        command.arg("--dir").arg(proof.join(STARTED));
+        command.arg("--tmpfs").arg(proof);
+    }
     if let Some(dir) = inner.get_current_dir() {
         command.arg("--chdir").arg(dir);
     }
@@ -64,20 +104,6 @@ fn hiding(temp: &Path, inner: &Command, readable: &[&Path], writable: &Path) -> 
         };
     }
     command
-}
-
-/// The run of a sandboxed command, or an error when the sandbox did not
-/// start: bubblewrap could not be run, or it stopped before the command,
-/// which it reports under its own name with the exit code 1. Such a run says
-/// nothing about the code in it, so it must not become a result. Agent code
-/// can end the same way; that stops the evaluation as well, and the error
-/// leaves out what the run printed, which agent code may have written.
-pub(crate) fn started(run: Run) -> Result<Run, String> {
-    let stopped = run.exit == Some(1) && run.stderr.starts_with(b"bwrap: ");
-    if run.exit.is_none() || stopped {
-        return Err("the sandbox did not start (bubblewrap failed); nothing was evaluated".into());
-    }
-    Ok(run)
 }
 
 /// What cargo and rustc need inside the sandbox. Not all of CARGO_HOME: it
@@ -115,7 +141,9 @@ mod tests {
             let reads = |file: &str| {
                 let mut cat = Command::new("cat");
                 cat.arg(readable.join(file));
-                let status = hiding(&temp, &cat, &[readable], &out).status().unwrap();
+                let status = hiding(&temp, &cat, &[readable], &out, None)
+                    .status()
+                    .unwrap();
                 status.success()
             };
             assert!(reads("tool"), "{}", readable.display());
@@ -129,18 +157,22 @@ mod tests {
         let run = |writable: &Path, script: &str| {
             let mut inner = Command::new("sh");
             inner.args(["-c", script]);
-            started(crate::run::run(&mut sandboxed(&inner, &[], writable), &[]))
+            run_sandboxed(&inner, &[], writable, &[])
         };
         // bubblewrap cannot bind a directory that is not there.
         let error = run(&dir.join("missing"), "true").unwrap_err();
         assert!(!error.contains("missing"), "{error}");
-        let failed = run(&dir, "echo no rule >&2; exit 1").unwrap();
-        assert_eq!(failed.exit, Some(1));
-        // The same ending from the code in the sandbox stops the evaluation
-        // too, and its output stays out of the error.
-        let error = run(&dir, "echo bwrap: a private line >&2; exit 1").unwrap_err();
-        assert!(!error.contains("private"), "{error}");
-        let mut absent = Command::new("/no/such/bwrap");
-        assert!(started(crate::run::run(&mut absent, &[])).is_err());
+        // The code in the sandbox cannot end as if it had not started: not
+        // with bubblewrap's words, and not by removing the proof, which it
+        // cannot see.
+        let imitated = run(&dir, "echo \"bwrap: Can't find source path\" >&2; exit 1").unwrap();
+        assert_eq!(imitated.exit, Some(1));
+        let removed = run(
+            &dir,
+            "for dir in /tmp/*/started \"$TMPDIR\"/*/started; do rmdir \"$dir\" && echo removed; done; \\
+             find /tmp \"${TMPDIR:-/tmp}\" -name started",
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8_lossy(&removed.stdout), "");
     }
 }

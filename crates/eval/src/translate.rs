@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::files::REPO;
-use crate::run::{COMPILE_TIMEOUT, DETAIL_LIMIT, Run, limited, run, tail};
-use crate::sandbox::{sandboxed, started, toolchain};
+use crate::run::{COMPILE_TIMEOUT, DETAIL_LIMIT, Run, limited, tail};
+use crate::sandbox::{run_sandboxed, sandboxed, toolchain};
 
 const TRANSPILE_TIMEOUT: &str = "30";
 
@@ -141,10 +141,7 @@ pub(crate) fn translate(
                 .arg(&c_file)
                 .arg("-o")
                 .arg(out_dir.join(rust_file.file_name().unwrap_or_default()));
-            let transpiled = started(run(
-                &mut sandboxed(&command, &[&transpiler, &c_file], &out_dir),
-                &[],
-            ))?;
+            let transpiled = run_sandboxed(&command, &[&transpiler, &c_file], &out_dir, &[])?;
             if transpiled.exit == Some(0) && rust_file.exists() {
                 return Ok(Ok(()));
             }
@@ -192,7 +189,7 @@ pub(crate) fn compile(rust_file: &Path, program: &Path) -> Result<Run, String> {
         .env_remove("CARGO_MANIFEST_DIR")
         .current_dir(&repo);
     let dir = program.parent().unwrap_or(Path::new("/"));
-    started(run(&mut sandboxed(&command, &readable, dir), &[]))
+    run_sandboxed(&command, &readable, dir, &[])
 }
 
 /// Counts warnings by lint name and returns the rendered errors.
