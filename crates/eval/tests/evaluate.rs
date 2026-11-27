@@ -55,7 +55,8 @@ fn evaluate(test: &str, c: &str, inputs: Option<&str>, rust: &str) -> eval::Reco
         &dir.join("g1_program.c"),
         &eval::Translator::Transpiler(transpiler),
         &dir.join("work"),
-    );
+    )
+    .unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     record
 }
@@ -178,12 +179,14 @@ fn existing_translations_are_evaluated_without_the_transpiler() {
         &c_file,
         &eval::Translator::Existing(existing),
         &dir.join("work"),
-    );
+    )
+    .unwrap();
     let missing = eval::evaluate(
         &c_file,
         &eval::Translator::Existing(dir.join("none")),
         &dir.join("work2"),
-    );
+    )
+    .unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(found.stage, Stage::Pass, "{}", found.detail);
     assert_eq!(missing.stage, Stage::TranspileFail);
@@ -241,7 +244,8 @@ fn agent_code_cannot_read_home_keep_files_connect_or_reach_run() {
         &dir.join("g1_program.c"),
         &eval::Translator::Transpiler(transpiler),
         &dir.join("work"),
-    );
+    )
+    .unwrap();
     let escaped = ["escaped-translation", "escaped-transpiler"].map(|name| dir.join(name).exists());
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(record.stage, Stage::Pass, "{}", record.detail);
@@ -275,7 +279,8 @@ fn fuzzed_inputs_are_a_separate_result_for_passes() {
             &dir.join("g1_program.c"),
             &eval::Translator::Transpiler(transpiler),
             &dir.join("work"),
-        );
+        )
+        .unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         record
     };

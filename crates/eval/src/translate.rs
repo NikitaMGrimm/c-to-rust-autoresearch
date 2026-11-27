@@ -8,7 +8,7 @@ use std::process::Command;
 
 use crate::files::REPO;
 use crate::run::{COMPILE_TIMEOUT, DETAIL_LIMIT, Run, limited, run, tail};
-use crate::sandbox::{sandboxed, toolchain};
+use crate::sandbox::{sandboxed, started, toolchain};
 
 const TRANSPILE_TIMEOUT: &str = "30";
 
@@ -122,14 +122,15 @@ fn cargo_executable(command: &mut Command) -> Result<PathBuf, String> {
 }
 
 /// Writes the translation of the program `name` to `rust_file`, or says why
-/// it could not. The transpiler reads the program from `c_file`.
+/// the translator could not. The transpiler reads the program from `c_file`.
+/// The outer error is the sandbox's, which did not start.
 pub(crate) fn translate(
     name: &str,
     c_file: &Path,
     translator: &Translator,
     rust_file: &Path,
-) -> Result<(), String> {
-    match translator {
+) -> Result<Result<(), String>, String> {
+    Ok(match translator {
         Translator::Transpiler(transpiler) => {
             let absolute = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
             let (transpiler, c_file) = (absolute(transpiler), absolute(c_file));
@@ -140,12 +141,12 @@ pub(crate) fn translate(
                 .arg(&c_file)
                 .arg("-o")
                 .arg(out_dir.join(rust_file.file_name().unwrap_or_default()));
-            let transpiled = run(
+            let transpiled = started(run(
                 &mut sandboxed(&command, &[&transpiler, &c_file], &out_dir),
                 &[],
-            );
+            ))?;
             if transpiled.exit == Some(0) && rust_file.exists() {
-                return Ok(());
+                return Ok(Ok(()));
             }
             let reason = if transpiled.timed_out() {
                 "timed out\n"
@@ -160,11 +161,12 @@ pub(crate) fn translate(
                 .map(drop)
                 .map_err(|err| format!("no translation {}: {err}", existing.display()))
         }
-    }
+    })
 }
 
 /// Compiles in the sandbox, since `include_str!` and the like read files.
-pub(crate) fn compile(rust_file: &Path, program: &Path) -> Run {
+/// The error is the sandbox's, which did not start.
+pub(crate) fn compile(rust_file: &Path, program: &Path) -> Result<Run, String> {
     let repo = Path::new(REPO)
         .canonicalize()
         .unwrap_or_else(|_| REPO.into());
@@ -190,7 +192,7 @@ pub(crate) fn compile(rust_file: &Path, program: &Path) -> Run {
         .env_remove("CARGO_MANIFEST_DIR")
         .current_dir(&repo);
     let dir = program.parent().unwrap_or(Path::new("/"));
-    run(&mut sandboxed(&command, &readable, dir), &[])
+    started(run(&mut sandboxed(&command, &readable, dir), &[]))
 }
 
 /// Counts warnings by lint name and returns the rendered errors.
@@ -230,7 +232,7 @@ mod tests {
         )
         .unwrap();
 
-        let compiled = compile(&source, &dir.join("program"));
+        let compiled = compile(&source, &dir.join("program")).unwrap();
         let mut warnings = BTreeMap::new();
         let errors = diagnostics(&compiled.stderr, &mut warnings);
 

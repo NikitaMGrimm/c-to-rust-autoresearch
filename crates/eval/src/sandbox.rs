@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::run::Run;
+
 /// Wraps agent-written code: no network, a read-only file system except
 /// `writable`, and a hidden home directory, where the private benchmarks and
 /// credentials live, except `readable`. The temporary directory is hidden
@@ -64,6 +66,20 @@ fn hiding(temp: &Path, inner: &Command, readable: &[&Path], writable: &Path) -> 
     command
 }
 
+/// The run of a sandboxed command, or an error when the sandbox did not
+/// start: bubblewrap could not be run, or it stopped before the command,
+/// which it reports under its own name with the exit code 1. Such a run says
+/// nothing about the code in it, so it must not become a result. Agent code
+/// can end the same way; that stops the evaluation as well, and the error
+/// leaves out what the run printed, which agent code may have written.
+pub(crate) fn started(run: Run) -> Result<Run, String> {
+    let stopped = run.exit == Some(1) && run.stderr.starts_with(b"bwrap: ");
+    if run.exit.is_none() || stopped {
+        return Err("the sandbox did not start (bubblewrap failed); nothing was evaluated".into());
+    }
+    Ok(run)
+}
+
 /// What cargo and rustc need inside the sandbox. Not all of CARGO_HOME: it
 /// holds the crates.io token.
 pub(crate) fn toolchain() -> Vec<PathBuf> {
@@ -105,5 +121,26 @@ mod tests {
             assert!(reads("tool"), "{}", readable.display());
             assert!(!reads("tmp/program.c"), "{}", readable.display());
         }
+    }
+
+    #[test]
+    fn a_sandbox_that_does_not_start_is_an_error_and_a_failing_command_is_not() {
+        let dir = crate::Scratch::new("test").unwrap();
+        let run = |writable: &Path, script: &str| {
+            let mut inner = Command::new("sh");
+            inner.args(["-c", script]);
+            started(crate::run::run(&mut sandboxed(&inner, &[], writable), &[]))
+        };
+        // bubblewrap cannot bind a directory that is not there.
+        let error = run(&dir.join("missing"), "true").unwrap_err();
+        assert!(!error.contains("missing"), "{error}");
+        let failed = run(&dir, "echo no rule >&2; exit 1").unwrap();
+        assert_eq!(failed.exit, Some(1));
+        // The same ending from the code in the sandbox stops the evaluation
+        // too, and its output stays out of the error.
+        let error = run(&dir, "echo bwrap: a private line >&2; exit 1").unwrap_err();
+        assert!(!error.contains("private"), "{error}");
+        let mut absent = Command::new("/no/such/bwrap");
+        assert!(started(crate::run::run(&mut absent, &[])).is_err());
     }
 }

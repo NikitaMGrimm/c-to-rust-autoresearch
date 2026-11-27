@@ -11,7 +11,7 @@ use std::time::Instant;
 use crate::files::{REPO, Scratch};
 use crate::idioms::idiom_counts;
 use crate::reference::{build_c, c_problem};
-use crate::run::{OUTPUT_LIMIT, Run, run_in_place, run_program, tail};
+use crate::run::{OUTPUT_LIMIT, Run, run_program, run_translation, tail};
 use crate::spec::{Input, Spec, fuzzed_inputs, spec};
 use crate::translate::{Translator, compile, diagnostics, translate};
 
@@ -188,6 +188,7 @@ pub fn evaluate_all(
     }
     let next = AtomicUsize::new(0);
     let records = Mutex::new(Vec::new());
+    let failure = Mutex::new(None);
     std::thread::scope(|scope| {
         for _ in 0..jobs.min(programs.len()) {
             scope.spawn(|| {
@@ -197,12 +198,22 @@ pub fn evaluate_all(
                         break;
                     };
                     let work = scratch.join(index.to_string());
-                    let record = evaluate(program, translator, &work);
-                    records.lock().unwrap().push(record);
+                    match evaluate(program, translator, &work) {
+                        Ok(record) => records.lock().unwrap().push(record),
+                        Err(err) => {
+                            // The other programs would end the same way.
+                            next.store(programs.len(), Ordering::Relaxed);
+                            failure.lock().unwrap().get_or_insert(err);
+                            break;
+                        }
+                    }
                 }
             });
         }
     });
+    if let Some(err) = failure.into_inner().unwrap() {
+        return Err(err);
+    }
     let mut records = records.into_inner().unwrap();
     records.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(records)
@@ -210,8 +221,9 @@ pub fn evaluate_all(
 
 /// Evaluates one C program, using `work` as its scratch directory. `work`
 /// gets a copy of the program, so it must be where the sandbox hides it:
-/// under the temporary directory or the home directory.
-pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
+/// under the temporary directory or the home directory. The error is the
+/// sandbox's, which did not start: that says nothing about the translation.
+pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Result<Record, String> {
     let start = Instant::now();
     let name = c_file
         .file_stem()
@@ -229,9 +241,9 @@ pub fn evaluate(c_file: &Path, translator: &Translator, work: &Path) -> Record {
         fuzz: None,
         seconds: 0.0,
     };
-    (record.stage, record.detail) = stages(c_file, translator, work, &mut record);
+    (record.stage, record.detail) = stages(c_file, translator, work, &mut record)?;
     record.seconds = (start.elapsed().as_secs_f64() * 10.0).round() / 10.0;
-    record
+    Ok(record)
 }
 
 /// Names the input in a failure detail when the program has named inputs.
@@ -250,17 +262,17 @@ fn stages(
     translator: &Translator,
     work: &Path,
     record: &mut Record,
-) -> (Stage, String) {
+) -> Result<(Stage, String), String> {
     let Spec { inputs, c_flags } = match spec(c_file) {
         Ok(spec) => spec,
-        Err(err) => return (Stage::CInvalid, err),
+        Err(err) => return Ok((Stage::CInvalid, err)),
     };
     for dir in [work.join("c"), work.join("rust")] {
         if let Err(err) = std::fs::create_dir_all(&dir) {
-            return (
+            return Ok((
                 Stage::CInvalid,
                 format!("cannot create {}: {err}", dir.display()),
-            );
+            ));
         }
     }
     // Everything agent-written stays in `rust_dir`, the sandbox's only
@@ -268,10 +280,10 @@ fn stages(
     let rust_dir = match work.join("rust").canonicalize() {
         Ok(dir) => dir,
         Err(err) => {
-            return (
+            return Ok((
                 Stage::CInvalid,
                 format!("cannot open {}: {err}", work.display()),
-            );
+            ));
         }
     };
     // The compiler and the transpiler read a copy under a fixed name, so that
@@ -279,81 +291,85 @@ fn stages(
     // every translation, as it hides the program.
     let source = work.join("c/program.c");
     if let Err(err) = std::fs::copy(c_file, &source) {
-        return (Stage::CInvalid, format!("cannot copy the program: {err}"));
+        return Ok((Stage::CInvalid, format!("cannot copy the program: {err}")));
     }
     // The same file name in both directories gives both the same argv[0].
     let (c_program, rust_program) = (work.join("c/program"), rust_dir.join("program"));
     let built = build_c(&source, &c_program, &c_flags);
     if built.exit != Some(0) {
-        return (
+        return Ok((
             Stage::CInvalid,
             format!("C build failed:\n{}", tail(&built.stderr)),
-        );
+        ));
     }
     let mut c_runs = Vec::new();
     for input in &inputs {
         let c = run_program(&c_program, input);
         if let Some(problem) = c_problem(&c) {
-            return (Stage::CInvalid, on_input(input, problem));
+            return Ok((Stage::CInvalid, on_input(input, problem)));
         }
         c_runs.push(c);
     }
 
     let rust_file = rust_dir.join("translation.rs");
-    if let Err(detail) = translate(&record.name, &source, translator, &rust_file) {
-        return (Stage::TranspileFail, detail);
+    if let Err(detail) = translate(&record.name, &source, translator, &rust_file)? {
+        return Ok((Stage::TranspileFail, detail));
     }
-    let compiled = compile(&rust_file, &rust_program);
+    let compiled = compile(&rust_file, &rust_program)?;
     let errors = diagnostics(&compiled.stderr, &mut record.warnings);
     if compiled.exit != Some(0) {
-        // Without JSON errors (spawn failure, timeout), show the raw output.
+        // Without JSON errors (a timeout), show the raw output.
         let detail = if errors.is_empty() {
             tail(&compiled.stderr)
         } else {
             errors
         };
-        return (Stage::CompileFail, detail);
+        return Ok((Stage::CompileFail, detail));
     }
     record.metrics = std::fs::read_to_string(&rust_file)
         .ok()
         .and_then(|source| idiom_counts(&source));
     // Behaviour on every input comes first; `unsafe` is reported only after that.
     for (input, c) in inputs.iter().zip(&c_runs) {
-        let rust = run_in_place(&rust_program, input, true);
+        let rust = run_translation(&rust_program, input)?;
         let (stage, detail) = classify(c, &rust, 0);
         if stage != Stage::Pass {
-            return (stage, on_input(input, detail));
+            return Ok((stage, on_input(input, detail)));
         }
     }
     let unsafe_uses = record.warnings.get("unsafe_code").copied().unwrap_or(0);
     let last = c_runs.last().expect("inputs are never empty");
     let result = classify(last, last, unsafe_uses);
     if result.0 == Stage::Pass {
-        record.fuzz = fuzz_stage(c_file, &c_program, &rust_program);
+        record.fuzz = fuzz_stage(c_file, &c_program, &rust_program)?;
     }
-    result
+    Ok(result)
 }
 
 /// How a passing translation does on the fuzzed inputs, if there are any.
 /// They are a separate result, so the pass rule stays as it was.
-fn fuzz_stage(c_file: &Path, c_program: &Path, rust_program: &Path) -> Option<(Stage, String)> {
+fn fuzz_stage(
+    c_file: &Path,
+    c_program: &Path,
+    rust_program: &Path,
+) -> Result<Option<(Stage, String)>, String> {
     let inputs = match fuzzed_inputs(c_file) {
-        Ok(inputs) if inputs.is_empty() => return None,
+        Ok(inputs) if inputs.is_empty() => return Ok(None),
         Ok(inputs) => inputs,
-        Err(err) => return Some((Stage::CInvalid, err)),
+        Err(err) => return Ok(Some((Stage::CInvalid, err))),
     };
     for input in &inputs {
         let c = run_program(c_program, input);
         if let Some(problem) = c_problem(&c) {
-            return Some((Stage::CInvalid, on_input(input, problem)));
+            return Ok(Some((Stage::CInvalid, on_input(input, problem))));
         }
-        let rust = run_in_place(rust_program, input, true);
+        let rust = run_translation(rust_program, input)?;
         let (stage, detail) = classify(&c, &rust, 0);
         if stage != Stage::Pass {
-            return Some((stage, on_input(input, detail)));
+            return Ok(Some((stage, on_input(input, detail))));
         }
     }
-    Some((Stage::Pass, String::new()))
+    Ok(Some((Stage::Pass, String::new())))
 }
 
 fn mismatch(c: &Run, rust: &Run) -> String {

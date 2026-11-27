@@ -75,6 +75,12 @@ its checkout's tracked and unignored files, which leaves out `local/` and keeps
 symlinks as links. Scratch directories are new and private to the user
 (`files::Scratch`).
 
+A sandbox that does not start says nothing about the code in it. When
+bubblewrap cannot be run, or stops before the command with its own message
+and the exit code 1, the evaluation stops with an error and no result is
+recorded; the gate then judges nothing. Agent code that ends the same way
+stops the evaluation too, and the error leaves out what it printed.
+
 The transpiler's tests and build scripts are agent code as well. The
 workspace's default members leave the transpiler out, so plain `cargo build`,
 `cargo clippy` and `cargo test` neither build nor run it; CI, which has no
